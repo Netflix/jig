@@ -670,11 +670,7 @@ public class JigTest {
                         .formatted(output),
                 Files.readString(launchArguments));
 
-        String javaCommand = ProcessHandle.current()
-                .info()
-                .command()
-                .orElseThrow();
-        Process process = new ProcessBuilder(javaCommand, "@" + launchArguments, "--module", "com.example.application/com.example.Main")
+        Process process = new ProcessBuilder(javaCommand(), "@" + launchArguments, "--module", "com.example.application/com.example.Main")
                 .redirectErrorStream(true)
                 .start();
         String processOutput = new String(process.getInputStream()
@@ -831,11 +827,7 @@ public class JigTest {
 
             var argumentFile = directory.resolve("launch.args");
             Files.writeString(argumentFile, second);
-            var javaCommand = ProcessHandle.current()
-                    .info()
-                    .command()
-                    .orElseThrow();
-            var process = new ProcessBuilder(javaCommand, "@" + argumentFile).redirectErrorStream(true).start();
+            var process = new ProcessBuilder(javaCommand(), "@" + argumentFile).redirectErrorStream(true).start();
             var output = new String(process.getInputStream()
                     .readAllBytes(),
                             StandardCharsets.UTF_8);
@@ -1604,7 +1596,7 @@ public class JigTest {
     @Test
     void systemModuleAccessRequirementsAreImplicitlyAuthorized() throws Exception {
         var module = ModuleFinder.ofSystem()
-                .find("com.netflix.tools.jfmt")
+                .find("com.netflix.tools.ja")
                 .orElseThrow();
         var requirements = ModuleRuntimeAccess.read(module).orElseThrow();
 
@@ -2369,6 +2361,11 @@ public class JigTest {
     @DisplayName("missing option argument fails")
     void missingOptionArg() {
         assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[] {"--module-path"}));
+    }
+
+    private static String javaCommand() {
+        String executable = System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
+        return Path.of(System.getProperty("java.home"), "bin", executable).toString();
     }
 
     private static Path automaticJar(Path directory, String moduleName) throws Exception {
