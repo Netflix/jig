@@ -132,6 +132,35 @@ class ModuleRepositorySessionTest {
     }
 
     @Test
+    void preservesMavenSettingsExpressions(@TempDir Path directory) throws Exception {
+        Path userSettings = directory.resolve(".m2/settings.xml");
+        Files.createDirectories(userSettings.getParent());
+        Files.writeString(userSettings,
+                """
+                <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+                  <servers>
+                    <server>
+                      <id>github</id>
+                      <username>${env.GITHUB_ACTOR}</username>
+                      <password>${env.GITHUB_TOKEN}</password>
+                    </server>
+                  </servers>
+                </settings>
+                """);
+
+        var settings = ModuleRepositorySession.readSettings(directory.resolve("distribution-settings.xml"), userSettings);
+
+        assertEquals("${env.GITHUB_ACTOR}",
+                settings.getServers()
+                        .getFirst()
+                        .getUsername());
+        assertEquals("${env.GITHUB_TOKEN}",
+                settings.getServers()
+                        .getFirst()
+                        .getPassword());
+    }
+
+    @Test
     void decryptsMavenSettingsCredentials(@TempDir Path directory) throws Exception {
         Path userSettings = directory.resolve(".m2/settings.xml");
         Files.createDirectories(userSettings.getParent());

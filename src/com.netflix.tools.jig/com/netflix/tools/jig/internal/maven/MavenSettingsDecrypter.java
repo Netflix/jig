@@ -52,7 +52,7 @@ import com.netflix.tools.jig.internal.org.apache.maven.settings.Settings;
  * file.
  */
 public final class MavenSettingsDecrypter {
-    private static final Pattern ENCRYPTED = Pattern.compile(".*?[^\\\\]?\\{(.*?[^\\\\])\\}.*");
+    private static final Pattern ENCRYPTED = Pattern.compile(".*?(?<![\\\\$])\\{(.*?(?<!\\\\))\\}.*");
     private static final String MASTER_PASSWORD = "settings.security";
     private static final int KEY_SIZE = 16;
     private static final int SALT_SIZE = 8;
