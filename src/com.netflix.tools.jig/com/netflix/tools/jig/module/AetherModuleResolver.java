@@ -17,6 +17,7 @@ package com.netflix.tools.jig.module;
 import java.io.IOException;
 import java.lang.module.FindException;
 import java.lang.module.ModuleDescriptor;
+import java.lang.module.ModuleDescriptor.Requires;
 import java.lang.module.ModuleDescriptor.Requires.Modifier;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReader;
@@ -225,8 +226,8 @@ public final class AetherModuleResolver {
 
     private Module load(String name, String version) throws IOException {
         Artifact artifact = canonical(name, version);
-        List<Requirement> requirements = requirements(artifact);
         ModuleDescriptor descriptor = descriptors.resolve(artifact);
+        List<Requirement> requirements = requirements(artifact, descriptor);
         if (!descriptor.name().equals(name)) {
             throw new IOException("Artifact "
                     + artifact
@@ -239,7 +240,11 @@ public final class AetherModuleResolver {
         return new Module(name, version, reference, requirements);
     }
 
-    private List<Requirement> requirements(Artifact artifact) throws IOException {
+    private List<Requirement> requirements(Artifact artifact, ModuleDescriptor descriptor) throws IOException {
+        var staticRequirements = descriptor.requires().stream()
+                .filter(requirement -> requirement.modifiers().contains(Modifier.STATIC))
+                .map(Requires::name)
+                .collect(Collectors.toSet());
         try {
             var request = new ArtifactDescriptorRequest(artifact, repositories, null);
             return system.readArtifactDescriptor(session, request).getDependencies().stream()
@@ -249,7 +254,7 @@ public final class AetherModuleResolver {
                             new Requirement(
                                     dependency.getArtifact().getArtifactId(),
                                     dependency.getArtifact().getVersion(),
-                                    dependency.isOptional(),
+                                    dependency.isOptional() || staticRequirements.contains(dependency.getArtifact().getArtifactId()),
                                     dependency.getExclusions().stream()
                                             .noneMatch(exclusion -> exclusion.getGroupId().equals("*") && exclusion.getArtifactId().equals("*"))))
                     .toList();

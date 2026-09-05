@@ -16,7 +16,6 @@ package com.netflix.tools.jig.module;
 
 import java.io.IOException;
 import java.lang.module.FindException;
-import java.lang.module.ModuleDescriptor.Requires.Modifier;
 import java.lang.module.ModuleFinder;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -106,7 +105,7 @@ public final class ConsumerPomGenerator {
                     .artifactId(dependencyCoordinate.getArtifactId())
                     .version(version)
                     .scope("compile");
-            if (requirement.modifiers().contains(Modifier.STATIC)) {
+            if (MavenDependency.isOptional(requirement)) {
                 dependency.optional("true");
             }
             dependencies.add(dependency.build());
@@ -131,6 +130,7 @@ public final class ConsumerPomGenerator {
         try (var output = Files.newOutputStream(path)) {
             var writer = new MavenStaxWriter();
             writer.setNamespace("http://maven.apache.org/POM/4.0.0");
+            writer.setAddLocationInformation(false);
             writer.write(output, model);
         } catch (XMLStreamException e) {
             throw new IOException("Failed to write " + path, e);

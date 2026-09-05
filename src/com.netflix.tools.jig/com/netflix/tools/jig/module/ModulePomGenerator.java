@@ -16,7 +16,6 @@ package com.netflix.tools.jig.module;
 
 import java.io.IOException;
 import java.lang.module.FindException;
-import java.lang.module.ModuleDescriptor.Requires.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -160,10 +159,7 @@ public final class ModulePomGenerator {
             if (version == null) {
                 continue;
             }
-            dependencies.put(
-                    name,
-                    dependency(name, version,
-                            requirement.modifiers().contains(Modifier.STATIC)));
+            dependencies.put(name, dependency(name, version, MavenDependency.isOptional(requirement)));
         }
         for (var entry : recordedVersions.entrySet()) {
             String name = entry.getKey();

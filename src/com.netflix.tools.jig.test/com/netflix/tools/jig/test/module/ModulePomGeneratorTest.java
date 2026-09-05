@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -50,6 +51,7 @@ class ModulePomGeneratorTest {
                 module com.example.application {
                     requires com.example.library;
                     requires static com.example.annotations; // @4.0
+                    requires static transitive com.example.compile.api; // @5.0
                 }
                 """);
         Files.writeString(library.resolve("module-info.java"), "module com.example.library {}\n");
@@ -110,6 +112,12 @@ class ModulePomGeneratorTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals("true", annotationsDependency.getOptional());
+        var compileApiDependency = applicationPom.getDependencies().stream()
+                .filter(dependency -> dependency.getArtifactId().equals("com.example.compile.api"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("5.0", compileApiDependency.getVersion());
+        assertNull(compileApiDependency.getOptional());
         var transitiveDependency = applicationPom.getDependencies().stream()
                 .filter(dependency -> dependency.getArtifactId().equals("com.example.transitive"))
                 .findFirst()

@@ -323,7 +323,9 @@ class ModuleProxyTransporterTest {
         Path upstreamRepository = tempDir.resolve("upstream-explicit");
         installUnnamedArtifact(upstreamRepository);
         addMissingOptionalDependency(upstreamRepository, "bridge");
+        installExplicitDependency(upstreamRepository, "compileapi");
         installExplicitArtifact(upstreamRepository);
+        addMissingOptionalDependency(upstreamRepository, "explicit");
         var upstream = fileRepository(upstreamRepository);
         var locationFactory = new ModuleLocationTransporterFactory();
 
@@ -344,16 +346,25 @@ class ModuleProxyTransporterTest {
                         .getPath())) {
                     model = new MavenStaxReader().read(input);
                 }
-                assertEquals(1, model.getDependencies()
+                assertEquals(2, model.getDependencies()
                                      .size());
-                var dependency = model.getDependencies().getFirst();
+                var dependency = model.getDependencies().stream()
+                        .filter(value -> value.getArtifactId().equals("com.example.core"))
+                        .findFirst()
+                        .orElseThrow();
                 assertEquals("com.example", dependency.getGroupId());
-                assertEquals("com.example.core", dependency.getArtifactId());
                 assertEquals("1.0", dependency.getVersion());
                 assertEquals("jar", dependency.getType());
                 assertEquals("compile", dependency.getScope());
                 assertTrue(dependency.getExclusions()
                                      .isEmpty());
+                var staticTransitiveDependency = model.getDependencies().stream()
+                        .filter(value -> value.getArtifactId().equals("com.example.compileapi"))
+                        .findFirst()
+                        .orElseThrow();
+                assertEquals("1.0", staticTransitiveDependency.getVersion());
+                assertEquals("compile", staticTransitiveDependency.getScope());
+                assertFalse(staticTransitiveDependency.isOptional());
 
                 var rootDescriptor = ModuleDescriptor.newModule("com.example.app")
                         .requires(Set.of(), "com.example.explicit", Version.parse("1.0"))
@@ -372,6 +383,9 @@ class ModuleProxyTransporterTest {
                 assertTrue(resolvedModules.hashes()
                         .isEmpty());
                 assertTrue(resolvedModules.supplementalRoots()
+                        .isEmpty());
+                assertTrue(resolvedModules.finder()
+                        .find("com.example.compileapi")
                         .isEmpty());
 
                 var cachedTraceBytes = new ByteArrayOutputStream();
@@ -643,6 +657,7 @@ class ModuleProxyTransporterTest {
                 builder -> {
                     builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null);
                     builder.requires(ModuleDesc.of("com.example.core"), Set.of(), "2.0");
+                    builder.requires(ModuleDesc.of("com.example.compileapi"), Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE), "1.0");
                 });
         byte[] moduleInfo = ClassFile.of().buildModule(attribute, builder -> builder.withVersion(ClassFileFormatVersion.RELEASE_9.major(), 0));
         try (var out = new ZipOutputStream(Files.newOutputStream(versionDir.resolve("explicit-1.0.jar")))) {
@@ -663,6 +678,11 @@ class ModuleProxyTransporterTest {
                     <dependency>
                       <groupId>com.example</groupId>
                       <artifactId>bridge</artifactId>
+                      <version>1.0</version>
+                    </dependency>
+                    <dependency>
+                      <groupId>com.example</groupId>
+                      <artifactId>compileapi</artifactId>
                       <version>1.0</version>
                     </dependency>
                   </dependencies>

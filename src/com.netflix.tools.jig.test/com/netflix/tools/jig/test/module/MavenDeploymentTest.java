@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavenDeploymentTest {
@@ -101,6 +102,7 @@ class MavenDeploymentTest {
                     "jmod:linux-x86_64",
                     "json:sbom"), deployed.keySet());
             Artifact pom = deployed.get("pom:");
+            assertFalse(Files.readString(pom.getPath()).contains("<!--"));
             assertEquals("com.example", pom.getGroupId());
             assertEquals("com.example.application", pom.getArtifactId());
             assertEquals("1.2.3", pom.getVersion());

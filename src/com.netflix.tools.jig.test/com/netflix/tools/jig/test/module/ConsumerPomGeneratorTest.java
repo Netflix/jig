@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ConsumerPomGeneratorTest {
@@ -46,7 +47,9 @@ class ConsumerPomGeneratorTest {
                 """
                 module com.example.application {
                     requires com.example.library; // @2.3
+                    requires transitive com.example.api; // @3.0
                     requires static com.example.annotations; // @4.0
+                    requires static transitive com.example.compile.api; // @5.0
                     requires java.sql; // @25
                 }
                 """);
@@ -54,9 +57,13 @@ class ConsumerPomGeneratorTest {
 
         Path library = directory.resolve("com.example.library-2.3.jar");
         try (var _ = new JarOutputStream(Files.newOutputStream(library))) {}
+        Path api = directory.resolve("com.example.api-3.0.jar");
+        try (var _ = new JarOutputStream(Files.newOutputStream(api))) {}
         Path annotations = directory.resolve("com.example.annotations-4.0.jar");
         try (var _ = new JarOutputStream(Files.newOutputStream(annotations))) {}
-        ModuleFinder finder = ModuleFinder.compose(sourceFinder, ModuleFinder.of(library, annotations));
+        Path compileApi = directory.resolve("com.example.compile.api-5.0.jar");
+        try (var _ = new JarOutputStream(Files.newOutputStream(compileApi))) {}
+        ModuleFinder finder = ModuleFinder.compose(sourceFinder, ModuleFinder.of(library, api, annotations, compileApi));
         Configuration configuration = Configuration.resolve(finder, List.of(ModuleLayer.boot().configuration()),
                 ModuleFinder.ofSystem(), Set.of("com.example.application"));
         var resolution = new ModuleResolution(
@@ -84,12 +91,25 @@ class ConsumerPomGeneratorTest {
         assertEquals("com.example", dependency.getGroupId());
         assertEquals("com.example.library", dependency.getArtifactId());
         assertEquals("2.3", dependency.getVersion());
+        assertNull(dependency.getOptional());
+        var transitiveDependency = model.getDependencies().stream()
+                .filter(value -> value.getArtifactId().equals("com.example.api"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("3.0", transitiveDependency.getVersion());
+        assertNull(transitiveDependency.getOptional());
         var optionalDependency = model.getDependencies().stream()
                 .filter(value -> value.getArtifactId().equals("com.example.annotations"))
                 .findFirst()
                 .orElseThrow();
         assertEquals("4.0", optionalDependency.getVersion());
         assertEquals("true", optionalDependency.getOptional());
+        var staticTransitiveDependency = model.getDependencies().stream()
+                .filter(value -> value.getArtifactId().equals("com.example.compile.api"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("5.0", staticTransitiveDependency.getVersion());
+        assertNull(staticTransitiveDependency.getOptional());
         var versionedSystemDependency = model.getDependencies().stream()
                 .filter(value -> value.getArtifactId().equals("java.sql"))
                 .findFirst()

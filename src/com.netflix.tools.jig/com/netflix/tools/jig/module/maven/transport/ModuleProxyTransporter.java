@@ -19,7 +19,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Serial;
 import java.lang.module.ModuleDescriptor;
-import java.lang.module.ModuleDescriptor.Requires.Modifier;
 import java.lang.module.ModuleFinder;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -67,6 +66,7 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.transfer.TransferCancel
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.graph.transformer.ConflictResolver;
 import com.netflix.tools.jig.module.ArtifactCandidates;
 import com.netflix.tools.jig.module.MavenArtifactOrigin;
+import com.netflix.tools.jig.module.MavenDependency;
 
 /**
  * Projects Maven artifacts into the canonical module coordinate space.
@@ -538,7 +538,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                     .map(Object::toString)
                     .orElse(null)
                     : selectedDependency.artifact().getVersion();
-            var optional = requirement.modifiers().contains(Modifier.STATIC);
+            var optional = MavenDependency.isOptional(requirement);
             if (version == null) {
                 if (optional) {
                     continue;
@@ -576,14 +576,18 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 }
                 Artifact artifact = dependency.getArtifact();
                 String key = artifact.getGroupId() + ":" + artifact.getArtifactId();
-                if (!visited.add(key)) {
+                if (visited.contains(key)) {
                     continue;
                 }
 
                 ModuleIdentity identity = probeModuleIdentity(artifact);
                 if (identity == null) {
+                    if (dependency.isOptional()) {
+                        continue;
+                    }
                     throw new IOException("Artifact not found: " + artifact);
                 }
+                visited.add(key);
                 String moduleName = effectiveModuleName(artifact, identity);
                 ModuleLocationTransporter.registerObservedLocation(session, moduleName, artifact.getVersion(), artifact);
                 String scope = "runtime".equals(dependency.getScope()) ? "runtime" : "compile";
