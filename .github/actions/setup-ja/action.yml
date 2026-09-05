@@ -21,7 +21,7 @@ inputs:
   jig-version:
     description: jig version
     required: false
-    default: 0.13.1
+    default: 0.13.2
 
 outputs:
   java-home:
