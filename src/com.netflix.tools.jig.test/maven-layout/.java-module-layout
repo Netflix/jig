@@ -1,0 +1,3 @@
+[module "maven.mod"]
+    source = core/src/main/java
+    resource = core/src/main/resources

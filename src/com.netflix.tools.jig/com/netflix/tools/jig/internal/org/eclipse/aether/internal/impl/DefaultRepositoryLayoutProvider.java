@@ -1,0 +1,121 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl;
+
+import com.netflix.tools.jig.internal.javax.inject.Inject;
+import com.netflix.tools.jig.internal.javax.inject.Named;
+import com.netflix.tools.jig.internal.javax.inject.Singleton;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.layout.RepositoryLayout;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.layout.RepositoryLayoutFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.layout.RepositoryLayoutProvider;
+import com.netflix.tools.jig.internal.org.eclipse.aether.transfer.NoRepositoryLayoutException;
+import com.netflix.tools.jig.internal.logging.Logger;
+import com.netflix.tools.jig.internal.logging.LoggerFactory;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ */
+@Singleton
+@Named
+public final class DefaultRepositoryLayoutProvider implements RepositoryLayoutProvider {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultRepositoryLayoutProvider.class);
+
+    private final Map<String, RepositoryLayoutFactory> layoutFactories;
+
+    @Inject
+    public DefaultRepositoryLayoutProvider(Map<String, RepositoryLayoutFactory> layoutFactories) {
+        this.layoutFactories = Collections.unmodifiableMap(layoutFactories);
+    }
+
+    @Override
+    public RepositoryLayout newRepositoryLayout(RepositorySystemSession session, RemoteRepository repository)
+            throws NoRepositoryLayoutException {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(repository, "remote repository cannot be null");
+
+        PrioritizedComponents<RepositoryLayoutFactory> factories = PrioritizedComponents.reuseOrCreate(
+                session, RepositoryLayoutFactory.class, layoutFactories, RepositoryLayoutFactory::getPriority);
+
+        LOGGER.debug("Selecting RepositoryLayout for {}", repository);
+
+        List<NoRepositoryLayoutException> errors = new ArrayList<>();
+        for (PrioritizedComponent<RepositoryLayoutFactory> factory : factories.getEnabled()) {
+            try {
+                RepositoryLayout repositoryLayout = factory.getComponent().newInstance(session, repository);
+
+                if (LOGGER.isDebugEnabled()) {
+                    StringBuilder buffer = new StringBuilder(256);
+                    buffer.append("Using layout ")
+                            .append(repositoryLayout.getClass().getSimpleName());
+                    Utils.appendClassLoader(buffer, repositoryLayout);
+                    buffer.append(" with priority ").append(factory.getPriority());
+                    buffer.append(" for ").append(repository.getUrl());
+                    LOGGER.debug(buffer.toString());
+                }
+
+                return repositoryLayout;
+            } catch (NoRepositoryLayoutException e) {
+                // continue and try next factory
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace(
+                            "Layout factory {} did not provide layout for {}",
+                            factory.getComponent().getClass(),
+                            repository,
+                            e);
+                } else {
+                    LOGGER.debug(
+                            "Layout factory {} did not provide layout for {}: {}",
+                            factory.getComponent().getClass(),
+                            repository,
+                            e.getMessage());
+                }
+                errors.add(e);
+            }
+        }
+
+        StringBuilder buffer = new StringBuilder(256);
+        if (factories.isEmpty()) {
+            buffer.append("No layout factories registered");
+        } else {
+            buffer.append("Cannot access ").append(repository.getUrl());
+            buffer.append(" with type ").append(repository.getContentType());
+            buffer.append(" using the available layout factories: ");
+            factories.list(buffer);
+        }
+
+        // create exception: if one error, make it cause
+        NoRepositoryLayoutException ex = new NoRepositoryLayoutException(
+                repository, buffer.toString(), errors.size() == 1 ? errors.get(0) : null);
+        // if more errors, make them all suppressed
+        if (errors.size() > 1) {
+            errors.forEach(ex::addSuppressed);
+        }
+        throw ex;
+    }
+}

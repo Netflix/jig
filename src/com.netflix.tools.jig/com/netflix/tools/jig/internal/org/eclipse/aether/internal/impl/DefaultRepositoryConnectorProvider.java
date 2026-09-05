@@ -1,0 +1,154 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl;
+
+import com.netflix.tools.jig.internal.javax.inject.Inject;
+import com.netflix.tools.jig.internal.javax.inject.Named;
+import com.netflix.tools.jig.internal.javax.inject.Singleton;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.RepositoryConnectorProvider;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.PipelineRepositoryConnectorFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.RepositoryConnector;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.RepositoryConnectorFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.transfer.NoRepositoryConnectorException;
+import com.netflix.tools.jig.internal.logging.Logger;
+import com.netflix.tools.jig.internal.logging.LoggerFactory;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ */
+@Singleton
+@Named
+public class DefaultRepositoryConnectorProvider implements RepositoryConnectorProvider {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultRepositoryConnectorProvider.class);
+
+    private final Map<String, RepositoryConnectorFactory> connectorFactories;
+
+    private final Map<String, PipelineRepositoryConnectorFactory> pipelineConnectorFactories;
+
+    @Inject
+    public DefaultRepositoryConnectorProvider(
+            Map<String, RepositoryConnectorFactory> connectorFactories,
+            Map<String, PipelineRepositoryConnectorFactory> pipelineConnectorFactories) {
+        this.connectorFactories = Collections.unmodifiableMap(connectorFactories);
+        this.pipelineConnectorFactories = Collections.unmodifiableMap(pipelineConnectorFactories);
+    }
+
+    @Override
+    public RepositoryConnector newRepositoryConnector(RepositorySystemSession session, RemoteRepository repository)
+            throws NoRepositoryConnectorException {
+        requireNonNull(repository, "remote repository cannot be null");
+
+        if (repository.isBlocked()) {
+            if (repository.getMirroredRepositories().isEmpty()) {
+                throw new NoRepositoryConnectorException(repository, "Blocked repository: " + repository);
+            } else {
+                throw new NoRepositoryConnectorException(
+                        repository, "Blocked mirror for repositories: " + repository.getMirroredRepositories());
+            }
+        }
+
+        PrioritizedComponents<RepositoryConnectorFactory> factories = PrioritizedComponents.reuseOrCreate(
+                session, RepositoryConnectorFactory.class, connectorFactories, RepositoryConnectorFactory::getPriority);
+
+        LOGGER.debug("Selecting RepositoryConnector for {}", repository);
+
+        List<NoRepositoryConnectorException> errors = new ArrayList<>();
+        for (PrioritizedComponent<RepositoryConnectorFactory> factory : factories.getEnabled()) {
+            try {
+                RepositoryConnector connector = factory.getComponent().newInstance(session, repository);
+
+                if (LOGGER.isDebugEnabled()) {
+                    StringBuilder buffer = new StringBuilder(256);
+                    buffer.append("Using connector ")
+                            .append(connector.getClass().getSimpleName());
+                    Utils.appendClassLoader(buffer, connector);
+                    buffer.append(" with priority ").append(factory.getPriority());
+                    buffer.append(" for ").append(repository.getUrl());
+                    LOGGER.debug(buffer.toString());
+                }
+
+                connector = pipelineConnector(session, repository, connector);
+
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("Final pipeline: {}", connector);
+                }
+
+                return connector;
+            } catch (NoRepositoryConnectorException e) {
+                // continue and try next factory
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace(
+                            "Connector factory {} did not provide connector for {}",
+                            factory.getComponent().getClass(),
+                            repository,
+                            e);
+                } else {
+                    LOGGER.debug(
+                            "Connector factory {} did not provide connector for {}: {}",
+                            factory.getComponent().getClass(),
+                            repository,
+                            e.getMessage());
+                }
+                errors.add(e);
+            }
+        }
+
+        StringBuilder buffer = new StringBuilder(256);
+        if (factories.isEmpty()) {
+            buffer.append("No connector factories available");
+        } else {
+            buffer.append("Cannot access ").append(repository.getUrl());
+            buffer.append(" with type ").append(repository.getContentType());
+            buffer.append(" using the available connector factories: ");
+            factories.list(buffer);
+        }
+
+        // create exception: if one error, make it cause
+        NoRepositoryConnectorException ex = new NoRepositoryConnectorException(
+                repository, buffer.toString(), errors.size() == 1 ? errors.get(0) : null);
+        // if more errors, make them all suppressed
+        if (errors.size() > 1) {
+            errors.forEach(ex::addSuppressed);
+        }
+        throw ex;
+    }
+
+    protected RepositoryConnector pipelineConnector(
+            RepositorySystemSession session, RemoteRepository repository, RepositoryConnector delegate) {
+        PrioritizedComponents<PipelineRepositoryConnectorFactory> factories = PrioritizedComponents.reuseOrCreate(
+                session,
+                PipelineRepositoryConnectorFactory.class,
+                pipelineConnectorFactories,
+                PipelineRepositoryConnectorFactory::getPriority);
+        for (PrioritizedComponent<PipelineRepositoryConnectorFactory> factory : factories.getEnabled()) {
+            delegate = factory.getComponent().newInstance(session, repository, delegate);
+        }
+        return delegate;
+    }
+}

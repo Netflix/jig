@@ -1,0 +1,513 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl;
+
+import com.netflix.tools.jig.internal.javax.inject.Inject;
+import com.netflix.tools.jig.internal.javax.inject.Named;
+import com.netflix.tools.jig.internal.javax.inject.Singleton;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.ConfigurationProperties;
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystem;
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.RequestTrace;
+import com.netflix.tools.jig.internal.org.eclipse.aether.SyncContext;
+import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.Artifact;
+import com.netflix.tools.jig.internal.org.eclipse.aether.collection.CollectRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.collection.CollectResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.collection.DependencyCollectionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.deployment.DeployRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.deployment.DeployResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.deployment.DeploymentException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyFilter;
+import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyNode;
+import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyVisitor;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.ArtifactDescriptorReader;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.ArtifactResolver;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.DependencyCollector;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.Deployer;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.Installer;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.LocalRepositoryProvider;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.MetadataResolver;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.RemoteRepositoryManager;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.RepositorySystemLifecycle;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.RepositorySystemValidator;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.VersionRangeResolver;
+import com.netflix.tools.jig.internal.org.eclipse.aether.impl.VersionResolver;
+import com.netflix.tools.jig.internal.org.eclipse.aether.installation.InstallRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.installation.InstallResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.installation.InstallationException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl.session.DefaultSessionBuilder;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.Authentication;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepositoryManager;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.NoLocalRepositoryManagerException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.Proxy;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactResolutionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.DependencyRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.DependencyResolutionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.DependencyResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.MetadataRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.MetadataResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionRangeRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionRangeResolutionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionRangeResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionResolutionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.VersionResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.artifact.decorator.ArtifactDecorator;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.artifact.decorator.ArtifactDecoratorFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.synccontext.SyncContextFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.ConfigUtils;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.graph.visitor.LevelOrderDependencyNodeConsumerVisitor;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.graph.visitor.PostorderDependencyNodeConsumerVisitor;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.graph.visitor.PreorderDependencyNodeConsumerVisitor;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.repository.ChainedLocalRepositoryManager;
+
+import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
+
+/**
+ *
+ */
+@Singleton
+@Named
+public class DefaultRepositorySystem implements RepositorySystem {
+    private final AtomicBoolean shutdown;
+
+    private final AtomicInteger sessionIdCounter;
+
+    private final VersionResolver versionResolver;
+
+    private final VersionRangeResolver versionRangeResolver;
+
+    private final ArtifactResolver artifactResolver;
+
+    private final MetadataResolver metadataResolver;
+
+    private final ArtifactDescriptorReader artifactDescriptorReader;
+
+    private final DependencyCollector dependencyCollector;
+
+    private final Installer installer;
+
+    private final Deployer deployer;
+
+    private final LocalRepositoryProvider localRepositoryProvider;
+
+    private final SyncContextFactory syncContextFactory;
+
+    private final RemoteRepositoryManager remoteRepositoryManager;
+
+    private final RepositorySystemLifecycle repositorySystemLifecycle;
+
+    private final Map<String, ArtifactDecoratorFactory> artifactDecoratorFactories;
+
+    private final RepositorySystemValidator repositorySystemValidator;
+
+    @SuppressWarnings("checkstyle:parameternumber")
+    @Inject
+    public DefaultRepositorySystem(
+            VersionResolver versionResolver,
+            VersionRangeResolver versionRangeResolver,
+            ArtifactResolver artifactResolver,
+            MetadataResolver metadataResolver,
+            ArtifactDescriptorReader artifactDescriptorReader,
+            DependencyCollector dependencyCollector,
+            Installer installer,
+            Deployer deployer,
+            LocalRepositoryProvider localRepositoryProvider,
+            SyncContextFactory syncContextFactory,
+            RemoteRepositoryManager remoteRepositoryManager,
+            RepositorySystemLifecycle repositorySystemLifecycle,
+            Map<String, ArtifactDecoratorFactory> artifactDecoratorFactories,
+            RepositorySystemValidator repositorySystemValidator) {
+        this.shutdown = new AtomicBoolean(false);
+        this.sessionIdCounter = new AtomicInteger(0);
+        this.versionResolver = requireNonNull(versionResolver, "version resolver cannot be null");
+        this.versionRangeResolver = requireNonNull(versionRangeResolver, "version range resolver cannot be null");
+        this.artifactResolver = requireNonNull(artifactResolver, "artifact resolver cannot be null");
+        this.metadataResolver = requireNonNull(metadataResolver, "metadata resolver cannot be null");
+        this.artifactDescriptorReader =
+                requireNonNull(artifactDescriptorReader, "artifact descriptor reader cannot be null");
+        this.dependencyCollector = requireNonNull(dependencyCollector, "dependency collector cannot be null");
+        this.installer = requireNonNull(installer, "installer cannot be null");
+        this.deployer = requireNonNull(deployer, "deployer cannot be null");
+        this.localRepositoryProvider =
+                requireNonNull(localRepositoryProvider, "local repository provider cannot be null");
+        this.syncContextFactory = requireNonNull(syncContextFactory, "sync context factory cannot be null");
+        this.remoteRepositoryManager =
+                requireNonNull(remoteRepositoryManager, "remote repository provider cannot be null");
+        this.repositorySystemLifecycle =
+                requireNonNull(repositorySystemLifecycle, "repository system lifecycle cannot be null");
+        this.artifactDecoratorFactories =
+                requireNonNull(artifactDecoratorFactories, "artifact decorator factories cannot be null");
+        this.repositorySystemValidator =
+                requireNonNull(repositorySystemValidator, "repository system validator cannot be null");
+    }
+
+    @Override
+    public VersionResult resolveVersion(RepositorySystemSession session, VersionRequest request)
+            throws VersionResolutionException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateVersionRequest(session, request);
+        return versionResolver.resolveVersion(session, request);
+    }
+
+    @Override
+    public VersionRangeResult resolveVersionRange(RepositorySystemSession session, VersionRangeRequest request)
+            throws VersionRangeResolutionException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateVersionRangeRequest(session, request);
+        return versionRangeResolver.resolveVersionRange(session, request);
+    }
+
+    @Override
+    public ArtifactDescriptorResult readArtifactDescriptor(
+            RepositorySystemSession session, ArtifactDescriptorRequest request) throws ArtifactDescriptorException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateArtifactDescriptorRequest(session, request);
+        ArtifactDescriptorResult descriptorResult = artifactDescriptorReader.readArtifactDescriptor(session, request);
+        for (ArtifactDecorator decorator : Utils.getArtifactDecorators(session, artifactDecoratorFactories)) {
+            descriptorResult.setArtifact(decorator.decorateArtifact(descriptorResult));
+        }
+        return descriptorResult;
+    }
+
+    @Override
+    public ArtifactResult resolveArtifact(RepositorySystemSession session, ArtifactRequest request)
+            throws ArtifactResolutionException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateArtifactRequests(session, Collections.singleton(request));
+        return artifactResolver.resolveArtifact(session, request);
+    }
+
+    @Override
+    public List<ArtifactResult> resolveArtifacts(
+            RepositorySystemSession session, Collection<? extends ArtifactRequest> requests)
+            throws ArtifactResolutionException {
+        validateSession(session);
+        requireNonNull(requests, "requests cannot be null");
+        repositorySystemValidator.validateArtifactRequests(session, requests);
+        return artifactResolver.resolveArtifacts(session, requests);
+    }
+
+    @Override
+    public List<MetadataResult> resolveMetadata(
+            RepositorySystemSession session, Collection<? extends MetadataRequest> requests) {
+        validateSession(session);
+        requireNonNull(requests, "requests cannot be null");
+        repositorySystemValidator.validateMetadataRequests(session, requests);
+        return metadataResolver.resolveMetadata(session, requests);
+    }
+
+    @Override
+    public CollectResult collectDependencies(RepositorySystemSession session, CollectRequest request)
+            throws DependencyCollectionException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateCollectRequest(session, request);
+        return dependencyCollector.collectDependencies(session, request);
+    }
+
+    @Override
+    public DependencyResult resolveDependencies(RepositorySystemSession session, DependencyRequest request)
+            throws DependencyResolutionException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateDependencyRequest(session, request);
+        RequestTrace trace = RequestTrace.newChild(request.getTrace(), request);
+
+        DependencyResult result = new DependencyResult(request);
+
+        DependencyCollectionException dce = null;
+        ArtifactResolutionException are = null;
+
+        if (request.getRoot() != null) {
+            result.setRoot(request.getRoot());
+        } else if (request.getCollectRequest() != null) {
+            CollectResult collectResult;
+            try {
+                request.getCollectRequest().setTrace(trace);
+                collectResult = dependencyCollector.collectDependencies(session, request.getCollectRequest());
+            } catch (DependencyCollectionException e) {
+                dce = e;
+                collectResult = e.getResult();
+            }
+            result.setRoot(collectResult.getRoot());
+            result.setCycles(collectResult.getCycles());
+            result.setCollectExceptions(collectResult.getExceptions());
+        } else {
+            throw new NullPointerException("dependency node and collect request cannot be null");
+        }
+
+        final List<DependencyNode> dependencyNodes =
+                doFlattenDependencyNodes(session, result.getRoot(), request.getFilter());
+
+        final List<ArtifactRequest> requests = dependencyNodes.stream()
+                .map(n -> {
+                    if (n.getDependency() != null) {
+                        ArtifactRequest artifactRequest = new ArtifactRequest(n);
+                        artifactRequest.setTrace(trace);
+                        return artifactRequest;
+                    } else {
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        List<ArtifactResult> results;
+        try {
+            results = artifactResolver.resolveArtifacts(session, requests);
+        } catch (ArtifactResolutionException e) {
+            are = e;
+            results = e.getResults();
+        }
+        result.setDependencyNodeResults(dependencyNodes);
+        result.setArtifactResults(results);
+
+        updateNodesWithResolvedArtifacts(results);
+
+        if (dce != null) {
+            throw new DependencyResolutionException(result, dce);
+        } else if (are != null) {
+            throw new DependencyResolutionException(result, are);
+        }
+
+        return result;
+    }
+
+    @Override
+    public List<DependencyNode> flattenDependencyNodes(
+            RepositorySystemSession session, DependencyNode root, DependencyFilter dependencyFilter) {
+        validateSession(session);
+        requireNonNull(root, "root cannot be null");
+
+        return doFlattenDependencyNodes(session, root, dependencyFilter);
+    }
+
+    private List<DependencyNode> doFlattenDependencyNodes(
+            RepositorySystemSession session, DependencyNode root, DependencyFilter dependencyFilter) {
+        final ArrayList<DependencyNode> dependencyNodes = new ArrayList<>();
+        if (root != null) {
+            root.accept(getDependencyVisitor(session, dependencyNodes::add, dependencyFilter));
+        }
+        return dependencyNodes;
+    }
+
+    private DependencyVisitor getDependencyVisitor(
+            RepositorySystemSession session, Consumer<DependencyNode> nodeConsumer, DependencyFilter dependencyFilter) {
+        String strategy = ConfigUtils.getString(
+                session,
+                ConfigurationProperties.DEFAULT_REPOSITORY_SYSTEM_DEPENDENCY_VISITOR,
+                ConfigurationProperties.REPOSITORY_SYSTEM_DEPENDENCY_VISITOR);
+        switch (strategy) {
+            case PreorderDependencyNodeConsumerVisitor.NAME:
+                return new PreorderDependencyNodeConsumerVisitor(nodeConsumer, dependencyFilter);
+            case PostorderDependencyNodeConsumerVisitor.NAME:
+                return new PostorderDependencyNodeConsumerVisitor(nodeConsumer, dependencyFilter);
+            case LevelOrderDependencyNodeConsumerVisitor.NAME:
+                return new LevelOrderDependencyNodeConsumerVisitor(nodeConsumer, dependencyFilter);
+            default:
+                throw new IllegalArgumentException("Invalid dependency visitor strategy: " + strategy);
+        }
+    }
+
+    private void updateNodesWithResolvedArtifacts(List<ArtifactResult> results) {
+        for (ArtifactResult result : results) {
+            Artifact artifact = result.getArtifact();
+            if (artifact != null) {
+                result.getRequest().getDependencyNode().setArtifact(artifact);
+            }
+        }
+    }
+
+    @Override
+    public InstallResult install(RepositorySystemSession session, InstallRequest request) throws InstallationException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateInstallRequest(session, request);
+        return installer.install(session, request);
+    }
+
+    @Override
+    public DeployResult deploy(RepositorySystemSession session, DeployRequest request) throws DeploymentException {
+        validateSession(session);
+        requireNonNull(request, "request cannot be null");
+        repositorySystemValidator.validateDeployRequest(session, request);
+        return deployer.deploy(session, request);
+    }
+
+    @Override
+    public LocalRepositoryManager newLocalRepositoryManager(
+            RepositorySystemSession session, LocalRepository localRepository) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(localRepository, "localRepository cannot be null");
+        validateSystem();
+        repositorySystemValidator.validateLocalRepositories(session, Collections.singleton(localRepository));
+        return createLocalRepositoryManager(session, localRepository);
+    }
+
+    @Override
+    public LocalRepositoryManager newLocalRepositoryManager(
+            RepositorySystemSession session, LocalRepository... localRepositories) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(localRepositories, "localRepositories cannot be null");
+        validateSystem();
+        repositorySystemValidator.validateLocalRepositories(session, Arrays.asList(localRepositories));
+        return createLocalRepositoryManager(session, Arrays.asList(localRepositories));
+    }
+
+    @Override
+    public LocalRepositoryManager newLocalRepositoryManager(
+            RepositorySystemSession session, List<LocalRepository> localRepositories) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(localRepositories, "localRepositories cannot be null");
+        validateSystem();
+        repositorySystemValidator.validateLocalRepositories(session, localRepositories);
+        return createLocalRepositoryManager(session, localRepositories);
+    }
+
+    private LocalRepositoryManager createLocalRepositoryManager(
+            RepositorySystemSession session, List<LocalRepository> localRepositories) {
+        if (localRepositories.isEmpty()) {
+            throw new IllegalArgumentException("empty localRepositories");
+        } else if (localRepositories.size() == 1) {
+            return createLocalRepositoryManager(session, localRepositories.get(0));
+        } else {
+            LocalRepositoryManager head = createLocalRepositoryManager(session, localRepositories.get(0));
+            List<LocalRepositoryManager> tail = localRepositories.subList(1, localRepositories.size()).stream()
+                    .map(l -> createLocalRepositoryManager(session, l))
+                    .collect(toList());
+            return new ChainedLocalRepositoryManager(head, tail, session);
+        }
+    }
+
+    private LocalRepositoryManager createLocalRepositoryManager(
+            RepositorySystemSession session, LocalRepository localRepository) {
+        try {
+            return localRepositoryProvider.newLocalRepositoryManager(session, localRepository);
+        } catch (NoLocalRepositoryManagerException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public SyncContext newSyncContext(RepositorySystemSession session, boolean shared) {
+        validateSession(session);
+        return syncContextFactory.newInstance(session, shared);
+    }
+
+    @Override
+    public List<RemoteRepository> newResolutionRepositories(
+            RepositorySystemSession session, List<RemoteRepository> repositories) {
+        validateSession(session);
+        validateRepositories(repositories);
+        repositorySystemValidator.validateRemoteRepositories(session, repositories);
+
+        return remoteRepositoryManager.aggregateRepositories(session, new ArrayList<>(), repositories, true);
+    }
+
+    @Override
+    public RemoteRepository newDeploymentRepository(RepositorySystemSession session, RemoteRepository repository) {
+        validateSession(session);
+        requireNonNull(repository, "repository cannot be null");
+        repositorySystemValidator.validateRemoteRepositories(session, Collections.singletonList(repository));
+
+        Authentication auth = session.getAuthenticationSelector().getAuthentication(repository);
+        Proxy proxy = session.getProxySelector().getProxy(repository);
+        return new RemoteRepository.Builder(repository)
+                .setAuthentication(auth)
+                .setProxy(proxy)
+                .setIntent(RemoteRepository.Intent.DEPLOYMENT)
+                .build();
+    }
+
+    @Override
+    public void addOnSystemEndedHandler(Runnable handler) {
+        validateSystem();
+        repositorySystemLifecycle.addOnSystemEndedHandler(handler);
+    }
+
+    @Override
+    public RepositorySystemSession.SessionBuilder createSessionBuilder() {
+        validateSystem();
+        return new DefaultSessionBuilder(
+                this, repositorySystemLifecycle, () -> "id-" + sessionIdCounter.incrementAndGet());
+    }
+
+    @Override
+    public void shutdown() {
+        if (shutdown.compareAndSet(false, true)) {
+            repositorySystemLifecycle.systemEnded();
+        }
+    }
+
+    private void validateSession(RepositorySystemSession session) {
+        requireNonNull(session, "repository system session cannot be null");
+        invalidSession(session.getLocalRepositoryManager(), "local repository manager");
+        invalidSession(session.getSystemProperties(), "system properties");
+        invalidSession(session.getUserProperties(), "user properties");
+        invalidSession(session.getConfigProperties(), "config properties");
+        invalidSession(session.getMirrorSelector(), "mirror selector");
+        invalidSession(session.getProxySelector(), "proxy selector");
+        invalidSession(session.getAuthenticationSelector(), "authentication selector");
+        invalidSession(session.getArtifactTypeRegistry(), "artifact type registry");
+        invalidSession(session.getData(), "data");
+        validateSystem();
+    }
+
+    private void validateSystem() {
+        if (shutdown.get()) {
+            throw new IllegalStateException("repository system is already shut down");
+        }
+    }
+
+    private void validateRepositories(List<RemoteRepository> repositories) {
+        requireNonNull(repositories, "repositories cannot be null");
+        for (RemoteRepository repository : repositories) {
+            requireNonNull(repository, "repository cannot be null");
+        }
+    }
+
+    private void invalidSession(Object obj, String name) {
+        requireNonNull(obj, "repository system session's " + name + " cannot be null");
+    }
+}

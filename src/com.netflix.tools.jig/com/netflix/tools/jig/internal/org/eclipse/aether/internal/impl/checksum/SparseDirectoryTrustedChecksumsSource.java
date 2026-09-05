@@ -1,0 +1,218 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl.checksum;
+
+import com.netflix.tools.jig.internal.javax.inject.Inject;
+import com.netflix.tools.jig.internal.javax.inject.Named;
+import com.netflix.tools.jig.internal.javax.inject.Singleton;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.Artifact;
+import com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl.LocalPathComposer;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.ArtifactRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.checksum.ChecksumAlgorithmFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.io.ChecksumProcessor;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.remoterepo.RepositoryKeyFunctionFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.ConfigUtils;
+import com.netflix.tools.jig.internal.logging.Logger;
+import com.netflix.tools.jig.internal.logging.LoggerFactory;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * Sparse file {@link FileTrustedChecksumsSourceSupport} implementation that use specified directory as base
+ * directory, where it expects artifacts checksums on standard Maven2 "local" layout. This implementation uses Artifact
+ * coordinates solely to form path from basedir, pretty much as Maven local repository does.
+ * <p>
+ * The source by default is "origin aware", it will factor in origin repository ID as well into base directory name
+ * (for example ".checksums/central/...").
+ * <p>
+ * The checksums files are directly loaded from disk, so in-flight file changes during lifecycle of session are picked
+ * up. This implementation can be simultaneously used to lookup and also write checksums. The written checksums
+ * will become visible across all sessions right after the moment they were written.
+ * <p>
+ * The name of this implementation is "sparseDirectory".
+ *
+ * @see LocalPathComposer
+ * @since 1.9.0
+ */
+@Singleton
+@Named(SparseDirectoryTrustedChecksumsSource.NAME)
+public final class SparseDirectoryTrustedChecksumsSource extends FileTrustedChecksumsSourceSupport {
+    public static final String NAME = "sparseDirectory";
+
+    private static final String CONFIG_PROPS_PREFIX =
+            FileTrustedChecksumsSourceSupport.CONFIG_PROPS_PREFIX + NAME + ".";
+
+    /**
+     * Is checksum source enabled?
+     *
+     * @configurationSource {@link RepositorySystemSession#getConfigProperties()}
+     * @configurationType {@link java.lang.Boolean}
+     * @configurationDefaultValue false
+     */
+    public static final String CONFIG_PROP_ENABLED = FileTrustedChecksumsSourceSupport.CONFIG_PROPS_PREFIX + NAME;
+
+    /**
+     * The basedir where checksums are. If relative, is resolved from local repository root.
+     *
+     * @configurationSource {@link RepositorySystemSession#getConfigProperties()}
+     * @configurationType {@link java.lang.String}
+     * @configurationDefaultValue {@link #LOCAL_REPO_PREFIX_DIR}
+     */
+    public static final String CONFIG_PROP_BASEDIR = CONFIG_PROPS_PREFIX + "basedir";
+
+    public static final String LOCAL_REPO_PREFIX_DIR = ".checksums";
+
+    /**
+     * Is source origin aware?
+     *
+     * @configurationSource {@link RepositorySystemSession#getConfigProperties()}
+     * @configurationType {@link java.lang.Boolean}
+     * @configurationDefaultValue true
+     */
+    public static final String CONFIG_PROP_ORIGIN_AWARE = CONFIG_PROPS_PREFIX + "originAware";
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SparseDirectoryTrustedChecksumsSource.class);
+
+    private final ChecksumProcessor checksumProcessor;
+
+    private final LocalPathComposer localPathComposer;
+
+    @Inject
+    public SparseDirectoryTrustedChecksumsSource(
+            RepositoryKeyFunctionFactory repositoryKeyFunctionFactory,
+            ChecksumProcessor checksumProcessor,
+            LocalPathComposer localPathComposer) {
+        super(repositoryKeyFunctionFactory);
+        this.checksumProcessor = requireNonNull(checksumProcessor);
+        this.localPathComposer = requireNonNull(localPathComposer);
+    }
+
+    @Override
+    protected boolean isEnabled(RepositorySystemSession session) {
+        return ConfigUtils.getBoolean(session, false, CONFIG_PROP_ENABLED);
+    }
+
+    private boolean isOriginAware(RepositorySystemSession session) {
+        return ConfigUtils.getBoolean(session, true, CONFIG_PROP_ORIGIN_AWARE);
+    }
+
+    @Override
+    protected Map<String, String> doGetTrustedArtifactChecksums(
+            RepositorySystemSession session,
+            Artifact artifact,
+            ArtifactRepository artifactRepository,
+            List<ChecksumAlgorithmFactory> checksumAlgorithmFactories) {
+        final boolean originAware = isOriginAware(session);
+        final HashMap<String, String> checksums = new HashMap<>();
+        Path basedir = getBasedir(session, LOCAL_REPO_PREFIX_DIR, CONFIG_PROP_BASEDIR, false);
+        if (Files.isDirectory(basedir)) {
+            for (ChecksumAlgorithmFactory checksumAlgorithmFactory : checksumAlgorithmFactories) {
+                Path checksumPath = basedir.resolve(calculateArtifactPath(
+                        originAware, artifact, repositoryKey(session, artifactRepository), checksumAlgorithmFactory));
+
+                if (!Files.isRegularFile(checksumPath)) {
+                    LOGGER.debug(
+                            "Artifact '{}' trusted checksum '{}' not found on path '{}'",
+                            artifact,
+                            checksumAlgorithmFactory.getName(),
+                            checksumPath);
+                    continue;
+                }
+
+                try {
+                    String checksum = checksumProcessor.readChecksum(checksumPath);
+                    if (checksum != null) {
+                        checksums.put(checksumAlgorithmFactory.getName(), checksum);
+                    }
+                } catch (IOException e) {
+                    // unexpected, log
+                    LOGGER.warn(
+                            "Could not read artifact '{}' trusted checksum on path '{}'", artifact, checksumPath, e);
+                    throw new UncheckedIOException(e);
+                }
+            }
+        }
+        return checksums;
+    }
+
+    @Override
+    protected Writer doGetTrustedArtifactChecksumsWriter(RepositorySystemSession session) {
+        return new SparseDirectoryWriter(
+                getBasedir(session, LOCAL_REPO_PREFIX_DIR, CONFIG_PROP_BASEDIR, true),
+                isOriginAware(session),
+                r -> repositoryKey(session, r));
+    }
+
+    private String calculateArtifactPath(
+            boolean originAware,
+            Artifact artifact,
+            String safeRepositoryId,
+            ChecksumAlgorithmFactory checksumAlgorithmFactory) {
+        String path = localPathComposer.getPathForArtifact(artifact, false) + "."
+                + checksumAlgorithmFactory.getFileExtension();
+        if (originAware) {
+            path = safeRepositoryId + "/" + path;
+        }
+        return path;
+    }
+
+    private class SparseDirectoryWriter implements Writer {
+        private final Path basedir;
+
+        private final boolean originAware;
+
+        private final Function<ArtifactRepository, String> idToPathSegmentFunction;
+
+        private SparseDirectoryWriter(
+                Path basedir, boolean originAware, Function<ArtifactRepository, String> idToPathSegmentFunction) {
+            this.basedir = basedir;
+            this.originAware = originAware;
+            this.idToPathSegmentFunction = idToPathSegmentFunction;
+        }
+
+        @Override
+        public void addTrustedArtifactChecksums(
+                Artifact artifact,
+                ArtifactRepository artifactRepository,
+                List<ChecksumAlgorithmFactory> checksumAlgorithmFactories,
+                Map<String, String> trustedArtifactChecksums)
+                throws IOException {
+            for (ChecksumAlgorithmFactory checksumAlgorithmFactory : checksumAlgorithmFactories) {
+                Path checksumPath = basedir.resolve(calculateArtifactPath(
+                        originAware,
+                        artifact,
+                        idToPathSegmentFunction.apply(artifactRepository),
+                        checksumAlgorithmFactory));
+                String checksum = requireNonNull(trustedArtifactChecksums.get(checksumAlgorithmFactory.getName()));
+                checksumProcessor.writeChecksum(checksumPath, checksum);
+            }
+        }
+    }
+}

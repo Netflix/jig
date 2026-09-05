@@ -1,0 +1,125 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl;
+
+import com.netflix.tools.jig.internal.javax.inject.Inject;
+import com.netflix.tools.jig.internal.javax.inject.Named;
+import com.netflix.tools.jig.internal.javax.inject.Singleton;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.ConfigurationProperties;
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepositoryManager;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.NoLocalRepositoryManagerException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.localrepo.LocalRepositoryManagerFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.remoterepo.RepositoryKeyFunctionFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.ConfigUtils;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * Creates enhanced local repository managers for repository types {@code "default"} or {@code "" (automatic)}. Enhanced
+ * local repository manager is built upon the classical Maven 2.0 local repository structure but additionally keeps
+ * track of from what repositories a cached artifact was resolved. Resolution of locally cached artifacts will be
+ * rejected in case the current resolution request does not match the known source repositories of an artifact, thereby
+ * emulating physically separated artifact caches per remote repository.
+ */
+@Singleton
+@Named(EnhancedLocalRepositoryManagerFactory.NAME)
+public class EnhancedLocalRepositoryManagerFactory implements LocalRepositoryManagerFactory {
+    public static final String NAME = "enhanced";
+
+    static final String CONFIG_PROPS_PREFIX = ConfigurationProperties.PREFIX_LRM + NAME + ".";
+
+    /**
+     * Filename of the file in which to track the remote repositories.
+     *
+     * @configurationSource {@link RepositorySystemSession#getConfigProperties()}
+     * @configurationType {@link java.lang.String}
+     * @configurationDefaultValue {@link #DEFAULT_TRACKING_FILENAME}
+     */
+    public static final String CONFIG_PROP_TRACKING_FILENAME = CONFIG_PROPS_PREFIX + "trackingFilename";
+
+    public static final String DEFAULT_TRACKING_FILENAME = "_remote.repositories";
+
+    private float priority = 10.0f;
+
+    private final LocalPathComposer localPathComposer;
+
+    private final TrackingFileManager trackingFileManager;
+
+    private final LocalPathPrefixComposerFactory localPathPrefixComposerFactory;
+
+    private final RepositoryKeyFunctionFactory repositoryKeyFunctionFactory;
+
+    @Inject
+    public EnhancedLocalRepositoryManagerFactory(
+            final LocalPathComposer localPathComposer,
+            final TrackingFileManager trackingFileManager,
+            final LocalPathPrefixComposerFactory localPathPrefixComposerFactory,
+            final RepositoryKeyFunctionFactory repositoryKeyFunctionFactory) {
+        this.localPathComposer = requireNonNull(localPathComposer);
+        this.trackingFileManager = requireNonNull(trackingFileManager);
+        this.localPathPrefixComposerFactory = requireNonNull(localPathPrefixComposerFactory);
+        this.repositoryKeyFunctionFactory = requireNonNull(repositoryKeyFunctionFactory);
+    }
+
+    @Override
+    public LocalRepositoryManager newInstance(RepositorySystemSession session, LocalRepository repository)
+            throws NoLocalRepositoryManagerException {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(repository, "repository cannot be null");
+
+        String trackingFilename = ConfigUtils.getString(session, "", CONFIG_PROP_TRACKING_FILENAME);
+        if (trackingFilename.isEmpty()
+                || trackingFilename.contains("/")
+                || trackingFilename.contains("\\")
+                || trackingFilename.contains("..")) {
+            trackingFilename = DEFAULT_TRACKING_FILENAME;
+        }
+
+        if ("".equals(repository.getContentType()) || "default".equals(repository.getContentType())) {
+            return new EnhancedLocalRepositoryManager(
+                    repository.getBasePath(),
+                    localPathComposer,
+                    repositoryKeyFunctionFactory.systemRepositoryKeyFunction(session),
+                    trackingFilename,
+                    trackingFileManager,
+                    localPathPrefixComposerFactory.createComposer(session));
+        } else {
+            throw new NoLocalRepositoryManagerException(repository);
+        }
+    }
+
+    @Override
+    public float getPriority() {
+        return priority;
+    }
+
+    /**
+     * Sets the priority of this component.
+     *
+     * @param priority The priority.
+     * @return This component for chaining, never {@code null}.
+     */
+    public EnhancedLocalRepositoryManagerFactory setPriority(float priority) {
+        this.priority = priority;
+        return this;
+    }
+}

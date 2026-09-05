@@ -1,0 +1,179 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Objects;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.Artifact;
+import com.netflix.tools.jig.internal.org.eclipse.aether.metadata.Metadata;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalArtifactRegistration;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalArtifactRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalArtifactResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalMetadataRegistration;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalMetadataRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalMetadataResult;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.LocalRepositoryManager;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RepositoryKeyFunction;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * A local repository manager that realizes the classical Maven 2.0 local repository.
+ */
+class SimpleLocalRepositoryManager implements LocalRepositoryManager {
+
+    private final LocalRepository repository;
+
+    private final LocalPathComposer localPathComposer;
+
+    private final RepositoryKeyFunction repositoryKeyFunction;
+
+    SimpleLocalRepositoryManager(
+            Path basePath,
+            String type,
+            LocalPathComposer localPathComposer,
+            RepositoryKeyFunction repositoryKeyFunction) {
+        requireNonNull(basePath, "base directory cannot be null");
+        repository = new LocalRepository(basePath.toAbsolutePath(), type);
+        this.localPathComposer = requireNonNull(localPathComposer);
+        this.repositoryKeyFunction = requireNonNull(repositoryKeyFunction);
+    }
+
+    @Override
+    public LocalRepository getRepository() {
+        return repository;
+    }
+
+    @Override
+    public String getPathForLocalArtifact(Artifact artifact) {
+        requireNonNull(artifact, "artifact cannot be null");
+        return localPathComposer.getPathForArtifact(artifact, true);
+    }
+
+    @Override
+    public String getPathForRemoteArtifact(Artifact artifact, RemoteRepository repository, String context) {
+        requireNonNull(artifact, "artifact cannot be null");
+        requireNonNull(repository, "repository cannot be null");
+        return localPathComposer.getPathForArtifact(artifact, false);
+    }
+
+    @Override
+    public String getPathForLocalMetadata(Metadata metadata) {
+        requireNonNull(metadata, "metadata cannot be null");
+        return localPathComposer.getPathForMetadata(metadata, LocalRepository.ID);
+    }
+
+    @Override
+    public String getPathForRemoteMetadata(Metadata metadata, RemoteRepository repository, String context) {
+        requireNonNull(metadata, "metadata cannot be null");
+        requireNonNull(repository, "repository cannot be null");
+        return localPathComposer.getPathForMetadata(metadata, getRepositoryKey(repository, context));
+    }
+
+    /**
+     * Returns {@link RemoteRepository#getId()}, unless {@link RemoteRepository#isRepositoryManager()} returns
+     * {@code true}, in which case this method creates unique identifier based on ID and current configuration
+     * of the remote repository (as it may change).
+     */
+    protected String getRepositoryKey(RemoteRepository repository, String context) {
+        return repositoryKeyFunction.apply(repository, context);
+    }
+
+    @Override
+    public LocalArtifactResult find(RepositorySystemSession session, LocalArtifactRequest request) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(request, "request cannot be null");
+        Artifact artifact = request.getArtifact();
+        LocalArtifactResult result = new LocalArtifactResult(request);
+
+        Path filePath;
+
+        // Local repository CANNOT have timestamped installed, they are created only during deploy
+        if (Objects.equals(artifact.getVersion(), artifact.getBaseVersion())) {
+            filePath = getAbsolutePathForLocalArtifact(artifact);
+            if (Files.isRegularFile(filePath)) {
+                result.setPath(filePath);
+                result.setAvailable(true);
+            }
+        }
+
+        if (!result.isAvailable()) {
+            for (RemoteRepository repository : request.getRepositories()) {
+                filePath = getAbsolutePathForRemoteArtifact(artifact, repository, request.getContext());
+                if (Files.isRegularFile(filePath)) {
+                    result.setPath(filePath);
+                    result.setAvailable(true);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    @Override
+    public void add(RepositorySystemSession session, LocalArtifactRegistration request) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(request, "request cannot be null");
+        // noop
+    }
+
+    @Override
+    public LocalMetadataResult find(RepositorySystemSession session, LocalMetadataRequest request) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(request, "request cannot be null");
+        LocalMetadataResult result = new LocalMetadataResult(request);
+
+        String path;
+
+        Metadata metadata = request.getMetadata();
+        String context = request.getContext();
+        RemoteRepository remote = request.getRepository();
+
+        if (remote != null) {
+            path = getPathForRemoteMetadata(metadata, remote, context);
+        } else {
+            path = getPathForLocalMetadata(metadata);
+        }
+
+        Path filePath = getRepository().getBasePath().resolve(path);
+        if (Files.isRegularFile(filePath)) {
+            result.setPath(filePath);
+        }
+
+        return result;
+    }
+
+    @Override
+    public void add(RepositorySystemSession session, LocalMetadataRegistration request) {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(request, "request cannot be null");
+        // noop
+    }
+
+    @Override
+    public String toString() {
+        return String.valueOf(getRepository());
+    }
+}

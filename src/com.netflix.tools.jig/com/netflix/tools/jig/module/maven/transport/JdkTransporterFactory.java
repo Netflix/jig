@@ -1,0 +1,97 @@
+/*
+ * Copyright 2026 Netflix, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+/*
+    * Licensed to the Apache Software Foundation (ASF) under one
+    * or more contributor license agreements.  See the NOTICE file
+    * distributed with this work for additional information
+    * regarding copyright ownership.  The ASF licenses this file
+    * to you under the Apache License, Version 2.0 (the
+    * "License"); you may not use this file except in compliance
+    * with the License.  You may obtain a copy of the License at
+    *
+    *   http://www.apache.org/licenses/LICENSE-2.0
+    *
+    * Unless required by applicable law or agreed to in writing,
+    * software distributed under the License is distributed on an
+    * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    * KIND, either express or implied.  See the License for the
+    * specific language governing permissions and limitations
+    * under the License.
+    *//*
+          * Originally from Apache Maven Resolver, maven-resolver-transport-jdk-11 2.0.8.
+          * Modified: package relocated, adapted for resolver 1.9.x API
+          * (TransporterFactory, ChecksumExtractor repackaged, PathProcessor removed).
+          */
+package com.netflix.tools.jig.module.maven.transport;
+
+import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
+import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.transport.Transporter;
+import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.transport.TransporterFactory;
+import com.netflix.tools.jig.internal.org.eclipse.aether.transfer.NoTransporterException;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * JDK Transport factory: on Java11+ it works.
+ *
+ * @since 2.0.0
+ */
+public final class JdkTransporterFactory implements TransporterFactory {
+    public static final String NAME = "jdk";
+
+    private float priority = 10.0f;
+
+    private final ChecksumExtractor checksumExtractor;
+
+    public JdkTransporterFactory(ChecksumExtractor checksumExtractor) {
+        this.checksumExtractor = requireNonNull(checksumExtractor, "checksumExtractor");
+    }
+
+    @Override
+    public float getPriority() {
+        return priority;
+    }
+
+    public JdkTransporterFactory setPriority(float priority) {
+        this.priority = priority;
+        return this;
+    }
+
+    @Override
+    public Transporter newInstance(RepositorySystemSession session, RemoteRepository repository) throws NoTransporterException {
+        requireNonNull(session, "session cannot be null");
+        requireNonNull(repository, "repository cannot be null");
+
+        if (!"http".equalsIgnoreCase(repository.getProtocol()) && !"https".equalsIgnoreCase(repository.getProtocol())) {
+            throw new NoTransporterException(repository);
+        }
+
+        return new JdkTransporter(session, repository, javaVersion(), checksumExtractor);
+    }
+
+    private static int javaVersion() {
+        try {
+            final String version = System.getProperty("java.version", "11" /* default must pass */);
+            final int dot = version.indexOf('.');
+            final int hyphen = version.indexOf('-');
+            final int sep = (dot > 0 && dot < hyphen || hyphen < 0)
+                    ? dot
+                    : hyphen;
+            return Integer.parseInt(sep > 0 ? version.substring(0, sep) : version);
+        } catch (final NumberFormatException nfe) {
+            return 11; // cannot be a pre-java 11 version so let it pass
+        }
+    }
+}
