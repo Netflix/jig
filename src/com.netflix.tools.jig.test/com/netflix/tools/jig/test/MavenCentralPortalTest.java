@@ -70,10 +70,10 @@ class MavenCentralPortalTest {
                     exchange.close();
                 });
         server.start();
-        try {
+        try (HttpClient client = httpClient()) {
             URI endpoint = endpoint(server);
             var portal = MavenCentralPortal.fromEnvironment(Map.of(MavenCentralPortal.USERNAME, "token-user", MavenCentralPortal.PASSWORD, "token-password"),
-                    HttpClient.newHttpClient(), endpoint);
+                    client, endpoint);
 
             String deployment = portal.publish(bundle, "Example release", Approval.AUTOMATIC);
 
@@ -115,10 +115,10 @@ class MavenCentralPortalTest {
                     exchange.close();
                 });
         server.start();
-        try {
+        try (HttpClient client = httpClient()) {
             URI endpoint = endpoint(server);
             var portal = MavenCentralPortal.fromEnvironment(Map.of(MavenCentralPortal.USERNAME, "token-user", MavenCentralPortal.PASSWORD, "token-password"),
-                    HttpClient.newHttpClient(), endpoint);
+                    client, endpoint);
 
             String deployment = portal.publish(bundle, null, Approval.MANUAL);
 
@@ -150,10 +150,10 @@ class MavenCentralPortalTest {
                     exchange.close();
                 });
         server.start();
-        try {
+        try (HttpClient client = httpClient()) {
             URI endpoint = endpoint(server);
             var portal = MavenCentralPortal.fromEnvironment(Map.of(MavenCentralPortal.USERNAME, "token-user", MavenCentralPortal.PASSWORD, "token-password"),
-                    HttpClient.newHttpClient(), endpoint);
+                    client, endpoint);
 
             var exception = assertThrows(IOException.class, () -> portal.publish(bundle, "Example release", Approval.AUTOMATIC));
 
@@ -211,14 +211,20 @@ class MavenCentralPortalTest {
                     exchange.close();
                 });
         server.start();
-        try {
+        try (HttpClient client = httpClient()) {
             URI endpoint = endpoint(server);
-            var portal = MavenCentralPortal.fromCredentials(environment, configured, HttpClient.newHttpClient(), endpoint);
+            var portal = MavenCentralPortal.fromCredentials(environment, configured, client, endpoint);
             portal.upload(bundle, null, Approval.AUTOMATIC);
             return authorization.get();
         } finally {
             server.stop(0);
         }
+    }
+
+    private static HttpClient httpClient() {
+        return HttpClient.newBuilder()
+                .executor(Thread::startVirtualThread)
+                .build();
     }
 
     private static URI endpoint(HttpServer server) throws URISyntaxException {

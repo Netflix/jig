@@ -33,6 +33,8 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteReposi
 import com.netflix.tools.jig.internal.org.eclipse.aether.spi.connector.transport.GetTask;
 import com.netflix.tools.jig.internal.org.eclipse.aether.supplier.RepositorySystemSupplier;
 import com.netflix.tools.jig.internal.org.eclipse.aether.supplier.SessionBuilderSupplier;
+import com.netflix.tools.jig.internal.org.eclipse.aether.util.repository.AuthenticationBuilder;
+import com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys;
 import com.netflix.tools.jig.module.maven.transport.JdkTransporterFactory;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -44,6 +46,95 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JdkTransporterRetryTest {
+    @Test
+    void reusesConnectionsAcrossCompatibleRepositoriesInOneSession(@TempDir Path localRepository) throws Exception {
+        try (var server = new RetryServer(0, null);
+             var session = session(localRepository, Map.of())) {
+            var factory = new JdkTransporterFactory(_ -> Map.of());
+
+            try (var first = factory.newInstance(session, repository(server, "first", "first/"))) {
+                first.get(new GetTask(URI.create("artifact.jar")));
+            }
+            try (var second = factory.newInstance(session, repository(server, "second", "second/"))) {
+                second.get(new GetTask(URI.create("artifact.jar")));
+            }
+
+            assertEquals(2, server.requests());
+            assertEquals(1, server.connections());
+        }
+    }
+
+    @Test
+    void separatesClientsWithDifferentConnectionProfiles(@TempDir Path localRepository) throws Exception {
+        try (var server = new RetryServer(0, null);
+             var session = session(localRepository, Map.of(ConfigurationProperties.CONNECT_TIMEOUT + ".second", 1_000))) {
+            var factory = new JdkTransporterFactory(_ -> Map.of());
+
+            try (var first = factory.newInstance(session, repository(server, "first", "first/"))) {
+                first.get(new GetTask(URI.create("artifact.jar")));
+            }
+            try (var second = factory.newInstance(session, repository(server, "second", "second/"))) {
+                second.get(new GetTask(URI.create("artifact.jar")));
+            }
+
+            assertEquals(2, server.requests());
+            assertEquals(2, server.connections());
+        }
+    }
+
+    @Test
+    void separatesRepositoryAuthenticationScopes(@TempDir Path localRepository) throws Exception {
+        try (var server = new RetryServer(0, null);
+             var session = session(localRepository, Map.of())) {
+            var factory = new JdkTransporterFactory(_ -> Map.of());
+            var firstAuthentication = new AuthenticationBuilder()
+                    .addUsername("first")
+                    .addPassword("first-password")
+                    .build();
+            var secondAuthentication = new AuthenticationBuilder()
+                    .addUsername("second")
+                    .addPassword("second-password")
+                    .build();
+            var firstRepository = new Builder("first", "default", server.uri()
+                    .toString())
+                    .setAuthentication(firstAuthentication)
+                    .build();
+            var secondRepository = new Builder("second", "default", server.uri()
+                    .toString())
+                    .setAuthentication(secondAuthentication)
+                    .build();
+
+            try (var first = factory.newInstance(session, firstRepository)) {
+                first.get(new GetTask(URI.create("first.jar")));
+            }
+            try (var second = factory.newInstance(session, secondRepository)) {
+                second.get(new GetTask(URI.create("second.jar")));
+            }
+
+            assertEquals(2, server.requests());
+            assertEquals(2, server.connections());
+        }
+    }
+
+    @Test
+    void disablesClientStateCachingAcrossTransporters(@TempDir Path localRepository) throws Exception {
+        try (var server = new RetryServer(0, null);
+             var session = session(localRepository, Map.of(JdkTransporterConfigurationKeys.CONFIG_PROP_CACHE_STATE, false))) {
+            var factory = new JdkTransporterFactory(_ -> Map.of());
+            var repository = repository(server);
+
+            try (var first = factory.newInstance(session, repository)) {
+                first.get(new GetTask(URI.create("first.jar")));
+            }
+            try (var second = factory.newInstance(session, repository)) {
+                second.get(new GetTask(URI.create("second.jar")));
+            }
+
+            assertEquals(2, server.requests());
+            assertEquals(2, server.connections());
+        }
+    }
+
     @Test
     void retriesTooManyRequestsUsingConfiguredBackoff(@TempDir Path localRepository) throws Exception {
         try (var server = new RetryServer(2, null);
@@ -154,8 +245,14 @@ class JdkTransporterRetryTest {
     }
 
     private static RemoteRepository repository(RetryServer server) {
-        return new Builder("test", "default",
-                server.uri().toString()).build();
+        return repository(server, "test", "");
+    }
+
+    private static RemoteRepository repository(RetryServer server, String id, String path) {
+        return new Builder(id, "default", server.uri()
+                .resolve(path)
+                .toString())
+                .build();
     }
 
     private static final class RetryServer implements AutoCloseable {

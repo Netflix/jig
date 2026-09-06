@@ -77,6 +77,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -105,6 +106,9 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils;
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils.CollocatedTempFile;
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils.TempFile;
 import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
+import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.AuthenticationScope;
+import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.ClientProfile;
+import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.ProxyProfile;
 import com.netflix.tools.jig.module.maven.transport.MavenModuleProbe.Complete;
 import com.netflix.tools.jig.module.maven.transport.ZipCentralDirectory.Entry;
 
@@ -112,8 +116,10 @@ import static com.netflix.tools.jig.internal.org.eclipse.aether.util.connector.t
 import static com.netflix.tools.jig.internal.org.eclipse.aether.util.connector.transport.http.HttpTransporterUtils.getHttpRetryHandlerInterval;
 import static com.netflix.tools.jig.internal.org.eclipse.aether.util.connector.transport.http.HttpTransporterUtils.getHttpRetryHandlerIntervalMax;
 import static com.netflix.tools.jig.internal.org.eclipse.aether.util.connector.transport.http.HttpTransporterUtils.getHttpServiceUnavailableCodes;
+import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.CONFIG_PROP_CACHE_STATE;
 import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.CONFIG_PROP_HTTP_VERSION;
 import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.CONFIG_PROP_MAX_CONCURRENT_REQUESTS;
+import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.DEFAULT_CACHE_STATE;
 import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.DEFAULT_HTTP_VERSION;
 import static com.netflix.tools.jig.module.maven.transport.JdkTransporterConfigurationKeys.DEFAULT_MAX_CONCURRENT_REQUESTS;
 import static com.netflix.tools.jig.module.maven.transport.TransportTrace.trace;
@@ -156,6 +162,8 @@ final class JdkTransporter extends AbstractTransporter {
     private final URI baseUri;
 
     private final HttpClient client;
+
+    private final boolean closeClient;
 
     private final Map<String, String> headers;
 
@@ -246,7 +254,17 @@ final class JdkTransporter extends AbstractTransporter {
         this.retryStatusCodes = getHttpServiceUnavailableCodes(session, repository);
 
         this.headers = headers;
-        this.client = createClient(session, repository, insecure);
+
+        JdkHttpClientState clientState = JdkHttpClientState.get(session);
+        ClientProfile clientProfile = clientProfile(session, repository, insecure);
+        boolean cacheState = ConfigUtils.getBoolean(session, DEFAULT_CACHE_STATE, CONFIG_PROP_CACHE_STATE);
+        if (cacheState) {
+            this.client = clientState.client(clientProfile, () -> createClient(session, repository, clientProfile, clientState.executor()));
+            this.closeClient = false;
+        } else {
+            this.client = createClient(session, repository, clientProfile, clientState.executor());
+            this.closeClient = true;
+        }
     }
 
     private URI resolve(TransportTask task) {
@@ -655,19 +673,40 @@ final class JdkTransporter extends AbstractTransporter {
 
     @Override
     protected void implClose() {
-        if (client != null) {
+        if (closeClient) {
             JdkTransporterCloser.closer(client).run();
         }
     }
 
-    private HttpClient createClient(RepositorySystemSession session, RemoteRepository repository, boolean insecure) throws RuntimeException {
-
-        HashMap<RequestorType, PasswordAuthentication> authentications = new HashMap<>();
+    private ClientProfile clientProfile(RepositorySystemSession session, RemoteRepository repository, boolean insecure) {
         SSLContext sslContext = null;
         try (AuthenticationContext repoAuthContext = AuthenticationContext.forRepository(session, repository)) {
             if (repoAuthContext != null) {
                 sslContext = repoAuthContext.get(AuthenticationContext.SSL_CONTEXT, SSLContext.class);
+            }
+        }
+        AuthenticationScope serverAuthentication = repository.getAuthentication() == null ? null : new AuthenticationScope(baseUri, repository.getAuthentication());
+        ProxyProfile proxy = repository.getProxy() == null ? null : new ProxyProfile(
+                repository.getProxy().getHost(),
+                repository.getProxy().getPort(),
+                repository.getProxy().getAuthentication());
+        return new ClientProfile(
+                Version.valueOf(ConfigUtils.getString(session, DEFAULT_HTTP_VERSION, CONFIG_PROP_HTTP_VERSION + "." + repository.getId(), CONFIG_PROP_HTTP_VERSION)),
+                connectTimeout,
+                sslContext,
+                insecure,
+                getHttpLocalAddress(session, repository),
+                serverAuthentication,
+                proxy);
+    }
 
+    private HttpClient createClient(RepositorySystemSession session, RemoteRepository repository, ClientProfile profile,
+            Executor executor)
+            throws RuntimeException {
+
+        HashMap<RequestorType, PasswordAuthentication> authentications = new HashMap<>();
+        try (AuthenticationContext repoAuthContext = AuthenticationContext.forRepository(session, repository)) {
+            if (repoAuthContext != null) {
                 String username = repoAuthContext.get(AuthenticationContext.USERNAME);
                 String password = repoAuthContext.get(AuthenticationContext.PASSWORD);
 
@@ -675,9 +714,10 @@ final class JdkTransporter extends AbstractTransporter {
             }
         }
 
+        SSLContext sslContext = profile.sslContext();
         if (sslContext == null) {
             try {
-                if (insecure) {
+                if (profile.insecure()) {
                     sslContext = SSLContext.getInstance("TLS");
                     X509ExtendedTrustManager tm = new X509ExtendedTrustManager() {
                         @Override
@@ -717,23 +757,24 @@ final class JdkTransporter extends AbstractTransporter {
         }
 
         HttpClient.Builder builder = HttpClient.newBuilder()
-                .version(Version.valueOf(ConfigUtils.getString(session, DEFAULT_HTTP_VERSION, CONFIG_PROP_HTTP_VERSION + "." + repository.getId(), CONFIG_PROP_HTTP_VERSION)))
+                .version(profile.version())
                 .followRedirects(Redirect.NORMAL)
-                .connectTimeout(Duration.ofMillis(connectTimeout))
-                .sslContext(sslContext);
+                .connectTimeout(Duration.ofMillis(profile.connectTimeout()))
+                .sslContext(sslContext)
+                .executor(executor);
 
-        if (insecure) {
+        if (profile.insecure()) {
             SSLParameters sslParameters = sslContext.getDefaultSSLParameters();
             sslParameters.setEndpointIdentificationAlgorithm(null);
             builder.sslParameters(sslParameters);
         }
 
-        setLocalAddress(builder, () -> getHttpLocalAddress(session, repository));
+        setLocalAddress(builder, profile::localAddress);
 
-        if (repository.getProxy() != null) {
+        if (profile.proxy() != null) {
             ProxySelector proxy = ProxySelector.of(
-                    new InetSocketAddress(repository.getProxy().getHost(),
-                            repository.getProxy().getPort()));
+                    new InetSocketAddress(profile.proxy().host(),
+                            profile.proxy().port()));
 
             builder.proxy(proxy);
             try (AuthenticationContext proxyAuthContext = AuthenticationContext.forProxy(session, repository)) {

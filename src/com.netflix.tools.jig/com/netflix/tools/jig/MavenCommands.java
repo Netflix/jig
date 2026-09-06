@@ -91,8 +91,8 @@ final class MavenCommands {
     private static void deployCentral(PrintWriter out, MavenDeployment deployment, Request request,
             ModuleRepositorySession session)
             throws IOException {
-        var portal = MavenCentralPortal.fromCredentials(System.getenv(), session.serverCredentials("central"));
-        try (var signer = MavenArtifactSigner.fromEnvironment(System.getenv(), Clock.systemUTC())) {
+        try (var portal = MavenCentralPortal.fromCredentials(System.getenv(), session.serverCredentials("central"));
+             var signer = MavenArtifactSigner.fromEnvironment(System.getenv(), Clock.systemUTC())) {
             Collection<Artifact> artifacts = signer.sign(deployment.artifacts());
             try (var bundle = MavenCentralBundle.create(artifacts)) {
                 Approval approval = request.manual() ? Approval.MANUAL : Approval.AUTOMATIC;

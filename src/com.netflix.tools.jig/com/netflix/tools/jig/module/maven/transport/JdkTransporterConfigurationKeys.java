@@ -10,8 +10,7 @@
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
  * the License.
- */
-/*
+ *//*
     * Licensed to the Apache Software Foundation (ASF) under one
     * or more contributor license agreements.  See the NOTICE file
     * distributed with this work for additional information
@@ -59,6 +58,19 @@ public final class JdkTransporterConfigurationKeys {
     public static final String CONFIG_PROP_HTTP_VERSION = CONFIG_PROPS_PREFIX + "httpVersion";
 
     public static final String DEFAULT_HTTP_VERSION = "HTTP_1_1";
+
+    /**
+     * Whether HTTP clients and their connection pools are shared by transporters
+     * in one repository session.
+     *
+     * @configurationSource
+     *     {@link RepositorySystemSession#getConfigProperties()}
+     * @configurationType {@link java.lang.Boolean}
+     * @configurationDefaultValue {@link #DEFAULT_CACHE_STATE}
+     */
+    public static final String CONFIG_PROP_CACHE_STATE = CONFIG_PROPS_PREFIX + "cacheState";
+
+    public static final boolean DEFAULT_CACHE_STATE = true;
 
     /**
      * The hard limit of maximum concurrent requests JDK transport can do. This

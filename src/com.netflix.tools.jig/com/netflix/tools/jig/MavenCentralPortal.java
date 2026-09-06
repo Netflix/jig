@@ -31,10 +31,12 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 /** Uploads deployment bundles to the Maven Central Publisher Portal. */
-public final class MavenCentralPortal {
+public final class MavenCentralPortal implements AutoCloseable {
     public enum Approval {
         AUTOMATIC,
         MANUAL
@@ -47,17 +49,22 @@ public final class MavenCentralPortal {
     private static final Pattern DEPLOYMENT_STATE = Pattern.compile("\\\"deploymentState\\\"\\s*:\\s*\\\"([A-Z_]+)\\\"");
     private static final Duration PUBLICATION_TIMEOUT = Duration.ofMinutes(30);
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(1);
+    private static final Executor VIRTUAL_THREADS = Thread::startVirtualThread;
 
     private final HttpClient client;
     private final URI upload;
     private final URI status;
     private final String authorization;
+    private final boolean closeClient;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    private MavenCentralPortal(HttpClient client, URI upload, String authorization) {
+    private MavenCentralPortal(HttpClient client, URI upload, String authorization,
+            boolean closeClient) {
         this.client = client;
         this.upload = upload;
         this.status = upload.resolve("status");
         this.authorization = authorization;
+        this.closeClient = closeClient;
     }
 
     public static MavenCentralPortal fromEnvironment(Map<String, String> environment) {
@@ -65,7 +72,11 @@ public final class MavenCentralPortal {
     }
 
     public static MavenCentralPortal fromCredentials(Map<String, String> environment, PasswordAuthentication configured) {
-        return fromCredentials(environment, configured, HttpClient.newHttpClient(), UPLOAD);
+        String authorization = authorization(environment, configured);
+        HttpClient client = HttpClient.newBuilder()
+                .executor(VIRTUAL_THREADS)
+                .build();
+        return new MavenCentralPortal(client, UPLOAD, authorization, true);
     }
 
     public static MavenCentralPortal fromEnvironment(Map<String, String> environment, HttpClient client, URI upload) {
@@ -74,6 +85,10 @@ public final class MavenCentralPortal {
 
     public static MavenCentralPortal fromCredentials(Map<String, String> environment, PasswordAuthentication configured, HttpClient client,
             URI upload) {
+        return new MavenCentralPortal(client, upload, authorization(environment, configured), false);
+    }
+
+    private static String authorization(Map<String, String> environment, PasswordAuthentication configured) {
         String username;
         String password;
         if (isSet(environment, USERNAME) || isSet(environment, PASSWORD)) {
@@ -86,7 +101,7 @@ public final class MavenCentralPortal {
             throw new IllegalArgumentException("Maven Central credentials are not configured in Maven settings server central or the environment");
         }
         String token = Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-        return new MavenCentralPortal(client, upload, "Bearer " + token);
+        return "Bearer " + token;
     }
 
     public String publish(Path bundle, String deploymentName, Approval approval) throws IOException {
@@ -192,6 +207,13 @@ public final class MavenCentralPortal {
         }
         String separator = upload.getQuery() == null ? "?" : "&";
         return URI.create(upload + separator + query);
+    }
+
+    @Override
+    public void close() {
+        if (closeClient && closed.compareAndSet(false, true)) {
+            client.close();
+        }
     }
 
     private static boolean isSet(Map<String, String> environment, String name) {

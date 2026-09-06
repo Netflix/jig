@@ -95,9 +95,12 @@ public class JigTest {
     void moduleProxyBindsToRandomPort(@TempDir Path localRepository) throws Exception {
         var trace = new StringWriter();
         try (var session = ModuleRepositorySession.create(localRepository, List.of());
-             var server = Jig.startModuleProxy(session, new InetSocketAddress("127.0.0.1", 0), new PrintWriter(trace, true))) {
+             var server = Jig.startModuleProxy(session, new InetSocketAddress("127.0.0.1", 0), new PrintWriter(trace, true));
+             var client = HttpClient.newBuilder()
+                     .executor(Thread::startVirtualThread)
+                     .build()) {
             assertTrue(server.uri().getPort() > 0);
-            var response = HttpClient.newHttpClient().send(HttpRequest.newBuilder(server.uri().resolve("missing"))
+            var response = client.send(HttpRequest.newBuilder(server.uri().resolve("missing"))
                     .GET()
                     .build(),
                     BodyHandlers.discarding());
@@ -262,12 +265,12 @@ public class JigTest {
     void releaseOptionUsesTheCurrentReleaseWithoutAModuleGraph() {
         String arguments = runJig("--resolve-options", "release");
 
-        assertEquals(
-                """
+        assertEquals("""
                 --release
                 %s
                 """
-                        .formatted(Runtime.version().feature()),
+                        .formatted(Runtime.version()
+                                .feature()),
                 arguments);
     }
 
@@ -1173,12 +1176,12 @@ public class JigTest {
     void multiReleaseOptionFallsBackToTheCurrentReleaseWithoutAModuleGraph() {
         String arguments = runJig("--resolve-options", "multi-release");
 
-        assertEquals(
-                """
+        assertEquals("""
                 --multi-release
                 %s
                 """
-                        .formatted(Runtime.version().feature()),
+                        .formatted(Runtime.version()
+                                .feature()),
                 arguments);
     }
 
