@@ -141,8 +141,8 @@ class ModuleRepositorySessionTest {
                   <servers>
                     <server>
                       <id>github</id>
-                      <username>${env.GITHUB_ACTOR}</username>
-                      <password>${env.GITHUB_TOKEN}</password>
+                      <username>${env.JIG_TEST_UNDEFINED_USERNAME}</username>
+                      <password>${env.JIG_TEST_UNDEFINED_PASSWORD}</password>
                     </server>
                   </servers>
                 </settings>
@@ -150,11 +150,11 @@ class ModuleRepositorySessionTest {
 
         var settings = ModuleRepositorySession.readSettings(directory.resolve("distribution-settings.xml"), userSettings);
 
-        assertEquals("${env.GITHUB_ACTOR}",
+        assertEquals("${env.JIG_TEST_UNDEFINED_USERNAME}",
                 settings.getServers()
                         .getFirst()
                         .getUsername());
-        assertEquals("${env.GITHUB_TOKEN}",
+        assertEquals("${env.JIG_TEST_UNDEFINED_PASSWORD}",
                 settings.getServers()
                         .getFirst()
                         .getPassword());
