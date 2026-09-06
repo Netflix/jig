@@ -36,6 +36,4 @@ jobs:
         uses: ./.github/actions/setup-ja
 
       - name: Test
-        env:
-          JDK_JAVA_OPTIONS: -Djdk.lang.processReaperUseDefaultStackSize=true
         run: ja test --all
