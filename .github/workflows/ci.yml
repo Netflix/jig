@@ -10,7 +10,7 @@
 # or implied. See the License for the specific language governing permissions and limitations under
 # the License.
 
-name: test
+name: Build
 
 on:
   push:
@@ -21,7 +21,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  build:
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
