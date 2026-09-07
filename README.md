@@ -20,7 +20,7 @@ Module descriptors provide dependencies, version requirements, compilation setti
 [`ja`](https://github.com/Netflix/ja) uses it for module resolution and assembly. Use it directly to bring the same module model to another tool or build.
 
 > [!IMPORTANT]
-> This tool is currently in preview. Please report problems in the [`ja` issue tracker](https://github.com/Netflix/ja/issues) and share feedback, questions, and suggestions in [Discussions](https://github.com/Netflix/ja/discussions).
+> This tool is currently in preview. We are collecting all preview feedback in the [`ja` repository](https://github.com/Netflix/ja): use [Issues](https://github.com/Netflix/ja/issues) to report problems and [Discussions](https://github.com/Netflix/ja/discussions) for feedback, questions, and suggestions.
 
 ## Installation
 
