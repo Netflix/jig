@@ -1,5 +1,8 @@
 # jig
 
+[![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
+![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
+
 The Java Module System resolves modules already available on a module path, but it does not select dependency versions or locate missing modules in artifact repositories. jig fills that gap.
 
 Given one or more root modules, it combines source modules, supplied binaries, and published artifacts into a consistent versioned dependency graph. Modules already on the supplied `--module-path` are retained, while missing modules are located in Maven repositories by Java module name and version.
@@ -17,7 +20,7 @@ Module descriptors provide dependencies, version requirements, compilation setti
 [`ja`](https://github.com/Netflix/ja) uses it for module resolution and assembly. Use it directly to bring the same module model to another tool or build.
 
 > [!IMPORTANT]
-> This project is currently in preview. We'd love to hear your feedback! Use Issues for bugs and Discussions for feedback and suggestions.
+> This tool is currently in preview. Please report problems in the [`ja` issue tracker](https://github.com/Netflix/ja/issues) and share feedback, questions, and suggestions in [Discussions](https://github.com/Netflix/ja/discussions).
 
 ## Installation
 
