@@ -58,6 +58,7 @@ module com.netflix.tools.jig {
     exports com.netflix.tools.jig.internal.org.eclipse.aether.artifact to com.netflix.tools.jig.test;
     exports com.netflix.tools.jig.internal.org.eclipse.aether.collection to com.netflix.tools.jig.test;
     exports com.netflix.tools.jig.internal.org.eclipse.aether.graph to com.netflix.tools.jig.test;
+    exports com.netflix.tools.jig.internal.org.eclipse.aether.internal.impl.synccontext.named to com.netflix.tools.jig.test;
     exports com.netflix.tools.jig.internal.org.eclipse.aether.repository to com.netflix.tools.jig.test;
     exports com.netflix.tools.jig.internal.org.eclipse.aether.resolution to com.netflix.tools.jig.test;
     exports com.netflix.tools.jig.internal.org.eclipse.aether.scope to com.netflix.tools.jig.test;

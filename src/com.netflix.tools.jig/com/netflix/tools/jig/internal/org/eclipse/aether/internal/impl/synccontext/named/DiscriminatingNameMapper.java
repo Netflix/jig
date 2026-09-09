@@ -74,11 +74,10 @@ public class DiscriminatingNameMapper implements NameMapper {
 
     private final NameMapper delegate;
 
-    private final String hostname;
+    private volatile String hostname;
 
     public DiscriminatingNameMapper(final NameMapper delegate) {
         this.delegate = requireNonNull(delegate);
-        this.hostname = getHostname();
     }
 
     @Override
@@ -97,7 +96,7 @@ public class DiscriminatingNameMapper implements NameMapper {
                 .collect(toList());
     }
 
-    private String getHostname() {
+    protected String getHostname() {
         try {
             return InetAddress.getLocalHost().getHostName();
         } catch (UnknownHostException e) {
@@ -106,11 +105,27 @@ public class DiscriminatingNameMapper implements NameMapper {
         }
     }
 
+    private String hostname() {
+        var resolved = hostname;
+        if (resolved != null) {
+            return resolved;
+        }
+        synchronized (this) {
+            if (hostname == null) {
+                hostname = getHostname();
+            }
+            return hostname;
+        }
+    }
+
     private String createDiscriminator(final RepositorySystemSession session) {
         String discriminator = ConfigUtils.getString(session, null, CONFIG_PROP_DISCRIMINATOR);
 
         if (discriminator == null || discriminator.isEmpty()) {
-            String hostname = ConfigUtils.getString(session, this.hostname, CONFIG_PROP_HOSTNAME);
+            String hostname = ConfigUtils.getString(session, null, CONFIG_PROP_HOSTNAME);
+            if (hostname == null) {
+                hostname = hostname();
+            }
             Path basedir = session.getLocalRepository().getBasePath();
             discriminator = hostname + ":" + basedir;
             try {
