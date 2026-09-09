@@ -17,7 +17,6 @@ package com.netflix.tools.jig;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Arrays;
@@ -49,15 +48,8 @@ final class MavenCommands {
         }
         try {
             Request request = parse(operation, Arrays.copyOfRange(arguments, 1, arguments.length));
-            Path consumerPom = request.consumerPom();
-            if (consumerPom == null && !operation.equals("install")) {
-                Path conventional = request.artifacts().resolve("consumer.pom");
-                if (Files.isRegularFile(conventional)) {
-                    consumerPom = conventional;
-                }
-            }
             try (var session = sessions.get();
-                 var deployment = MavenDeployment.create(request.artifacts(), consumerPom, session)) {
+                 var deployment = MavenDeployment.create(request.artifacts(), session)) {
                 if (operation.equals("install")) {
                     session.install(deployment.artifacts());
                 } else if (operation.equals("deploy")) {
@@ -77,9 +69,9 @@ final class MavenCommands {
     }
 
     private static void deploy(MavenDeployment deployment, Request request, ModuleRepositorySession session) throws IOException {
-        RemoteRepository repository = request.repository() == null ? deployment.deploymentRepository() : request.repository();
+        RemoteRepository repository = request.repository();
         if (repository == null) {
-            throw new IllegalArgumentException("Maven deploy requires --repository or distributionManagement");
+            throw new IllegalArgumentException("Maven deploy requires --repository");
         }
         MavenArtifactSigner signer = request.sign() ? MavenArtifactSigner.fromEnvironment(System.getenv(), Clock.systemUTC()) : null;
         try (signer) {
@@ -103,18 +95,13 @@ final class MavenCommands {
 
     private static Request parse(String operation, String[] arguments) {
         Path artifacts = null;
-        Path consumerPom = null;
         RemoteRepository repository = null;
         String name = null;
         boolean sign = false;
         boolean manual = false;
         for (int i = 0; i < arguments.length; i++) {
             String argument = arguments[i];
-            if (argument.equals("--merge-consumer-pom")) {
-                consumerPom = Path.of(requireArgument(arguments, ++i, argument));
-            } else if (argument.startsWith("--merge-consumer-pom=")) {
-                consumerPom = Path.of(argument.substring("--merge-consumer-pom=".length()));
-            } else if (argument.equals("--repository")) {
+            if (argument.equals("--repository")) {
                 repository = repository(requireArgument(arguments, ++i, argument));
             } else if (argument.startsWith("--repository=")) {
                 repository = repository(argument.substring("--repository=".length()));
@@ -137,9 +124,6 @@ final class MavenCommands {
         if (artifacts == null) {
             throw new IllegalArgumentException("Maven " + operation + " requires an artifact directory");
         }
-        if (operation.equals("install") && consumerPom != null) {
-            throw new IllegalArgumentException("--merge-consumer-pom applies only to Maven deployment");
-        }
         if (!operation.equals("deploy") && repository != null) {
             throw new IllegalArgumentException("--repository applies only to Maven deploy");
         }
@@ -152,7 +136,7 @@ final class MavenCommands {
         if (!operation.equals("deploy-central") && manual) {
             throw new IllegalArgumentException("--manual applies only to Maven deploy-central");
         }
-        return new Request(artifacts, consumerPom, repository, name, sign, manual);
+        return new Request(artifacts, repository, name, sign, manual);
     }
 
     private static String requireArgument(String[] arguments, int index, String option) {
@@ -222,12 +206,12 @@ final class MavenCommands {
 
     private static void printHelp(PrintWriter out) {
         out.println("Usage: jig maven install <artifact-directory>");
-        out.println("       jig maven deploy [--merge-consumer-pom <file>] [--repository <id=uri|path>] [--sign] <artifact-directory>");
-        out.println("       jig maven deploy-central [--merge-consumer-pom <file>] [--name <name>] [--manual] <artifact-directory>");
+        out.println("       jig maven deploy --repository <id=uri|path> [--sign] <artifact-directory>");
+        out.println("       jig maven deploy-central [--name <name>] [--manual] <artifact-directory>");
         out.println();
         out.println("Installs or deploys flat, module-named artifacts.");
     }
 
-    private record Request(Path artifacts, Path consumerPom, RemoteRepository repository,
-                           String name, boolean sign, boolean manual) {}
+    private record Request(Path artifacts, RemoteRepository repository, String name,
+                           boolean sign, boolean manual) {}
 }

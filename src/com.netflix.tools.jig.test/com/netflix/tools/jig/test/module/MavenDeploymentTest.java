@@ -36,9 +36,12 @@ import com.netflix.tools.jig.module.MavenDeployment;
 import com.netflix.tools.jig.module.ModuleRepositorySession;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MavenDeploymentTest {
@@ -52,45 +55,34 @@ class MavenDeploymentTest {
         Files.writeString(artifacts.resolve("com.example.application.jmod"), "jmod");
         Files.writeString(artifacts.resolve("com.example.application-linux-x86_64.jmod"), "linux jmod");
         Files.writeString(artifacts.resolve("com.example.application-sbom.json"), "sbom");
-        Files.writeString(directory.resolve("metadata-parent.xml"),
+        Files.writeString(artifacts.resolve("com.example.application.pom"),
                 """
                 <project xmlns="http://maven.apache.org/POM/4.0.0">
                   <modelVersion>4.0.0</modelVersion>
-                  <groupId>com.example.metadata</groupId>
-                  <artifactId>metadata-parent</artifactId>
-                  <version>1.0</version>
-                  <packaging>pom</packaging>
-                  <properties>
-                    <publication.description>Example module family</publication.description>
-                    <publication.url>https://example.com/modules</publication.url>
-                  </properties>
+                  <name>Example application</name>
+                  <description>Example application module</description>
+                  <url>https://example.com/application</url>
                   <licenses>
                     <license>
                       <name>Apache-2.0</name>
                       <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
                     </license>
                   </licenses>
-                </project>
-                """);
-        Path consumerPom = Files.writeString(artifacts.resolve("consumer.pom"),
-                """
-                <project xmlns="http://maven.apache.org/POM/4.0.0">
-                  <modelVersion>4.0.0</modelVersion>
-                  <parent>
-                    <groupId>com.example.metadata</groupId>
-                    <artifactId>metadata-parent</artifactId>
-                    <version>1.0</version>
-                    <relativePath>../metadata-parent.xml</relativePath>
-                  </parent>
-                  <artifactId>module-metadata</artifactId>
-                  <name>${project.groupId}:${project.artifactId}</name>
-                  <description>${publication.description}</description>
-                  <url>${publication.url}</url>
+                  <developers>
+                    <developer>
+                      <name>Example developer</name>
+                    </developer>
+                  </developers>
+                  <scm>
+                    <connection>scm:git:https://example.com/application.git</connection>
+                    <developerConnection>scm:git:ssh://git@example.com/application.git</developerConnection>
+                    <url>https://example.com/application</url>
+                  </scm>
                 </project>
                 """);
 
         try (var session = ModuleRepositorySession.create(directory.resolve("session"), List.of());
-             var deployment = MavenDeployment.create(artifacts, consumerPom, session)) {
+             var deployment = MavenDeployment.create(artifacts, session)) {
             Map<String, Artifact> deployed = deployment.artifacts().stream()
                     .collect(Collectors.toMap(artifact -> artifact.getExtension() + ":" + artifact.getClassifier(), artifact -> artifact));
             assertEquals(Set.of("pom:",
@@ -107,9 +99,9 @@ class MavenDeploymentTest {
             assertEquals("com.example.application", pom.getArtifactId());
             assertEquals("1.2.3", pom.getVersion());
             Model model = readModel(pom.getPath());
-            assertEquals("com.example:com.example.application", model.getName());
-            assertEquals("Example module family", model.getDescription());
-            assertEquals("https://example.com/modules", model.getUrl());
+            assertEquals("Example application", model.getName());
+            assertEquals("Example application module", model.getDescription());
+            assertEquals("https://example.com/application", model.getUrl());
             assertEquals("Apache-2.0",
                     model.getLicenses()
                          .getFirst()
@@ -121,11 +113,36 @@ class MavenDeploymentTest {
     }
 
     @Test
+    void appliesPublicationMetadataToTheMatchingModule(@TempDir Path directory) throws Exception {
+        Path artifacts = Files.createDirectory(directory.resolve("artifacts"));
+        createModuleJar(directory, "com.example.api", artifacts.resolve("com.example.api.jar"));
+        createModuleJar(directory, "com.example.runtime", artifacts.resolve("com.example.runtime.jar"));
+        Files.writeString(artifacts.resolve("com.example.api.pom"), metadata("Example API"));
+        Files.writeString(artifacts.resolve("com.example.runtime.pom"), metadata("Example runtime"));
+
+        try (var session = ModuleRepositorySession.create(directory.resolve("session"), List.of());
+             var deployment = MavenDeployment.create(artifacts, session)) {
+            Artifact apiPom = deployment.artifacts().stream()
+                    .filter(artifact -> artifact.getArtifactId().equals("com.example.api"))
+                    .filter(artifact -> artifact.getExtension().equals("pom"))
+                    .findFirst()
+                    .orElseThrow();
+            Artifact runtimePom = deployment.artifacts().stream()
+                    .filter(artifact -> artifact.getArtifactId().equals("com.example.runtime"))
+                    .filter(artifact -> artifact.getExtension().equals("pom"))
+                    .findFirst()
+                    .orElseThrow();
+            assertEquals("Example API", readModel(apiPom.getPath()).getName());
+            assertEquals("Example runtime", readModel(runtimePom.getPath()).getName());
+        }
+    }
+
+    @Test
     void deploysToARepositorySelectedByPath(@TempDir Path directory) throws Exception {
         Path artifacts = Files.createDirectory(directory.resolve("artifacts"));
         createModuleJar(directory, artifacts.resolve("com.example.application.jar"));
         Files.writeString(artifacts.resolve("com.example.application-linux-x86_64.jmod"), "linux jmod");
-        Files.writeString(artifacts.resolve("consumer.pom"),
+        Files.writeString(artifacts.resolve("com.example.application.pom"),
                 """
                 <project xmlns="http://maven.apache.org/POM/4.0.0">
                   <modelVersion>4.0.0</modelVersion>
@@ -148,25 +165,27 @@ class MavenDeploymentTest {
         assertEquals("Example application", readModel(pom).getName());
     }
 
-    @Test
-    void rejectsConsumerPomForInstall(@TempDir Path directory) throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"parent", "groupId", "artifactId", "version", "packaging", "dependencies",
+            "properties", "distributionManagement", "build", "profiles"})
+    void rejectsElementsOutsideThePublicationMetadataAllowList(String element, @TempDir Path directory)
+            throws Exception {
         Path artifacts = Files.createDirectory(directory.resolve("artifacts"));
         createModuleJar(directory, artifacts.resolve("com.example.application.jar"));
-        var output = new StringWriter();
-        var errors = new StringWriter();
+        Files.writeString(artifacts.resolve("com.example.application.pom"),
+                """
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <%s/>
+                </project>
+                """.formatted(element));
 
-        int result = new Jig().run(
-                new PrintWriter(output, true),
-                new PrintWriter(errors, true),
-                "maven",
-                "install",
-                "--merge-consumer-pom",
-                directory.resolve("consumer.pom").toString(),
-                artifacts.toString());
-
-        assertEquals(2, result);
-        assertTrue(errors.toString().contains("--merge-consumer-pom applies only to Maven deployment"),
-                errors.toString());
+        try (var session = ModuleRepositorySession.create(directory.resolve("session"), List.of())) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> MavenDeployment.create(artifacts, session));
+            assertEquals("com.example.application.pom contains unsupported element " + element,
+                    failure.getMessage());
+        }
     }
 
     @Test
@@ -176,7 +195,7 @@ class MavenDeploymentTest {
         Path sessionDirectory = directory.resolve("session");
 
         try (var session = ModuleRepositorySession.create(sessionDirectory, List.of());
-             var deployment = MavenDeployment.create(artifacts, null, session)) {
+             var deployment = MavenDeployment.create(artifacts, session)) {
             session.install(deployment.artifacts());
         }
 
@@ -188,7 +207,7 @@ class MavenDeploymentTest {
 
         Path repository = directory.resolve("deployed");
         try (var session = ModuleRepositorySession.create(directory.resolve("deployment-session"), List.of());
-             var deployment = MavenDeployment.create(artifacts, null, session)) {
+             var deployment = MavenDeployment.create(artifacts, session)) {
             session.deploy(deployment.artifacts(), new Builder("test", "default", repository.toUri()
                     .toString())
                     .build());
@@ -200,9 +219,13 @@ class MavenDeploymentTest {
     }
 
     private static void createModuleJar(Path directory, Path jar) throws Exception {
-        Path source = Files.createDirectories(directory.resolve("source"));
-        Files.writeString(source.resolve("module-info.java"), "module com.example.application {}\n");
-        Path classes = Files.createDirectories(directory.resolve("classes"));
+        createModuleJar(directory, "com.example.application", jar);
+    }
+
+    private static void createModuleJar(Path directory, String moduleName, Path jar) throws Exception {
+        Path source = Files.createDirectories(directory.resolve("source").resolve(moduleName));
+        Files.writeString(source.resolve("module-info.java"), "module " + moduleName + " {}\n");
+        Path classes = Files.createDirectories(directory.resolve("classes").resolve(moduleName));
         int result = ToolProvider.getSystemJavaCompiler().run(
                 null,
                 null,
@@ -224,13 +247,22 @@ class MavenDeploymentTest {
             }
         }
         assertEquals(
-                "com.example.application",
+                moduleName,
                 ModuleFinder.of(jar)
                         .findAll()
                         .iterator()
                         .next()
                         .descriptor()
                         .name());
+    }
+
+    private static String metadata(String name) {
+        return """
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <name>%s</name>
+                </project>
+                """.formatted(name);
     }
 
     private static Model readModel(Path path) throws Exception {

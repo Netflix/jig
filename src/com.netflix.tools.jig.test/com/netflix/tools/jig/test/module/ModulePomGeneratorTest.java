@@ -102,6 +102,8 @@ class ModulePomGeneratorTest {
         assertEquals("${project.basedir}", resource.getDirectory());
         assertTrue(resource.getExcludes()
                            .contains("module-info.pom"));
+        assertTrue(resource.getExcludes()
+                           .contains("*.pom"));
         var libraryDependency = applicationPom.getDependencies().stream()
                 .filter(dependency -> dependency.getArtifactId().equals("com.example.library"))
                 .findFirst()

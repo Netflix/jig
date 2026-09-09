@@ -85,7 +85,7 @@ public final class ModulePomGenerator {
                 .resources(List.of(Resource.newBuilder()
                         .directory("${project.basedir}")
                         .filtering("false")
-                        .excludes(List.of("**/*.java", "module-info.hash", "module-info.pom", "pom.xml", "target/**"))
+                        .excludes(List.of("**/*.java", "module-info.hash", "module-info.pom", "pom.xml", "*.pom", "target/**"))
                         .build()))
                 .build();
         var properties = new LinkedHashMap<String, String>();
