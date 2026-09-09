@@ -36,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JigToolProviderTest {
     private static final String COMPILE_OPTIONS = "module-path,processor-module-path,upgrade-module-path,module-source-path," + "module=list,module-version,patch-module,release,enable-preview," + "add-exports";
 
-    private final ToolProvider jig = ToolProvider.findFirst("jig").orElseThrow();
+    private final ToolProvider jig = new Jig();
 
     @Test
     void describesOptionsAndCompletesArguments() {
