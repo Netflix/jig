@@ -40,7 +40,7 @@ jobs:
         run: echo "BUILD_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Set up ja
-        uses: Netflix/ja/.github/actions/setup-ja@v0.17.7
+        uses: Netflix/ja/.github/actions/setup-ja@v0.17.8
 
       - name: Test source with bootstrap ja
         run: ja test --all
@@ -54,7 +54,7 @@ jobs:
         run: cp src/*/*.pom "$RUNNER_TEMP/artifacts/"
 
       - name: Link assembled jig development JDK
-        uses: Netflix/ja/.github/actions/link-assembled-tool@v0.17.7
+        uses: Netflix/ja/.github/actions/link-assembled-tool@v0.17.8
         with:
           artifacts: ${{ runner.temp }}/artifacts
           module: com.netflix.tools.jig
