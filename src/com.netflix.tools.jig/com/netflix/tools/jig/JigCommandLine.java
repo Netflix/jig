@@ -97,6 +97,7 @@ final class JigCommandLine {
                     listModuleVersions,
                     verbose,
                     help)
+            .version(Jig.class.getModule())
             .completion()
             .build();
     private final ToolOption listen = option("--listen", "HOST:PORT", "Address on which to listen");
@@ -140,6 +141,10 @@ final class JigCommandLine {
 
     int isSupportedOption(String option) {
         return commandLine.isSupportedOption(option);
+    }
+
+    OptionalInt runVersion(PrintWriter out, String... arguments) {
+        return commandLine.runVersion("jig", out, arguments);
     }
 
     OptionalInt runCompletion(PrintWriter out, PrintWriter err, String... arguments) {
