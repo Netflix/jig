@@ -49,6 +49,7 @@ class JigToolProviderTest {
         assertEquals(1, checker.isSupportedOption("--module-path"));
         assertEquals(1, checker.isSupportedOption("-m"));
         assertEquals(0, checker.isSupportedOption("--prefer-jmod"));
+        assertEquals(0, checker.isSupportedOption("--version"));
         assertEquals(-1, checker.isSupportedOption("--does-not-exist"));
 
         int result = tool.run(new PrintWriter(out, true), new PrintWriter(err, true), "__complete", "--target-platform",
@@ -270,6 +271,24 @@ class JigToolProviderTest {
     }
 
     @Test
+    void printsVersion() {
+        ToolProvider tool = new Jig();
+        var out = new StringWriter();
+        var err = new StringWriter();
+        String version = tool.getClass()
+                .getModule()
+                .getDescriptor()
+                .rawVersion()
+                .orElse("dev");
+
+        int result = tool.run(new PrintWriter(out), new PrintWriter(err), "--version");
+
+        assertEquals(0, result, err.toString());
+        assertEquals("jig " + version + "\n", out.toString());
+        assertEquals("", err.toString());
+    }
+
+    @Test
     void rejectsAnUnknownOption() {
         var out = new StringWriter();
         var err = new StringWriter();
@@ -315,6 +334,8 @@ class JigToolProviderTest {
             assertTrue(out.toString().contains("-w, --write-argfile"),
                     out.toString());
             assertTrue(out.toString().contains("--compile-time"),
+                    out.toString());
+            assertTrue(out.toString().contains("--version"),
                     out.toString());
             assertTrue(out.toString()
                           .contains("""

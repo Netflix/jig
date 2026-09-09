@@ -129,6 +129,10 @@ public class Jig implements ToolProvider, OptionChecker {
 
     @Override
     public int run(PrintWriter out, PrintWriter err, String... args) {
+        var version = COMMAND_LINE.runVersion(out, args);
+        if (version.isPresent()) {
+            return version.orElseThrow();
+        }
         var completion = COMMAND_LINE.runCompletion(out, err, args);
         if (completion.isPresent()) {
             return completion.orElseThrow();
@@ -1274,6 +1278,7 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("                  List available versions for a module.");
         out.println("  --verbose       Show resolution and compiler tracing.");
         out.println("  -h, --help      Print this help message.");
+        out.println("  --version       Print version information.");
         out.println();
         out.println("Resolve options:");
         out.println();
