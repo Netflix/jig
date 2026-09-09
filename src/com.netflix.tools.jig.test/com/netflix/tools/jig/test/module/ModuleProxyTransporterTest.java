@@ -403,6 +403,40 @@ class ModuleProxyTransporterTest {
         }
     }
 
+    @Test
+    void explicitModuleRetainsMavenDependencyThatShadowsSystemModule() throws Exception {
+        Path upstreamRepository = tempDir.resolve("upstream-system-override");
+        installSystemOverrideArtifact(upstreamRepository);
+        installExplicitDependency(upstreamRepository, "logging", "java.logging");
+        var upstream = fileRepository(upstreamRepository);
+        var locationFactory = new ModuleLocationTransporterFactory();
+
+        try (var upstreamContext = TestRepositorySystem.create(tempDir.resolve("proxy-local-system-override"),
+                List.of(upstream), Map.of(ModuleLocationTransporterFactory.NAME, locationFactory))) {
+            locationFactory.configure(upstreamContext.system(), upstreamContext.session(), upstreamContext.repositories(),
+                    upstreamContext.repositories());
+            var factory = new ModuleProxyTransporterFactory();
+            factory.configure(upstreamContext.system(), upstreamContext.session(), upstreamContext.session(),
+                    upstreamContext.repositories());
+            try (var context = TestRepositorySystem.create(tempDir.resolve("local-system-override"), List.of(),
+                         Map.of(ModuleProxyTransporterFactory.NAME, factory))) {
+                var modules = new Builder("jig-modules", "default", "jig+module://virtual").build();
+                var canonicalPom = new DefaultArtifact("com.example", "com.example.systemoverride", "pom", "1.0");
+                var result = context.system()
+                        .resolveArtifact(context.session(), new ArtifactRequest(canonicalPom, List.of(modules), null));
+
+                Model model;
+                try (var input = Files.newInputStream(result.getArtifact()
+                        .getPath())) {
+                    model = new MavenStaxReader().read(input);
+                }
+                assertEquals(List.of("java.logging"), model.getDependencies().stream()
+                        .map(com.netflix.tools.jig.internal.org.apache.maven.api.model.Dependency::getArtifactId)
+                        .toList());
+            }
+        }
+    }
+
     private static void assertChecksumResources(Context upstream, UpstreamArtifact artifact) throws Exception {
         var transporter = new ModuleProxyTransporter(upstream.system(), upstream.session(), upstream.session(),
                 upstream.repositories());
@@ -650,6 +684,39 @@ class ModuleProxyTransporterTest {
                 .replace("</dependencies>", dependency + "</dependencies>"));
     }
 
+    private static void installSystemOverrideArtifact(Path repository) throws IOException {
+        Path versionDir = repository.resolve("com/example/systemoverride/1.0");
+        Files.createDirectories(versionDir);
+        var attribute = ModuleAttribute.of(ModuleDesc.of("com.example.systemoverride"),
+                builder -> {
+                    builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null);
+                    builder.requires(ModuleDesc.of("java.logging"), Set.of(), "1.0");
+                });
+        byte[] moduleInfo = ClassFile.of().buildModule(attribute,
+                builder -> builder.withVersion(ClassFileFormatVersion.RELEASE_9.major(), 0));
+        try (var out = new ZipOutputStream(Files.newOutputStream(versionDir.resolve("systemoverride-1.0.jar")))) {
+            out.putNextEntry(new ZipEntry("module-info.class"));
+            out.write(moduleInfo);
+            out.closeEntry();
+        }
+        Files.writeString(versionDir.resolve("systemoverride-1.0.pom"),
+                """
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <groupId>com.example</groupId>
+                  <artifactId>systemoverride</artifactId>
+                  <version>1.0</version>
+                  <dependencies>
+                    <dependency>
+                      <groupId>com.example</groupId>
+                      <artifactId>logging</artifactId>
+                      <version>1.0</version>
+                    </dependency>
+                  </dependencies>
+                </project>
+                """);
+    }
+
     private static void installExplicitArtifact(Path repository) throws IOException {
         Path versionDir = repository.resolve("com/example/explicit/1.0");
         Files.createDirectories(versionDir);
@@ -709,9 +776,13 @@ class ModuleProxyTransporterTest {
     }
 
     private static void installExplicitDependency(Path repository, String artifactId) throws IOException {
+        installExplicitDependency(repository, artifactId, "com.example." + artifactId);
+    }
+
+    private static void installExplicitDependency(Path repository, String artifactId, String moduleName) throws IOException {
         Path versionDir = repository.resolve("com/example/" + artifactId + "/1.0");
         Files.createDirectories(versionDir);
-        var attribute = ModuleAttribute.of(ModuleDesc.of("com.example." + artifactId),
+        var attribute = ModuleAttribute.of(ModuleDesc.of(moduleName),
                 builder -> builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null));
         byte[] moduleInfo = ClassFile.of().buildModule(attribute, builder -> builder.withVersion(ClassFileFormatVersion.RELEASE_9.major(), 0));
         try (var out = new ZipOutputStream(Files.newOutputStream(versionDir.resolve(artifactId + "-1.0.jar")))) {

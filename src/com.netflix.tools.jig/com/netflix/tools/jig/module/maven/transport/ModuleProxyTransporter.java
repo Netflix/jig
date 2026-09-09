@@ -527,13 +527,13 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         var dependencies = new ArrayList<Dependency>();
         for (var requirement : descriptor.requires()) {
             var moduleName = requirement.name();
-            if (ModuleFinder.ofSystem()
+            var selectedDependency = selected.get(moduleName);
+            if (selectedDependency == null && ModuleFinder.ofSystem()
                     .find(moduleName)
                     .isPresent()) {
                 continue;
             }
 
-            var selectedDependency = selected.get(moduleName);
             String version = selectedDependency == null ? requirement.compiledVersion()
                     .map(Object::toString)
                     .orElse(null)
