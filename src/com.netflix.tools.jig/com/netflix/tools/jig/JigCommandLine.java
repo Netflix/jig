@@ -105,7 +105,6 @@ final class JigCommandLine {
             .option(listen)
             .operand("HOST:PORT", "Address on which to listen", Cardinality.ZERO_OR_ONE)
             .build();
-    private final ToolOption mergeConsumerPom = option("--merge-consumer-pom", "PATH", "Merge metadata into consumer POMs");
     private final ToolOption repository = option("--repository", "ID=URI|PATH", "Maven deployment repository");
     private final ToolOption sign = flag("--sign", "Create detached OpenPGP signatures");
     private final ToolOption deploymentName = option("--name", "NAME", "Maven Central deployment name");
@@ -116,12 +115,12 @@ final class JigCommandLine {
             .build();
     private final CommandLine mavenDeployCommandLine = CommandLine.builder()
             .description("Deploy flat module artifacts to a Maven repository")
-            .options(mergeConsumerPom, repository, sign)
+            .options(repository, sign)
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenDeployCentralCommandLine = CommandLine.builder()
             .description("Deploy flat module artifacts to Maven Central")
-            .options(mergeConsumerPom, deploymentName, manualApproval)
+            .options(deploymentName, manualApproval)
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenCommandLine = CommandLine.builder()

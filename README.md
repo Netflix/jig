@@ -301,7 +301,8 @@ The artifact directory is deliberately not a Maven repository layout:
 <output>/artifacts/
 |-- com.example.app.jar
 |-- com.example.app-sources.jar
-`-- com.example.app-javadoc.jar
+|-- com.example.app-javadoc.jar
+`-- com.example.app.pom
 ```
 
 The version in `module-info.class` is authoritative. Module descriptors provide the names, versions, and dependencies used to generate consumer POMs and create the Maven repository layout:
@@ -313,7 +314,7 @@ jig maven deploy --repository releases=https://repository.example/releases "$art
 jig maven deploy-central "$artifacts"
 ```
 
-Put shared consumer metadata in `<artifact-directory>/consumer.pom`. Use `--merge-consumer-pom <file>` to select a different file.
+A matching `<module-name>.pom` can supply the project name, description, URL, licenses, developers, and SCM metadata required when publishing that module to Maven Central.
 
 ## Source modules
 
@@ -533,11 +534,21 @@ The command also writes `.mvn/maven.config`, configuring the resolved module rep
 
 ### Install and deploy
 
-`jig maven install` and `jig maven deploy` consume a directory of flat, module-named artifacts. The main JAR must contain `module-info.class` with a module version. Optional resources use `-sources.jar`, `-javadoc.jar`, and `.jmod` suffixes.
+`jig maven install` and `jig maven deploy` consume a directory of flat, module-named artifacts. The main JAR must contain `module-info.class` with a module version. Optional resources use `-sources.jar`, `-javadoc.jar`, and `.jmod` suffixes. Publication metadata uses a `.pom` file with the same basename as the main JAR.
 
 A consumer POM is generated from each module descriptor. Non-system `requires` directives become Maven dependencies. A plain `requires static` becomes an optional compile dependency. Because Maven cannot express a dependency that is transitive at compile time but optional at runtime, `requires static transitive` remains non-optional so downstream compilation continues to work. `jig` still uses the module descriptor to omit either static form from runtime resolution. Dependencies outside the artifact directory are mapped back to their original Maven coordinates through the same module-location contract used for resolution.
 
-For deployment, `<artifact-directory>/consumer.pom`, or the file selected by `--merge-consumer-pom`, contributes descriptive metadata and `distributionManagement` to each consumer POM. Parent inheritance and property interpolation are supported. Module coordinates, versions, packaging, and dependencies remain authoritative. Deploy accepts a repository path, an explicit `--repository <id=uri>`, or the consumer POM's release repository. A repository path is published through its normalized `file:` URI.
+For each module, `<artifact-directory>/<module-name>.pom` contributes additional metadata. It supports these top-level elements:
+
+- `modelVersion`, which must be `4.0.0`
+- `name`
+- `description`
+- `url`
+- `licenses`
+- `developers`
+- `scm`
+
+Coordinates, versions, packaging, and dependencies come from the module descriptor and artifact assembly. Deploy requires `--repository <id=uri|path>`; a repository path is published through its normalized `file:` URI.
 
 Add `--sign` to deploy detached OpenPGP signatures with every artifact. Signing reads `MAVEN_GPG_KEY`, with optional `MAVEN_GPG_KEY_FINGERPRINT` and `MAVEN_GPG_PASSPHRASE`, from the environment.
 
@@ -613,8 +624,8 @@ When no distribution settings file is present, Maven Central and the user settin
 ```text
 jig [options]
 jig maven install <artifact-directory>
-jig maven deploy [--merge-consumer-pom <file>] [--repository <id=uri|path>] [--sign] <artifact-directory>
-jig maven deploy-central [--merge-consumer-pom <file>] [--name <name>] [--manual] <artifact-directory>
+jig maven deploy --repository <id=uri|path> [--sign] <artifact-directory>
+jig maven deploy-central [--name <name>] [--manual] <artifact-directory>
 jig maven serve [--listen <host:port>]
 ```
 

@@ -33,8 +33,6 @@ import com.netflix.tools.jig.internal.org.apache.maven.api.model.Model;
 import com.netflix.tools.jig.internal.org.apache.maven.model.v4.MavenStaxWriter;
 import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.Artifact;
 import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.DefaultArtifact;
-import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
-import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository.Builder;
 
 /** A Maven deployment derived from flat, module-named artifacts. */
 public final class MavenDeployment implements AutoCloseable {
@@ -42,15 +40,13 @@ public final class MavenDeployment implements AutoCloseable {
 
     private final Path temporaryDirectory;
     private final List<Artifact> artifacts;
-    private final RemoteRepository deploymentRepository;
 
-    private MavenDeployment(Path temporaryDirectory, List<Artifact> artifacts, RemoteRepository deploymentRepository) {
+    private MavenDeployment(Path temporaryDirectory, List<Artifact> artifacts) {
         this.temporaryDirectory = temporaryDirectory;
         this.artifacts = List.copyOf(artifacts);
-        this.deploymentRepository = deploymentRepository;
     }
 
-    public static MavenDeployment create(Path artifactDirectory, Path consumerPom, ModuleRepositorySession session) throws IOException {
+    public static MavenDeployment create(Path artifactDirectory, ModuleRepositorySession session) throws IOException {
         Path directory = artifactDirectory.toAbsolutePath().normalize();
         if (!Files.isDirectory(directory)) {
             throw new IllegalArgumentException("Maven artifact directory is not a directory: " + directory);
@@ -65,7 +61,6 @@ public final class MavenDeployment implements AutoCloseable {
         try {
             var artifacts = new ArrayList<Artifact>();
             var modules = new LinkedHashMap<String, ModuleDescriptor>();
-            Model deploymentMetadata = null;
             for (Path mainArtifact : mainArtifacts) {
                 ModuleDescriptor descriptor = descriptor(mainArtifact);
                 Path expected = directory.resolve(descriptor.name() + ".jar");
@@ -82,11 +77,11 @@ public final class MavenDeployment implements AutoCloseable {
                 ModuleDescriptor descriptor = entry.getValue();
                 String version = descriptor.rawVersion().orElseThrow(() -> new IllegalArgumentException("Module has no version: " + moduleName));
                 Artifact coordinate = ArtifactCandidates.locationCoordinate(moduleName, version);
-                Model merged = consumerPom == null ? null : EffectivePomReader.read(consumerPom, coordinate, session);
-                if (deploymentMetadata == null) {
-                    deploymentMetadata = merged;
-                }
-                Model consumer = consumerPom(merged, coordinate, descriptor, modules, session);
+                Path modulePom = directory.resolve(moduleName + ".pom");
+                Model metadata = Files.isRegularFile(modulePom)
+                        ? PublicationMetadataReader.read(modulePom)
+                        : null;
+                Model consumer = consumerPom(metadata, coordinate, descriptor, modules, session);
                 Path generatedPom = temporaryDirectory.resolve(moduleName + ".pom");
                 writePom(consumer, generatedPom);
                 artifacts.add(artifact(coordinate, "pom", "", generatedPom));
@@ -97,9 +92,8 @@ public final class MavenDeployment implements AutoCloseable {
             if (artifacts.stream().anyMatch(artifact -> artifact.isSnapshot() != snapshot)) {
                 throw new IllegalArgumentException("Maven artifact directory mixes release and snapshot versions");
             }
-            RemoteRepository repository = deploymentRepository(deploymentMetadata, snapshot);
             complete = true;
-            return new MavenDeployment(temporaryDirectory, artifacts, repository);
+            return new MavenDeployment(temporaryDirectory, artifacts);
         } finally {
             if (!complete) {
                 deleteTree(temporaryDirectory);
@@ -109,10 +103,6 @@ public final class MavenDeployment implements AutoCloseable {
 
     public Collection<Artifact> artifacts() {
         return artifacts;
-    }
-
-    public RemoteRepository deploymentRepository() {
-        return deploymentRepository;
     }
 
     @Override
@@ -147,6 +137,7 @@ public final class MavenDeployment implements AutoCloseable {
             String moduleName, Set<String> moduleNames) throws IOException {
         try (var entries = Files.list(directory)) {
             return entries.filter(Files::isRegularFile)
+                          .filter(path -> !path.getFileName().toString().equals(moduleName + ".pom"))
                           .filter(path -> belongsToModule(path.getFileName().toString(), moduleName, moduleNames))
                           .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                           .map(path -> moduleArtifact(coordinate, moduleName, path))
@@ -254,18 +245,9 @@ public final class MavenDeployment implements AutoCloseable {
             builder.name(merged.getName())
                    .description(merged.getDescription())
                    .url(merged.getUrl())
-                   .inceptionYear(merged.getInceptionYear())
-                   .organization(merged.getOrganization())
                    .licenses(merged.getLicenses())
                    .developers(merged.getDevelopers())
-                   .contributors(merged.getContributors())
-                   .mailingLists(merged.getMailingLists())
-                   .prerequisites(merged.getPrerequisites())
-                   .scm(merged.getScm())
-                   .issueManagement(merged.getIssueManagement())
-                   .ciManagement(merged.getCiManagement())
-                   .distributionManagement(merged.getDistributionManagement())
-                   .properties(merged.getProperties());
+                   .scm(merged.getScm());
         }
         return builder.namespaceUri("http://maven.apache.org/POM/4.0.0")
                       .modelVersion("4.0.0")
@@ -296,20 +278,6 @@ public final class MavenDeployment implements AutoCloseable {
         } catch (XMLStreamException e) {
             throw new IOException("Failed to write " + path, e);
         }
-    }
-
-    private static RemoteRepository deploymentRepository(Model model, boolean snapshot) {
-        if (model == null || model.getDistributionManagement() == null) {
-            return null;
-        }
-        var repository = snapshot ? model.getDistributionManagement().getSnapshotRepository() : model.getDistributionManagement().getRepository();
-        if (repository == null && snapshot) {
-            repository = model.getDistributionManagement().getRepository();
-        }
-        if (repository == null || repository.getId() == null || repository.getUrl() == null) {
-            return null;
-        }
-        return new Builder(repository.getId(), "default", repository.getUrl()).build();
     }
 
     private static void deleteTree(Path root) throws IOException {
