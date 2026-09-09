@@ -3,21 +3,29 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
 ![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
 
-The Java Module System resolves modules already available on a module path, but it does not select dependency versions or locate missing modules in artifact repositories. jig fills that gap.
+`jig` makes the Java module descriptor the source of truth for resolving, compiling, and publishing Java modules.
 
-Given one or more root modules, it combines source modules, supplied binaries, and published artifacts into a consistent versioned dependency graph. Modules already on the supplied `--module-path` are retained, while missing modules are located in Maven repositories by Java module name and version.
+The module system gives modules stable identities and explicit dependencies, but does not select dependency versions or locate missing modules in artifact repositories. Version requirements sit naturally beside `requires` directives:
 
-The resolved graph can be expressed as standard arguments for `javac`, `java`, `javadoc`, `jlink`, and other JDK tools. The caller chooses which options to generate.
+```java
+module com.example.application {
+    requires com.example.framework; // @1.2.3
+}
+```
 
-Module descriptors provide dependencies, version requirements, compilation settings, entry points, and runtime access requirements.
+From that descriptor, source modules, local binaries, and published Maven artifacts are resolved into one consistent module graph. Mapping between Java module names and Maven coordinates allows existing Maven artifacts to be consumed as modules without changing how they are published.
 
-- Resolve source and published modules together
-- Select a consistent version of each dependency
-- Compile source modules incrementally, using `--patch-module` where supported
-- Generate arguments for compilation, launch, analysis, documentation, and linking
-- Locate Maven artifacts by Java module name and version
+The same bridge works in reverse. Module artifacts can be installed locally, deployed to a Maven repository, or published to Maven Central as ordinary Maven components, with consumer POMs generated from their module descriptors.
 
-[`ja`](https://github.com/Netflix/ja) uses it for module resolution and assembly. Use it directly to bring the same module model to another tool or build.
+The resolved graph can also drive incremental compilation and produce standard arguments for `javac`, `java`, `javadoc`, `jlink`, and other JDK tools. There is no separate project model to keep in agreement.
+
+- Resolve Maven artifacts by Java module name and version
+- Combine source, local, and published modules in one graph
+- Compile source modules incrementally and reuse work across tools
+- Install or deploy modules with generated Maven consumer metadata
+- Produce standard module-system arguments for existing JDK tools
+
+[`ja`](https://github.com/Netflix/ja) uses it for module resolution, compilation, assembly, and publishing. Use it directly to bring the same module model to another tool or build.
 
 > [!IMPORTANT]
 > This tool is currently in preview. We are collecting all preview feedback in the [`ja` repository](https://github.com/Netflix/ja): use [Issues](https://github.com/Netflix/ja/issues) to report problems and [Discussions](https://github.com/Netflix/ja/discussions) for feedback, questions, and suggestions.
