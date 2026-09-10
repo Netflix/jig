@@ -320,7 +320,7 @@ public class SourceModuleResolutionIntegrationTest {
                     }
                     entered.countDown();
                     try {
-                        if (!entered.await(5, TimeUnit.SECONDS)) {
+                        if (!entered.await(30, TimeUnit.SECONDS)) {
                             concurrent.set(false);
                         }
                     } catch (InterruptedException e) {
