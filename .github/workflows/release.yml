@@ -42,26 +42,10 @@ jobs:
       - name: Set up ja
         uses: Netflix/ja/.github/actions/setup-ja@v0.17.11
 
-      - name: Test source with bootstrap ja
+      - name: Test
         run: ja test --all
 
-      - name: Assemble jig distribution
-        run: >-
-          ja assemble --jmod --target-platform linux-x86_64
-          --module-version "$BUILD_VERSION" "$RUNNER_TEMP/artifacts"
-
-      - name: Link assembled jig development JDK
-        uses: Netflix/ja/.github/actions/link-assembled-tool@v0.17.11
-        with:
-          artifacts: ${{ runner.temp }}/artifacts
-          module: com.netflix.tools.jig
-
-      - name: Test source with built jig
-        run: |
-          test "$(command -v jig)" = "$JAVA_HOME/bin/jig"
-          ja test --all
-
-      - name: Publish to Maven Central with built jig
+      - name: Publish to Maven Central
         run: ja maven deploy-central --module-version "$BUILD_VERSION"
         env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.ORG_SONATYPE_USERNAME }}
