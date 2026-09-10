@@ -40,7 +40,7 @@ jobs:
         run: echo "BUILD_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Set up ja
-        uses: Netflix/ja/.github/actions/setup-ja@v0.17.8
+        uses: Netflix/ja/.github/actions/setup-ja@v0.17.11
 
       - name: Test source with bootstrap ja
         run: ja test --all
@@ -50,11 +50,8 @@ jobs:
           ja assemble --jmod --target-platform linux-x86_64
           --module-version "$BUILD_VERSION" "$RUNNER_TEMP/artifacts"
 
-      - name: Add module publication metadata
-        run: cp src/*/*.pom "$RUNNER_TEMP/artifacts/"
-
       - name: Link assembled jig development JDK
-        uses: Netflix/ja/.github/actions/link-assembled-tool@v0.17.8
+        uses: Netflix/ja/.github/actions/link-assembled-tool@v0.17.11
         with:
           artifacts: ${{ runner.temp }}/artifacts
           module: com.netflix.tools.jig
@@ -65,7 +62,7 @@ jobs:
           ja test --all
 
       - name: Publish to Maven Central with built jig
-        run: jig maven deploy-central "$RUNNER_TEMP/artifacts"
+        run: ja maven deploy-central --module-version "$BUILD_VERSION"
         env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.ORG_SONATYPE_USERNAME }}
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.ORG_SONATYPE_PASSWORD }}
