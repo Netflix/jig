@@ -69,6 +69,7 @@ import com.netflix.module.ModuleRuntimeAccessOptions.PackageAccess;
 public final class ModuleRuntimeAccessAttribute extends CustomAttribute<ModuleRuntimeAccessAttribute> {
 
     static final String ATTRIBUTE_NAME = "com.netflix.module.ModuleRuntimeAccess";
+    private static final String LEGACY_ATTRIBUTE_NAME = "ModuleRuntimeAccess";
 
     private final ModuleRuntimeAccessOptions options;
 
@@ -209,7 +210,8 @@ public final class ModuleRuntimeAccessAttribute extends CustomAttribute<ModuleRu
      * @return the attribute mapper option
      */
     public static AttributeMapperOption mapperOption() {
-        return AttributeMapperOption.of(name -> name.equalsString(ATTRIBUTE_NAME) ? MAPPER : null);
+        return AttributeMapperOption.of(name -> name.equalsString(ATTRIBUTE_NAME)
+                || name.equalsString(LEGACY_ATTRIBUTE_NAME) ? MAPPER : null);
     }
 
     private static int readCount(ClassReader reader, int offset, int end) {
