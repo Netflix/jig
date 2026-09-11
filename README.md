@@ -7,15 +7,18 @@
 
 The same module model extends to Maven repositories. Existing artifacts can be located by Java module name, while modules can be installed or published with consumer POMs generated from their descriptors. A repository proxy makes the module namespace available to ordinary Maven clients.
 
-The module system gives modules stable identities and explicit dependencies, but does not select dependency versions. `jig` records version requirements beside `requires` directives:
+Source modules are provided metadata that isn't supported by the source module descriptor with Javadoc tags and version comments on `requires` directives:
 
 ```java
+/**
+ * @mainClass com.example.application.Main
+ /
 module com.example.application {
     requires com.example.framework; // @1.2.3
 }
 ```
 
-[`ja`](https://github.com/Netflix/ja) uses `jig` for module resolution, compilation, assembly and publishing. Use it directly to bring the same module model to another tool or build.
+[`ja`](https://github.com/Netflix/ja) uses `jig` for module resolution, compilation, assembly and publishing. Prefer `ja` for module development tasks, using `jig` directly to bring the same module model to another tool or build.
 
 > [!IMPORTANT]
 > This tool is currently in preview. We are collecting all preview feedback in the [`ja` repository](https://github.com/Netflix/ja): use [Issues](https://github.com/Netflix/ja/issues) to report problems and [Discussions](https://github.com/Netflix/ja/discussions) for feedback, questions, and suggestions.
