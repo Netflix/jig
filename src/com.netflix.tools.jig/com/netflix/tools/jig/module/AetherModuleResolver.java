@@ -187,7 +187,7 @@ public final class AetherModuleResolver {
     public Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules,
                           boolean includeSources) {
         try {
-            var graph = ModuleGraph.resolve(rootRequirements(roots, fixedModules), includeStatics, this::load);
+            var graph = ModuleGraph.resolve(rootRequirements(roots, fixedModules, includeStatics), includeStatics, this::load);
             var references = new LinkedHashMap<String, ModuleReference>();
             var modules = new LinkedHashMap<String, Module>();
             graph.forEach(module -> {
@@ -263,7 +263,8 @@ public final class AetherModuleResolver {
         }
     }
 
-    private static List<Requirement> rootRequirements(Collection<ModuleDescriptor> roots, Set<String> fixedModules) {
+    private static List<Requirement> rootRequirements(Collection<ModuleDescriptor> roots, Set<String> fixedModules,
+            boolean includeStatics) {
         var declaredVersions = new LinkedHashMap<String, String>();
         for (var root : roots) {
             for (var requirement : root.requires()) {
@@ -281,13 +282,16 @@ public final class AetherModuleResolver {
                         || !systemModule && fixedModules.contains(name)) {
                     continue;
                 }
+                var staticPhase = requirement.modifiers().contains(Modifier.STATIC);
+                if (staticPhase && !includeStatics) {
+                    continue;
+                }
                 var version = requirement.compiledVersion()
                         .map(Object::toString)
                         .orElseGet(() -> declaredVersions.get(name));
                 if (version == null) {
                     throw new FindException("No version declared for module " + name);
                 }
-                var staticPhase = requirement.modifiers().contains(Modifier.STATIC);
                 requirements.add(new Requirement(name, version, staticPhase));
             }
         }

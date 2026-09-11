@@ -194,7 +194,6 @@ public class Jig implements ToolProvider, OptionChecker {
             }
         } else if (options.rootNames().isEmpty() && options.moduleForm != ModuleForm.MAIN && options.requiresModuleGraph()) {
             err.println("jig: no root module specified; use --module, --add-modules, or --add-requires");
-            printHelp(out);
             return 2;
         }
 
