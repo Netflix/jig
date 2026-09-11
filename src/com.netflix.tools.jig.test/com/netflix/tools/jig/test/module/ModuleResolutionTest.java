@@ -208,6 +208,40 @@ class ModuleResolutionTest {
     }
 
     @Test
+    void ignoresUnversionedStaticBinaryRequirementAtRuntime(@TempDir Path directory) throws Exception {
+        Path application = explicitJar(directory, "com.example.application",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, ModuleFinder.of(application),
+                    List.of("com.example.application"), false, false);
+
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.application")
+                    .isPresent());
+            assertTrue(resolution.finder()
+                    .find("com.example.annotations")
+                    .isEmpty());
+        }
+    }
+
+    @Test
+    void requiresVersionForStaticBinaryRequirementAtCompileTime(@TempDir Path directory) throws Exception {
+        Path application = explicitJar(directory, "com.example.application",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var failure = assertThrows(FindException.class,
+                    () -> ModuleResolution.resolve(repository, ModuleFinder.of(application),
+                            List.of("com.example.application"), true, false));
+
+            assertEquals("No version declared for module com.example.annotations", failure.getMessage());
+        }
+    }
+
+    @Test
     void resolvesSystemModuleOutsideApplicationBootRoots(@TempDir Path directory) throws Exception {
         String systemModule = ModuleFinder.ofSystem().findAll().stream()
                 .map(reference -> reference.descriptor().name())
@@ -853,11 +887,16 @@ class ModuleResolutionTest {
     }
 
     private static Path explicitJar(Path directory, String moduleName, Map<String, String> requirements) throws Exception {
+        return explicitJar(directory, moduleName, requirements, Set.of());
+    }
+
+    private static Path explicitJar(Path directory, String moduleName, Map<String, String> requirements,
+            Set<AccessFlag> requirementFlags) throws Exception {
         Path jar = directory.resolve(moduleName + "-explicit-1.0.jar");
         byte[] descriptor = ClassFile.of().buildModule(ModuleAttribute.of(ModuleDesc.of(moduleName),
                 builder -> {
                     builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null);
-                    requirements.forEach((name, version) -> builder.requires(ModuleDesc.of(name), Set.of(), version));
+                    requirements.forEach((name, version) -> builder.requires(ModuleDesc.of(name), requirementFlags, version));
                 }));
         try (var output = new JarOutputStream(Files.newOutputStream(jar))) {
             output.putNextEntry(new ZipEntry("module-info.class"));

@@ -2413,7 +2413,7 @@ public class JigTest {
     }
 
     @Test
-    @DisplayName("no root module prints a diagnostic and usage and exits 2")
+    @DisplayName("no root module prints a diagnostic and exits 2")
     void noRootModuleUsage() {
         var jig = new Jig();
         var out = new StringWriter();
@@ -2424,7 +2424,6 @@ public class JigTest {
         assertEquals(
                 "jig: no root module specified; use --module, --add-modules, or --add-requires\n",
                 err.toString());
-        assertTrue(out.toString()
-                      .contains("Usage: jig"));
+        assertEquals("", out.toString());
     }
 }
