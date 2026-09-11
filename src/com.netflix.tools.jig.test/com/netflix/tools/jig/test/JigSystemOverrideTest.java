@@ -25,6 +25,7 @@ import java.util.spi.ToolProvider;
 
 import com.netflix.module.ModuleRuntimeAccess;
 import com.netflix.module.ModuleRuntimeAccessOptions;
+import com.netflix.tools.jig.Jig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -36,7 +37,7 @@ class JigSystemOverrideTest {
     private static final String LAUNCH_OPTIONS = "module-path,upgrade-module-path,patch-module,add-modules,module=main," + "enable-preview,enable-native-access,enable-final-field-mutation," + "add-opens,add-exports";
     private static final String RUNTIME_OPTIONS = "module-path,upgrade-module-path,patch-module,add-modules," + "enable-preview,enable-native-access,enable-final-field-mutation," + "add-opens,add-exports";
 
-    private final ToolProvider jig = ToolProvider.findFirst("jig").orElseThrow();
+    private final ToolProvider jig = new Jig();
 
     @Test
     void describeUsesTheUpgradeModulePath(@TempDir Path directory) throws Exception {

@@ -84,7 +84,7 @@ class ModuleRuntimeAccessAttributeTest {
         var model = ClassFile.of(ModuleRuntimeAccessAttribute.mapperOption()).parse(bytes);
         var attribute = model.findAttribute(ModuleRuntimeAccessAttribute.mapper()).orElseThrow();
 
-        assertEquals("ModuleRuntimeAccess", attribute.attributeName()
+        assertEquals("com.netflix.module.ModuleRuntimeAccess", attribute.attributeName()
                 .stringValue());
         assertEquals(options, attribute.options());
         assertTrue(model.isModuleInfo());
