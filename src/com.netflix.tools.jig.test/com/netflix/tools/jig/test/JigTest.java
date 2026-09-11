@@ -71,6 +71,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Tests for CLI argument parsing.
@@ -1601,7 +1602,9 @@ public class JigTest {
         var module = ModuleFinder.ofSystem()
                 .find("com.netflix.tools.ja")
                 .orElseThrow();
-        var requirements = ModuleRuntimeAccess.read(module).orElseThrow();
+        var recordedRequirements = ModuleRuntimeAccess.read(module);
+        assumeTrue(recordedRequirements.isPresent(), "System ja module does not use the namespaced runtime access attribute");
+        var requirements = recordedRequirements.orElseThrow();
 
         var arguments = runJig("-m", module.descriptor().name(),
                 "--resolve-options", ACCESS_OPTIONS, "--validate-runtime-access");

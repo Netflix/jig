@@ -68,7 +68,7 @@ import com.netflix.module.ModuleRuntimeAccessOptions.PackageAccess;
  */
 public final class ModuleRuntimeAccessAttribute extends CustomAttribute<ModuleRuntimeAccessAttribute> {
 
-    static final String ATTRIBUTE_NAME = "ModuleRuntimeAccess";
+    static final String ATTRIBUTE_NAME = "com.netflix.module.ModuleRuntimeAccess";
 
     private final ModuleRuntimeAccessOptions options;
 

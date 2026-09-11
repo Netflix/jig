@@ -372,7 +372,7 @@ module com.example.framework {
 }
 ```
 
-When `jig` compiles a source module, it stores these requirements in the generated `module-info.class` as a `ModuleRuntimeAccess` attribute. The requirements therefore travel with published JARs and JMODs.
+When `jig` compiles a source module, it stores these requirements in the generated `module-info.class` as a `com.netflix.module.ModuleRuntimeAccess` attribute. The requirements therefore travel with published JARs and JMODs.
 
 Recording a requirement does not authorize it. A published dependency cannot authorize its own access. Authorization must come from an explicitly selected source root or the corresponding command-line option, and is not inherited through `requires` directives. System modules are trusted, so requirements recorded in the current runtime image are applied automatically.
 
