@@ -14,12 +14,14 @@
 
 package com.netflix.module.test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.attribute.ModuleAttribute;
 import java.lang.constant.ModuleDesc;
 import java.lang.module.ModuleFinder;
 import java.lang.reflect.AccessFlag;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -91,6 +93,23 @@ class ModuleRuntimeAccessAttributeTest {
     }
 
     @Test
+    void readsLegacyUnnamespacedAttributes(@TempDir Path modules) throws Exception {
+        var options = ModuleRuntimeAccessOptions.newBuilder()
+                .addExports("jdk.compiler", "com.sun.tools.javac.tree", "com.example.application")
+                .build();
+        var declaration = ModuleAttribute.of(ModuleDesc.of("com.example.application"),
+                builder -> builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null));
+        var namespaced = ClassFile.of().buildModule(declaration,
+                builder -> builder.with(ModuleRuntimeAccessAttribute.of(options)));
+        var legacy = renameUtf8(namespaced, "com.netflix.module.ModuleRuntimeAccess", "ModuleRuntimeAccess");
+        var module = Files.createDirectories(modules.resolve("com.example.application"));
+        Files.write(module.resolve("module-info.class"), legacy);
+        var reference = ModuleFinder.of(modules).find("com.example.application").orElseThrow();
+
+        assertEquals(options, ModuleRuntimeAccess.read(reference).orElseThrow());
+    }
+
+    @Test
     void launchRequiresIndependentAuthorizationForReachableAttributes(@TempDir Path modules) throws Exception {
         var library = Files.createDirectories(modules.resolve("com.example.library"));
         var libraryDeclaration = ModuleAttribute.of(ModuleDesc.of("com.example.library"),
@@ -140,6 +159,35 @@ class ModuleRuntimeAccessAttributeTest {
                 ClassFile.of().buildModule(declaration));
 
         assertDoesNotThrow(() -> ModuleRuntimeAccess.checkLaunch(withSystemRuntimeAccess("--module-path", modules.toString(), "--module", "com.example.application/example.Main")));
+    }
+
+    private static byte[] renameUtf8(byte[] classFile, String current, String replacement) {
+        byte[] currentBytes = current.getBytes(StandardCharsets.UTF_8);
+        byte[] replacementBytes = replacement.getBytes(StandardCharsets.UTF_8);
+        for (int index = 2; index <= classFile.length - currentBytes.length; index++) {
+            if ((classFile[index - 2] & 0xff) != currentBytes.length >>> 8
+                    || (classFile[index - 1] & 0xff) != (currentBytes.length & 0xff)) {
+                continue;
+            }
+            boolean matches = true;
+            for (int offset = 0; offset < currentBytes.length; offset++) {
+                if (classFile[index + offset] != currentBytes[offset]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (!matches) {
+                continue;
+            }
+            var renamed = new ByteArrayOutputStream(classFile.length - currentBytes.length + replacementBytes.length);
+            renamed.writeBytes(java.util.Arrays.copyOfRange(classFile, 0, index - 2));
+            renamed.write(replacementBytes.length >>> 8);
+            renamed.write(replacementBytes.length & 0xff);
+            renamed.writeBytes(replacementBytes);
+            renamed.writeBytes(java.util.Arrays.copyOfRange(classFile, index + currentBytes.length, classFile.length));
+            return renamed.toByteArray();
+        }
+        throw new IllegalArgumentException("Class file does not contain " + current);
     }
 
     private static List<String> withSystemRuntimeAccess(String... arguments) throws IOException {
