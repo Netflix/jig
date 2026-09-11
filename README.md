@@ -3,9 +3,11 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
 ![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
 
-`jig` makes the Java module descriptor the source of truth for resolving, compiling, and publishing Java modules.
+`jig` provides module version resolution, compilation and assembly for the Java Module System. It resolves source modules, local binaries and artifacts published to Maven repositories together, then produces the standard module system arguments accepted by `javac`, `java`, `javadoc`, `jlink` and other tools. The same module graph and compilation work can be reused across tools.
 
-The module system gives modules stable identities and explicit dependencies, but does not select dependency versions or locate missing modules in artifact repositories. Version requirements sit naturally beside `requires` directives:
+The same module model extends to Maven repositories. Existing artifacts can be located by Java module name, while modules can be installed or published with consumer POMs generated from their descriptors. A repository proxy makes the module namespace available to ordinary Maven clients.
+
+The module system gives modules stable identities and explicit dependencies, but does not select dependency versions. `jig` records version requirements beside `requires` directives:
 
 ```java
 module com.example.application {
@@ -13,19 +15,7 @@ module com.example.application {
 }
 ```
 
-From that descriptor, source modules, local binaries, and published Maven artifacts are resolved into one consistent module graph. Mapping between Java module names and Maven coordinates allows existing Maven artifacts to be consumed as modules without changing how they are published.
-
-The same bridge works in reverse. Module artifacts can be installed locally, deployed to a Maven repository, or published to Maven Central as ordinary Maven components, with consumer POMs generated from their module descriptors.
-
-The resolved graph can also drive incremental compilation and produce standard arguments for `javac`, `java`, `javadoc`, `jlink`, and other JDK tools. There is no separate project model to keep in agreement.
-
-- Resolve Maven artifacts by Java module name and version
-- Combine source, local, and published modules in one graph
-- Compile source modules incrementally and reuse work across tools
-- Install or deploy modules with generated Maven consumer metadata
-- Produce standard module-system arguments for existing JDK tools
-
-[`ja`](https://github.com/Netflix/ja) uses it for module resolution, compilation, assembly, and publishing. Use it directly to bring the same module model to another tool or build.
+[`ja`](https://github.com/Netflix/ja) uses `jig` for module resolution, compilation, assembly and publishing. Use it directly to bring the same module model to another tool or build.
 
 > [!IMPORTANT]
 > This tool is currently in preview. We are collecting all preview feedback in the [`ja` repository](https://github.com/Netflix/ja): use [Issues](https://github.com/Netflix/ja/issues) to report problems and [Discussions](https://github.com/Netflix/ja/discussions) for feedback, questions, and suggestions.
