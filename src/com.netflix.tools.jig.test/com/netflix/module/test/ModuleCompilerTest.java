@@ -174,6 +174,57 @@ class ModuleCompilerTest {
     }
 
     @Test
+    void recordsSelectedDependencyVersionInStandardModuleAttribute(@TempDir Path directory) throws Exception {
+        Path dependencySource = Files.createDirectories(directory.resolve("dependency-source"));
+        Files.writeString(dependencySource.resolve("module-info.java"), "module dependency.mod {}\n");
+        Path dependency = directory.resolve("dependency");
+        assertEquals(0, ToolProvider.getSystemJavaCompiler().run(
+                null,
+                null,
+                null,
+                "--release",
+                "25",
+                "--module-version",
+                "2.0",
+                "-d",
+                dependency.toString(),
+                dependencySource.resolve("module-info.java").toString()));
+        ModuleHash dependencyHash = ModuleHash.moduleSha256(ModuleFinder.of(dependency)
+                .find("dependency.mod")
+                .orElseThrow());
+
+        Path source = Files.createDirectories(directory.resolve("source"));
+        Files.writeString(source.resolve("module-info.java"),
+                "module example.mod { requires dependency.mod; }\n");
+        var runtimeAccess = ModuleRuntimeAccessOptions.newBuilder()
+                .enableNativeAccess("example.mod")
+                .build();
+        var configuration = configuration(
+                "example.mod",
+                25,
+                false,
+                null,
+                runtimeAccess,
+                Map.of("dependency.mod", dependencyHash),
+                Map.of(),
+                (moduleName, location) -> dependency);
+        var compiler = new ModuleCompiler(directory.resolve("outputs"));
+
+        var result = compiler.compile(source, configuration, 25);
+        Path module = compiler.write(result, directory.resolve("module"));
+        var descriptor = ModuleFinder.of(module)
+                .find("example.mod")
+                .orElseThrow()
+                .descriptor();
+        var requirement = descriptor.requires().stream()
+                .filter(candidate -> candidate.name().equals("dependency.mod"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(Version.parse("2.0"), requirement.compiledVersion().orElseThrow());
+    }
+
+    @Test
     void resolvesModulePathAfterParsingWhenCompilationIsRequired(@TempDir Path directory) throws Exception {
         var dependencySource = directory.resolve("dependency-source/dependency.mod");
         Files.createDirectories(dependencySource.resolve("dependency"));
