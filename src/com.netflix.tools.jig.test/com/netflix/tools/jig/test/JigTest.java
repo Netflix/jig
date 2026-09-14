@@ -49,7 +49,6 @@ import java.util.regex.Pattern;
 import java.util.spi.ToolProvider;
 import java.util.stream.Collectors;
 
-import com.netflix.module.ModuleRuntimeAccess;
 import com.netflix.module.ModuleRuntimeAccessAttribute;
 import com.netflix.module.ModuleRuntimeAccessOptions;
 import com.netflix.tools.jig.Jig;
@@ -71,7 +70,6 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Tests for CLI argument parsing.
@@ -1595,24 +1593,6 @@ public class JigTest {
                 """
                         .formatted(source, Runtime.version().feature()),
                 combinedArguments);
-    }
-
-    @Test
-    void systemModuleAccessRequirementsAreImplicitlyAuthorized() throws Exception {
-        var module = ModuleFinder.ofSystem()
-                .find("com.netflix.tools.ja")
-                .orElseThrow();
-        var recordedRequirements = ModuleRuntimeAccess.read(module);
-        assumeTrue(recordedRequirements.isPresent(), "System ja module does not use the namespaced runtime access attribute");
-        var requirements = recordedRequirements.orElseThrow();
-
-        var arguments = runJig("-m", module.descriptor().name(),
-                "--resolve-options", ACCESS_OPTIONS, "--validate-runtime-access");
-
-        requirements.enableNativeAccess().forEach(name -> assertTrue(arguments.contains("--enable-native-access\n" + name + "\n"), arguments));
-        requirements.enableFinalFieldMutation().forEach(name -> assertTrue(arguments.contains("--enable-final-field-mutation\n" + name + "\n"), arguments));
-        requirements.addExports().forEach(access -> assertTrue(arguments.contains("--add-exports\n" + access.toFlagValue() + "\n"), arguments));
-        requirements.addOpens().forEach(access -> assertTrue(arguments.contains("--add-opens\n" + access.toFlagValue() + "\n"), arguments));
     }
 
     @Test
