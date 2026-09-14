@@ -47,7 +47,13 @@ import com.netflix.module.ModuleInfoHash.Builder;
 import com.netflix.module.ModuleInfoHash.Coordinate;
 import com.netflix.tools.jig.module.AetherModuleResolver.Result;
 
-/** A resolved module graph and its optional source JARs. */
+/**
+ * A resolved module graph and its optional source JARs.
+ *
+ * <p>The configuration has an empty parent. Required system modules are resolved explicitly from
+ * {@link ModuleFinder#ofSystem()}, so modules in the running application's boot configuration cannot
+ * satisfy target-graph requirements implicitly.
+ */
 public record ModuleResolution(
         ModuleFinder finder,
         Configuration configuration,
@@ -149,16 +155,6 @@ public record ModuleResolution(
             boolean includeSources,
             IntegrityMode integrityMode) {
         ModuleFinder systemModules = ModuleFinder.ofSystem();
-        Configuration parent = ModuleLayer.boot().configuration();
-        ModuleFinder unresolvedSystemModules = finder(
-                systemModules.findAll().stream()
-                        .filter(reference -> parent.findModule(reference.descriptor().name()).isEmpty())
-                        .collect(
-                                Collectors.toMap(
-                                        reference -> reference.descriptor().name(),
-                                        reference -> reference,
-                                        (left, right) -> left,
-                                        LinkedHashMap::new)));
         var allAvailable = modules(fixedModules, systemModules);
         var sourceModules = selectedSourceModules(allAvailable, requestedRoots, includeStatics);
         ModuleFinder selectedFixedModules = finder(
@@ -184,29 +180,10 @@ public record ModuleResolution(
         repositoryModules.versions().keySet().stream()
                 .filter(name -> systemModules.find(name).isPresent())
                 .forEach(systemOverrides::add);
-        var modules = modules(selectedFixedModules, repositoryModules.finder(), unresolvedSystemModules);
+        var modules = modules(selectedFixedModules, repositoryModules.finder(), systemModules);
         ModuleFinder resolved = finder(modules);
-        ModuleFinder configurationFinder = finder(modules(selectedFixedModules, repositoryModules.finder(), unresolvedSystemModules));
-        List<Configuration> configurationParents = List.of(parent);
-        Set<ModuleReference> inheritedModules = Set.of();
-        boolean hasAutomaticModules = configurationFinder.findAll().stream()
-                .anyMatch(reference -> reference.descriptor().isAutomatic());
-        if (!systemOverrides.isEmpty() && hasAutomaticModules) {
-            // Automatic modules read the parent and child versions of an overridden module.
-            // Rebase inherited references so the selected reference replaces the parent one.
-            inheritedModules = parent.modules().stream()
-                    .map(ResolvedModule::reference)
-                    .collect(Collectors.toUnmodifiableSet());
-            ModuleFinder inheritedFinder = finder(
-                    inheritedModules.stream().collect(
-                            Collectors.toMap(
-                                    reference -> reference.descriptor().name(),
-                                    reference -> reference,
-                                    (left, right) -> left,
-                                    LinkedHashMap::new)));
-            configurationFinder = finder(modules(selectedFixedModules, repositoryModules.finder(), inheritedFinder, unresolvedSystemModules));
-            configurationParents = List.of(Configuration.empty());
-        }
+        ModuleFinder configurationFinder = finder(modules);
+        List<Configuration> configurationParents = List.of(Configuration.empty());
         var runtimeRoots = new LinkedHashSet<>(requestedRoots);
         runtimeRoots.addAll(addedRequires.keySet());
         runtimeRoots.addAll(repositoryModules.supplementalRoots());
@@ -221,7 +198,7 @@ public record ModuleResolution(
                 selectedSources.put(module.name(), source);
             }
         }
-        var hashes = resolvedHashes(configuration, selectedSources, inheritedModules, repositoryModules.finder(),
+        var hashes = resolvedHashes(configuration, selectedSources, Set.of(), repositoryModules.finder(),
                 repositoryModules.hashes(), repositoryModules.versions(), integrityMode);
         var sources = new LinkedHashMap<>(repositoryModules.sources());
         if (includeSources) {

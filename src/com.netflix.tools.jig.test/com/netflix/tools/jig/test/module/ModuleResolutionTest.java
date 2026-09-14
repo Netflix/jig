@@ -281,6 +281,25 @@ class ModuleResolutionTest {
     }
 
     @Test
+    void resolvedConfigurationDoesNotInheritTheRunningApplicationGraph(@TempDir Path directory) throws Exception {
+        String runningModule = getClass().getModule().getName();
+        assumeTrue(runningModule != null);
+
+        var resolution = ModuleResolution.resolve(
+                (roots, includeStatics, fixedModules, includeSources) ->
+                        new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                                Map.of(), Map.of()),
+                ModuleFinder.of(automaticJar(directory, "com.example.application")),
+                List.of("com.example.application"),
+                false,
+                false);
+
+        assertEquals(List.of(Configuration.empty()), resolution.configuration().parents());
+        assertFalse(resolution.configuration().findModule(runningModule).isPresent());
+        assertTrue(resolution.configuration().findModule("java.base").isPresent());
+    }
+
+    @Test
     void fixedVersionedSystemRequirementsDoNotReachTheRepository(@TempDir Path directory) throws Exception {
         String systemVersion = ModuleFinder.ofSystem()
                 .find("java.logging")
