@@ -14,18 +14,27 @@
 
 package com.netflix.module.test;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.attribute.ModuleAttribute;
 import java.lang.constant.ModuleDesc;
 import java.lang.module.ModuleFinder;
+import java.lang.module.ModuleReader;
+import java.lang.module.ModuleReference;
 import java.lang.reflect.AccessFlag;
 import java.lang.reflect.ClassFileFormatVersion;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.jar.JarOutputStream;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 
 import com.netflix.module.ModuleHash;
@@ -62,6 +71,17 @@ class ModuleHashTest {
 
         assertEquals("module:sha256:" + DIGEST + "\n", Files.readString(path));
         assertEquals(hash, ModuleHash.read(path));
+    }
+
+    @Test
+    void matchesTheJdk15ModuleHashesAlgorithm() throws IOException {
+        var content = Map.of(
+                "z.txt", "omega".getBytes(StandardCharsets.UTF_8),
+                "a.txt", "alpha".getBytes(StandardCharsets.UTF_8));
+        var reference = reference(content, List.of("z.txt", "a.txt"));
+
+        assertEquals("9e4fd4f37ce47909767eba554a897251a6f5c3a2c56c29434524abfde9167550",
+                ModuleHash.moduleSha256(reference).digest());
     }
 
     @Test
@@ -127,6 +147,35 @@ class ModuleHashTest {
         assertEquals(expected, ModuleHash.patchSha256(second));
         Files.writeString(second.resolve("p/Api.class"), "changed");
         assertNotEquals(expected, ModuleHash.patchSha256(second));
+    }
+
+    private static ModuleReference reference(Map<String, byte[]> content, List<String> resources) {
+        var descriptor = java.lang.module.ModuleDescriptor.newModule("com.example.module").build();
+        return new ModuleReference(descriptor, null) {
+            @Override
+            public ModuleReader open() {
+                return new ModuleReader() {
+                    @Override
+                    public Optional<URI> find(String name) {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public Optional<InputStream> open(String name) {
+                        return Optional.ofNullable(content.get(name))
+                                .map(ByteArrayInputStream::new);
+                    }
+
+                    @Override
+                    public Stream<String> list() {
+                        return resources.stream();
+                    }
+
+                    @Override
+                    public void close() {}
+                };
+            }
+        };
     }
 
     private static Path moduleJar(Path jar, boolean includeDirectories) throws IOException {
