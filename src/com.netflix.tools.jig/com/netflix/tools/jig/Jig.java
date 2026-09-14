@@ -72,6 +72,7 @@ import com.netflix.tools.jig.module.SourceModule;
 import com.netflix.tools.jig.module.SourceModuleFinder;
 import com.netflix.tools.jig.module.SourceModuleReference;
 import com.netflix.tools.jig.module.Trace;
+import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
 import com.netflix.tools.jig.module.maven.transport.TransporterHttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
@@ -320,6 +321,7 @@ public class Jig implements ToolProvider, OptionChecker {
             SourceModulePaths sourceModules,
             Map<String, Path> sourcePaths)
             throws IOException {
+        validateSelectedArtifacts(resolution, repositoryPaths);
         boolean describe = resolveOptions.contains("describe-module");
         Set<String> excludedModules = options.compileTime ? Set.of() : staticOnly;
         var config = resolution.configuration();
@@ -577,6 +579,34 @@ public class Jig implements ToolProvider, OptionChecker {
                     .collect(Collectors.joining(", "));
             String subject = repositoryOverrides.size() == 1 ? "Resolved module " + modules + " shadows a system module" : "Resolved modules " + modules + " shadow system modules";
             throw new IllegalArgumentException(subject + ", but the requested options do not support " + "--upgrade-module-path");
+        }
+    }
+
+    private static void validateSelectedArtifacts(ModuleResolution resolution, RepositoryPaths repositoryPaths) {
+        var selectedArtifacts = new LinkedHashMap<>(repositoryPaths.targetJars());
+        selectedArtifacts.putAll(repositoryPaths.jmods());
+        for (var entry : selectedArtifacts.entrySet()) {
+            String moduleName = entry.getKey();
+            Path path = entry.getValue();
+            var expected = resolution.finder()
+                    .find(moduleName)
+                    .orElseThrow(() -> new IllegalArgumentException("Selected artifact module is not in the resolved graph: " + moduleName))
+                    .descriptor();
+            ModuleDescriptor actual;
+            if (repositoryPaths.jmods().containsKey(moduleName)) {
+                actual = ModuleIdentity.parseJmod(path).descriptor();
+                if (actual == null) {
+                    throw new IllegalArgumentException("Selected JMOD has no explicit module descriptor: " + path);
+                }
+            } else {
+                actual = ModuleFinder.of(path)
+                        .find(moduleName)
+                        .orElseThrow(() -> new IllegalArgumentException("Selected JAR does not provide module " + moduleName + ": " + path))
+                        .descriptor();
+            }
+            if (!actual.equals(expected)) {
+                throw new IllegalArgumentException("Selected artifact descriptor does not match resolved module " + moduleName + ": " + path);
+            }
         }
     }
 

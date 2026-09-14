@@ -2094,6 +2094,12 @@ public class JigTest {
                 Map.of(),
                 Map.of());
         Path jmod = directory.resolve("com.example.tool-1.0-osx-aarch_64.jmod");
+        var jmodErrors = new StringWriter();
+        int jmodResult = ToolProvider.findFirst("jmod")
+                .orElseThrow()
+                .run(new PrintWriter(new StringWriter()), new PrintWriter(jmodErrors), "create",
+                        "--class-path", module.toString(), jmod.toString());
+        assertEquals(0, jmodResult, jmodErrors.toString());
         Options options = Options.parse(new String[] {"--prefer-jmod", "--resolve-options", "module-path,add-modules", "-m", "com.example.tool"});
 
         String arguments = Jig.renderArguments(
@@ -2121,6 +2127,11 @@ public class JigTest {
                 compileArguments);
 
         Path fallbackJar = directory.resolve("com.example.tool-1.0-osx-aarch_64.jar");
+        try (var output = new JarOutputStream(Files.newOutputStream(fallbackJar))) {
+            output.putNextEntry(new JarEntry("module-info.class"));
+            Files.copy(module.resolve("module-info.class"), output);
+            output.closeEntry();
+        }
         String fallbackArguments = Jig.renderArguments(
                 Set.of("module-path", "add-modules"),
                 options,
@@ -2128,6 +2139,40 @@ public class JigTest {
                 Set.of(),
                 new RepositoryPaths(Map.of("com.example.tool", fallbackJar), Map.of()));
         assertTrue(fallbackArguments.contains(fallbackJar.toString()), fallbackArguments);
+
+        var mismatchedAttribute = ModuleAttribute.of(ModuleDesc.of("com.example.tool"),
+                builder -> {
+                    builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null);
+                    builder.requires(ModuleDesc.of("java.logging"), Set.of(), null);
+                });
+        byte[] mismatchedDescriptor = ClassFile.of().buildModule(mismatchedAttribute,
+                builder -> builder.withVersion(ClassFileFormatVersion.latest().major(), 0));
+        Path mismatchedJar = directory.resolve("com.example.tool-1.0-bad.jar");
+        try (var output = new JarOutputStream(Files.newOutputStream(mismatchedJar))) {
+            output.putNextEntry(new JarEntry("module-info.class"));
+            output.write(mismatchedDescriptor);
+            output.closeEntry();
+        }
+        var jarFailure = assertThrows(IllegalArgumentException.class,
+                () -> Jig.renderArguments(Set.of("module-path"), options, resolution, Set.of(),
+                        new RepositoryPaths(Map.of("com.example.tool", mismatchedJar), Map.of())));
+        assertTrue(jarFailure.getMessage().contains("does not match resolved module com.example.tool"),
+                jarFailure.getMessage());
+
+        Path mismatchedModule = Files.createDirectories(directory.resolve("mismatched-module"));
+        Files.write(mismatchedModule.resolve("module-info.class"), mismatchedDescriptor);
+        Path mismatchedJmod = directory.resolve("com.example.tool-1.0-bad.jmod");
+        jmodErrors.getBuffer().setLength(0);
+        jmodResult = ToolProvider.findFirst("jmod")
+                .orElseThrow()
+                .run(new PrintWriter(new StringWriter()), new PrintWriter(jmodErrors), "create",
+                        "--class-path", mismatchedModule.toString(), mismatchedJmod.toString());
+        assertEquals(0, jmodResult, jmodErrors.toString());
+        var jmodFailure = assertThrows(IllegalArgumentException.class,
+                () -> Jig.renderArguments(Set.of("module-path"), options, resolution, Set.of(),
+                        new RepositoryPaths(Map.of(), Map.of("com.example.tool", mismatchedJmod))));
+        assertTrue(jmodFailure.getMessage().contains("does not match resolved module com.example.tool"),
+                jmodFailure.getMessage());
     }
 
     @Test
