@@ -327,6 +327,8 @@ module com.example.cli {
 
 Dependency versions also participate in transitive resolution. Conflicts follow Maven's nearest-wins rule, after which the module system validates the selected graph.
 
+When `jig` compiles a source module, `javac` records the version of the dependency actually selected after mediation in each `requires_version_index` of the standard `Module` class-file attribute. The generated binary descriptor therefore carries the resolved versions for subsequent module-native resolution and publication; a version comment in the source remains the input constraint rather than the published result.
+
 Module Javadoc records settings that cannot be expressed by standard module directives:
 
 - `@release` selects the Java release used for compilation
