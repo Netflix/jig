@@ -178,7 +178,8 @@ public record ModuleResolution(
         }
         var repositoryModules = dependencyResolver.resolve(rootDeclarations, includeStatics, Set.of(), includeSources);
         var systemOverrides = new LinkedHashSet<String>();
-        sourceModules.keySet().stream()
+        selectedFixedModules.findAll().stream()
+                .map(reference -> reference.descriptor().name())
                 .filter(name -> systemModules.find(name).isPresent())
                 .forEach(systemOverrides::add);
         repositoryModules.versions().keySet().stream()
