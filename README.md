@@ -231,6 +231,8 @@ Published modules are placed on the generated module path as unclassified JARs b
 
 `--prefer-jmod` selects a JMOD when one is available, falling back to a JAR. Without an explicit target platform, JMOD lookup tries the current operating system and architecture before an unclassified JMOD. This implicit JMOD target does not enable classified JAR selection.
 
+A classified JAR or JMOD is an alternative artifact for the module already chosen by version resolution, not a separate resolution candidate. Before adding it to the generated module path, `jig` verifies that its module descriptor exactly matches the descriptor used during resolution. Repository checksums remain responsible for verifying the complete artifact contents.
+
 For example, generate the module path and root modules accepted by `jlink`:
 
 ```sh
