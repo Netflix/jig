@@ -412,9 +412,12 @@ jig --module-source-path 'src/*/main/java' -m com.example.app
 
 Request `source-path` to combine the source directories of selected local modules with `sources` artifacts resolved for published modules. A missing optional sources artifact does not affect module resolution.
 
-Request `module-source-path` to generate the source-module path used by compile-time tools. Source modules cause their `requires static` dependencies to be resolved so they can be compiled. `--compile-time` determines whether those dependencies are included in the generated options.
+Request `module-source-path` to generate the source-module path used by compile-time tools. Resolving dependencies and choosing which modules to include in the generated arguments are separate decisions:
 
-A module is not selected merely because it is visible on `--module-source-path`. If a selected module depends on an unselected source module, that dependency is resolved from published modules instead.
+- When a source module is selected, `jig` resolves the dependencies needed to compile it, including dependencies declared with `requires static`.
+- `--compile-time` includes those static dependencies in the generated arguments. Without it, the generated arguments omit them even when `jig` compiled source modules internally.
+
+A module is not selected merely because it is visible on `--module-source-path`. If a selected module depends on an unselected source module, that dependency is resolved from published modules instead. Select additional source roots explicitly with `--add-modules` or `--add-requires`, and select annotation processors with `@processWith`.
 
 Use `module=single`, `module=list`, `module=main`, or `module=roots` to choose how selected module names are emitted. The `release` option requires all selected source modules to declare the same release.
 

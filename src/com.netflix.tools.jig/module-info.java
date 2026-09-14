@@ -22,11 +22,11 @@
  * graph. It can resolve binary modules, source JARs, JMODs, annotation
  * processors, target-platform variants, and module-content hashes.
  *
- * <p>The resolved graph is projected as standard arguments for {@code javac},
- * {@code java}, {@code javadoc}, {@code jar}, and {@code jlink}, or as
- * caller-selected standard options for other module-aware tools. Source
- * modules are compiled lazily when a requested projection requires binary
- * modules. Jig also provides module-name and version lookup, Maven install and
+ * <p>From the resolved graph, {@code jig} generates standard arguments for
+ * {@code javac}, {@code java}, {@code javadoc}, {@code jar}, and {@code jlink},
+ * or caller-selected standard options for other module-aware tools. Source
+ * modules are compiled lazily when the requested options require binary
+ * modules. {@code jig} also provides module-name and version lookup, Maven install and
  * deployment, and an HTTP repository view of its canonical module namespace.
  * The command is available directly and through
  * {@link java.util.spi.ToolProvider}.
