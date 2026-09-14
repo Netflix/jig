@@ -100,7 +100,11 @@ public record ModuleHash(Type type, String algorithm, String digest) {
     }
 
     /**
-     * Computes a SHA-256 identity from the names and bytes of a module's resources.
+     * Computes a SHA-256 identity from the names and bytes of a module's resources
+     * using the {@code ModuleHashes} algorithm in JDK 15. Resource names are
+     * ordered, encoded as UTF-8, and followed directly by their content. Directory
+     * names participate in the hash, but are not opened so exploded modules can be
+     * hashed.
      *
      * @param reference the module to hash
      * @return the module hash
