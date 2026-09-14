@@ -16,6 +16,7 @@ package com.netflix.tools.jig.test.module;
 
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
+import java.lang.module.ResolutionException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -85,7 +86,7 @@ public class SourceModuleResolutionIntegrationTest {
         var config = resolution.configuration();
         assertTrue(config.findModule("com.example.canonical.app")
                          .isPresent());
-        var application = (SourceModuleReference) resolution.finder()
+        var application = (SourceModuleReference) resolution.observableModules()
                 .find("com.example.canonical.app")
                 .orElseThrow();
         assertThrows(IllegalStateException.class, application::open);
@@ -134,19 +135,19 @@ public class SourceModuleResolutionIntegrationTest {
                 .isPresent());
 
         var runtimeResolution = ModuleResolution.resolve(session, sourceFinder, List.of("com.example.junit.app"), false, false);
-        assertTrue(runtimeResolution.finder()
+        assertTrue(runtimeResolution.observableModules()
                 .find("org.junit.jupiter")
                 .isEmpty());
-        assertTrue(runtimeResolution.finder()
+        assertTrue(runtimeResolution.observableModules()
                 .find("org.apiguardian.api")
                 .isEmpty());
-        assertTrue(runtimeResolution.finder()
+        assertTrue(runtimeResolution.observableModules()
                 .find("org.jspecify")
                 .isEmpty());
     }
 
     @Test
-    void automaticModuleFoldsDependenciesWhosePackagesItContains(@TempDir Path tempDir) throws IOException {
+    void automaticModuleDoesNotHideSplitPackagesInItsDependencies(@TempDir Path tempDir) throws IOException {
         var sourceRoot = tempDir.resolve("src");
         var moduleDir = sourceRoot.resolve("com.example.cowsay.app");
         Files.createDirectories(moduleDir);
@@ -157,21 +158,11 @@ public class SourceModuleResolutionIntegrationTest {
                 }
                 """);
 
-        var resolution = ModuleResolution.resolve(session, SourceModuleFinder.of(sourceRoot), List.of("com.example.cowsay.app"), false,
-                false);
+        var failure = assertThrows(ResolutionException.class,
+                () -> ModuleResolution.resolve(session, SourceModuleFinder.of(sourceRoot),
+                        List.of("com.example.cowsay.app"), false, false));
 
-        assertTrue(resolution.configuration()
-                             .findModule("com.github.ricksbrown.cowsay")
-                             .isPresent());
-        assertTrue(resolution.finder()
-                             .find("org.apache.commons.lang3")
-                             .isEmpty());
-        assertTrue(resolution.finder()
-                             .find("org.apache.maven.plugin.api")
-                             .isEmpty());
-        assertTrue(resolution.finder()
-                             .find("com.github.ricksbrown.cowjar")
-                             .isPresent());
+        assertTrue(failure.getMessage().contains("package"), failure.getMessage());
     }
 
     @Test

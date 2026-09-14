@@ -32,7 +32,7 @@ final class ModuleTestSupport {
                 .requires(Set.of(), moduleName, Version.parse(version))
                 .build();
         return session.resolveModules(List.of(root), false)
-                      .finder()
+                      .observableModules()
                       .find(moduleName)
                       .orElseThrow(() -> new FindException("Module not found: " + moduleName + "@" + version));
     }

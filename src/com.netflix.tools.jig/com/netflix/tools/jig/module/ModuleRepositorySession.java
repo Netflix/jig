@@ -209,18 +209,13 @@ public final class ModuleRepositorySession implements AutoCloseable {
     }
 
     public Result resolveModules(Collection<ModuleDescriptor> roots, boolean includeStatics) {
-        return resolveModules(roots, includeStatics, Set.of(), false);
+        return resolveModules(roots, includeStatics, false);
     }
 
-    public Result resolveModules(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules) {
-        return resolveModules(roots, includeStatics, fixedModules, false);
-    }
-
-    public Result resolveModules(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules,
-            boolean includeSources) {
+    public Result resolveModules(Collection<ModuleDescriptor> roots, boolean includeStatics, boolean includeSources) {
         try (var proxy = newModuleTransporter()) {
             return new AetherModuleResolver(system, consumerSession, List.of(moduleRepository), proxy::moduleDescriptor)
-                    .resolve(roots, includeStatics, fixedModules, includeSources);
+                    .resolve(roots, includeStatics, includeSources);
         }
     }
 

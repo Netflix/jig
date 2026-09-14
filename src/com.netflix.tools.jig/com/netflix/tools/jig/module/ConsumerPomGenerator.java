@@ -92,7 +92,7 @@ public final class ConsumerPomGenerator {
                 version = requirement.compiledVersion()
                                      .map(Object::toString)
                                      .orElseGet(
-                                             () -> resolution.finder()
+                                             () -> resolution.observableModules()
                                                              .find(dependencyName)
                                                              .flatMap(reference -> reference.descriptor().version())
                                                              .map(Object::toString)

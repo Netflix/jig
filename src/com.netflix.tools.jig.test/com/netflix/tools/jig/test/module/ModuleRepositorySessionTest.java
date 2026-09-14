@@ -434,12 +434,12 @@ class ModuleRepositorySessionTest {
                                  .findModule("com.example.child")
                                  .isPresent());
             assertTrue(Files.isRegularFile(mavenArtifact));
-            var library = resolution.finder()
+            var library = resolution.observableModules()
                                     .find("com.example.library")
                                     .orElseThrow();
             frontendArtifact = assertInstanceOf(ModulePathReference.class, library).modulePath();
             originalHash = ModuleHash.moduleSha256(library);
-            for (var reference : resolution.finder().findAll()) {
+            for (var reference : resolution.observableModules().findAll()) {
                 if (reference instanceof ModulePathReference module && reference != library) {
                     module.modulePath();
                 }
@@ -459,7 +459,7 @@ class ModuleRepositorySessionTest {
         try (var session = ModuleRepositorySession.create(cache, List.of(published))) {
             var resolution = ModuleResolution.resolve(session, SourceModuleFinder.of(sources), List.of("com.example.application"), false,
                     false);
-            var cached = resolution.finder()
+            var cached = resolution.observableModules()
                                    .find("com.example.library")
                                    .orElseThrow();
             assertTrue(resolution.configuration()

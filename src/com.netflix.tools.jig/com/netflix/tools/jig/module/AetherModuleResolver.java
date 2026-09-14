@@ -17,7 +17,6 @@ package com.netflix.tools.jig.module;
 import java.io.IOException;
 import java.lang.module.FindException;
 import java.lang.module.ModuleDescriptor;
-import java.lang.module.ModuleDescriptor.Requires;
 import java.lang.module.ModuleDescriptor.Requires.Modifier;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReader;
@@ -30,7 +29,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.SequencedSet;
 import java.util.Set;
@@ -41,39 +39,32 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystem;
 import com.netflix.tools.jig.internal.org.eclipse.aether.RepositorySystemSession;
 import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.Artifact;
 import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.DefaultArtifact;
+import com.netflix.tools.jig.internal.org.eclipse.aether.collection.CollectRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.collection.DependencyCollectionException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.graph.Dependency;
+import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyNode;
 import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
-import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorException;
-import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorRequest;
 import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactRequest;
 import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactResolutionException;
-import com.netflix.tools.jig.module.ModuleGraph.Module;
-import com.netflix.tools.jig.module.ModuleGraph.Requirement;
 
-/** Resolves exact modules through the module repository. */
+/**
+ * Collects canonical module artifacts with Maven Resolver and exposes its selected artifacts as module references.
+ * JPMS, not this class, determines which of those observable modules are resolved.
+ */
 public final class AetherModuleResolver {
-
-    private static final Set<String> RUNTIME_SCOPES = Set.of("compile", "runtime");
 
     @FunctionalInterface
     public interface ModuleDescriptorResolver {
         ModuleDescriptor resolve(Artifact artifact) throws IOException;
     }
 
-    public record Result(ModuleFinder finder, SequencedSet<String> supplementalRoots, Map<String, ModuleHash> hashes,
-                         Map<String, String> versions, Map<String, Path> sources, Map<String, Set<String>> dependencies) {
-        public Result(ModuleFinder finder, SequencedSet<String> supplementalRoots, Map<String, ModuleHash> hashes,
-                      Map<String, String> versions, Map<String, Path> sources) {
-            this(finder, supplementalRoots, hashes, versions, sources,
-                    Map.of());
-        }
-
+    public record Result(ModuleFinder observableModules, SequencedSet<String> automaticModuleRoots,
+                         Map<String, ModuleHash> hashes, Map<String, String> versions, Map<String, Path> sources) {
         public Result {
-            supplementalRoots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(supplementalRoots));
+            automaticModuleRoots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(automaticModuleRoots));
             hashes = Map.copyOf(hashes);
             versions = Map.copyOf(versions);
             sources = Map.copyOf(sources);
-            dependencies = dependencies.entrySet().stream()
-                    .collect(Collectors.toUnmodifiableMap(Entry::getKey, entry -> Set.copyOf(entry.getValue())));
         }
     }
 
@@ -177,109 +168,57 @@ public final class AetherModuleResolver {
     }
 
     public Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics) {
-        return resolve(roots, includeStatics, Set.of(), false);
+        return resolve(roots, includeStatics, false);
     }
 
-    public Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules) {
-        return resolve(roots, includeStatics, fixedModules, false);
-    }
-
-    public Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules,
-                          boolean includeSources) {
+    public Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, boolean includeSources) {
         try {
-            var graph = ModuleGraph.resolve(rootRequirements(roots, fixedModules, includeStatics), includeStatics, this::load);
-            var references = new LinkedHashMap<String, ModuleReference>();
-            var modules = new LinkedHashMap<String, Module>();
-            graph.forEach(module -> {
-                references.put(module.name(), module.reference());
-                modules.put(module.name(), module);
-            });
-            var supplementalRoots = supplementalRoots(graph, references);
-            var dependencies = automaticDependencies(graph);
-            Set<String> folded = foldContainedAutomaticDependencies(rootNames(roots), references);
-            folded.forEach(references::remove);
+            var request = new CollectRequest(rootDependencies(roots, includeStatics), List.of(), repositories);
+            if (session.getScopeManager() != null) {
+                session.getScopeManager()
+                        .getResolutionScope("runtime")
+                        .ifPresent(request::setResolutionScope);
+            }
+            DependencyNode graph = system.collectDependencies(session, request).getRoot();
+            var selectedNodes = system.flattenDependencyNodes(session, graph, null);
+            var artifacts = selectedArtifacts(selectedNodes);
+            var references = references(artifacts);
+            var automaticModuleRoots = automaticModuleRoots(selectedNodes, references);
 
             if (Trace.isEnabled()) {
-                graph.stream()
-                        .filter(module -> references.containsKey(module.name()))
-                        .forEach(
-                                module -> Trace.trace("selected %s@%s%s (metadata)", module.name(), module.version(),
-                                        module.reference()
-                                              .descriptor()
-                                              .isAutomatic()
-                                                ? " automatic" : ""));
+                artifacts.forEach((name, artifact) -> {
+                    var reference = references.get(name);
+                    Trace.trace("selected %s@%s%s (metadata)", name, artifact.getVersion(),
+                            reference.descriptor().isAutomatic() ? " automatic" : "");
+                });
             }
 
             var versions = new LinkedHashMap<String, String>();
-            references.keySet().forEach(name -> versions.put(name, modules.get(name)
-                    .version()));
+            artifacts.forEach((name, artifact) -> versions.put(name, artifact.getVersion()));
             var sources = new LinkedHashMap<String, Path>();
             if (includeSources) {
-                references.keySet().forEach(name -> resolveSources(canonical(name, versions.get(name))).ifPresent(path -> sources.put(name, path)));
+                artifacts.forEach((name, artifact) -> resolveSources(artifact).ifPresent(path -> sources.put(name, path)));
             }
-            return new Result(finder(references), supplementalRoots, Map.of(), versions,
-                    sources, dependencies);
-        } catch (IOException e) {
+            return new Result(finder(references), automaticModuleRoots, Map.of(), versions, sources);
+        } catch (DependencyCollectionException | IOException e) {
             throw new FindException("Failed to resolve modules", e);
         }
     }
 
-    private Module load(String name, String version) throws IOException {
-        Artifact artifact = canonical(name, version);
-        ModuleDescriptor descriptor = descriptors.resolve(artifact);
-        List<Requirement> requirements = requirements(artifact, descriptor);
-        if (!descriptor.name().equals(name)) {
-            throw new IOException("Artifact "
-                    + artifact
-                    + " provides module "
-                    + descriptor.name()
-                    + ", not "
-                    + name);
-        }
-        var reference = new ArtifactModuleReference(descriptor, artifact, system, session, repositories);
-        return new Module(name, version, reference, requirements);
-    }
-
-    private List<Requirement> requirements(Artifact artifact, ModuleDescriptor descriptor) throws IOException {
-        var staticRequirements = descriptor.requires().stream()
-                .filter(requirement -> requirement.modifiers().contains(Modifier.STATIC))
-                .map(Requires::name)
-                .collect(Collectors.toSet());
-        try {
-            var request = new ArtifactDescriptorRequest(artifact, repositories, null);
-            return system.readArtifactDescriptor(session, request).getDependencies().stream()
-                    .filter(dependency -> RUNTIME_SCOPES.contains(dependency.getScope()))
-                    .map(
-                            dependency ->
-                            new Requirement(
-                                    dependency.getArtifact().getArtifactId(),
-                                    dependency.getArtifact().getVersion(),
-                                    dependency.isOptional() || staticRequirements.contains(dependency.getArtifact().getArtifactId()),
-                                    dependency.getExclusions().stream()
-                                            .noneMatch(exclusion -> exclusion.getGroupId().equals("*") && exclusion.getArtifactId().equals("*"))))
-                    .toList();
-        } catch (ArtifactDescriptorException e) {
-            throw new IOException("Failed to read module requirements for " + artifact, e);
-        }
-    }
-
-    private static List<Requirement> rootRequirements(Collection<ModuleDescriptor> roots, Set<String> fixedModules,
-            boolean includeStatics) {
+    /** Converts the root descriptors' requires directives into direct dependencies for Aether collection. */
+    private static List<Dependency> rootDependencies(Collection<ModuleDescriptor> roots, boolean includeStatics) {
         var declaredVersions = new LinkedHashMap<String, String>();
         for (var root : roots) {
             for (var requirement : root.requires()) {
                 requirement.compiledVersion().ifPresent(version -> declaredVersions.putIfAbsent(requirement.name(), version.toString()));
             }
         }
-        var requirements = new ArrayList<Requirement>();
+        var dependencies = new ArrayList<Dependency>();
         for (var root : roots) {
             for (var requirement : root.requires()) {
                 var name = requirement.name();
-                var systemModule = ModuleFinder.ofSystem()
-                        .find(name)
-                        .isPresent();
-                if (systemModule && requirement.compiledVersion().isEmpty()
-                        || !systemModule && fixedModules.contains(name)) {
+                var systemModule = ModuleFinder.ofSystem().find(name).isPresent();
+                if (systemModule && requirement.compiledVersion().isEmpty()) {
                     continue;
                 }
                 var staticPhase = requirement.modifiers().contains(Modifier.STATIC);
@@ -292,78 +231,74 @@ public final class AetherModuleResolver {
                 if (version == null) {
                     throw new FindException("No version declared for module " + name);
                 }
-                requirements.add(new Requirement(name, version, staticPhase));
+                dependencies.add(new Dependency(canonical(name, version), "compile"));
             }
         }
-        return List.copyOf(requirements);
+        return List.copyOf(dependencies);
     }
 
-    private static Set<String> rootNames(Collection<ModuleDescriptor> roots) {
-        var names = new LinkedHashSet<String>();
-        roots.forEach(root -> root.requires().forEach(requirement -> names.add(requirement.name())));
-        return names;
-    }
-
-    private static SequencedSet<String> supplementalRoots(List<Module> modules, Map<String, ModuleReference> references) {
-        var roots = new LinkedHashSet<String>();
-        for (var module : modules) {
-            if (!module.reference()
-                       .descriptor()
-                       .isAutomatic()) {
+    private static LinkedHashMap<String, Artifact> selectedArtifacts(List<DependencyNode> selectedNodes) {
+        var artifacts = new LinkedHashMap<String, Artifact>();
+        for (var node : selectedNodes) {
+            var dependency = node.getDependency();
+            if (dependency == null) {
                 continue;
             }
-            for (var requirement : module.requirements()) {
-                var dependency = references.get(requirement.name());
-                if (dependency != null && !dependency.descriptor().isAutomatic() && roots.add(requirement.name())) {
-                    Trace.trace("supplemental root %s " + "(explicit module dependency of automatic module %s)",
-                            requirement.name(), module.name());
+            Artifact artifact = dependency.getArtifact();
+            Artifact previous = artifacts.putIfAbsent(artifact.getArtifactId(), artifact);
+            if (previous != null && !previous.equals(artifact)) {
+                throw new FindException("Multiple artifacts selected for module " + artifact.getArtifactId()
+                        + ": " + previous + " and " + artifact);
+            }
+        }
+        return artifacts;
+    }
+
+    private LinkedHashMap<String, ModuleReference> references(Map<String, Artifact> artifacts) throws IOException {
+        var references = new LinkedHashMap<String, ModuleReference>();
+        for (var entry : artifacts.entrySet()) {
+            String name = entry.getKey();
+            Artifact artifact = entry.getValue();
+            ModuleDescriptor descriptor = descriptors.resolve(artifact);
+            if (!descriptor.name().equals(name)) {
+                throw new IOException("Artifact " + artifact + " provides module " + descriptor.name() + ", not " + name);
+            }
+            references.put(name, new ArtifactModuleReference(descriptor, artifact, system, session, repositories));
+        }
+        return references;
+    }
+
+    /**
+     * An automatic module has no requires directives. Its selected explicit dependencies must therefore be roots for
+     * JPMS to resolve them; selected automatic dependencies are resolved by JPMS's automatic-module rules.
+     */
+    private static SequencedSet<String> automaticModuleRoots(List<DependencyNode> selectedNodes,
+            Map<String, ModuleReference> references) {
+        var roots = new LinkedHashSet<String>();
+        for (var node : selectedNodes) {
+            var dependency = node.getDependency();
+            if (dependency == null) {
+                continue;
+            }
+            String moduleName = dependency.getArtifact().getArtifactId();
+            var reference = references.get(moduleName);
+            if (reference == null || !reference.descriptor().isAutomatic()) {
+                continue;
+            }
+            for (var child : node.getChildren()) {
+                var childDependency = child.getDependency();
+                if (childDependency == null) {
+                    continue;
+                }
+                String dependencyName = childDependency.getArtifact().getArtifactId();
+                var dependencyReference = references.get(dependencyName);
+                if (dependencyReference != null && !dependencyReference.descriptor().isAutomatic()
+                        && roots.add(dependencyName)) {
+                    Trace.trace("automatic module root %s (dependency of %s)", dependencyName, moduleName);
                 }
             }
         }
         return roots;
-    }
-
-    private static Map<String, Set<String>> automaticDependencies(List<Module> modules) {
-        var dependencies = new LinkedHashMap<String, Set<String>>();
-        for (var module : modules) {
-            if (!module.reference()
-                       .descriptor()
-                       .isAutomatic()) {
-                continue;
-            }
-            var names = module.requirements().stream()
-                    .map(Requirement::name)
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
-            if (!names.isEmpty()) {
-                dependencies.put(module.name(), names);
-            }
-        }
-        return dependencies;
-    }
-
-    private static Set<String> foldContainedAutomaticDependencies(Set<String> rootModules, Map<String, ModuleReference> references) {
-        var folded = new LinkedHashSet<String>();
-        for (String rootName : rootModules) {
-            ModuleReference root = references.get(rootName);
-            if (root == null || !root.descriptor().isAutomatic()) {
-                continue;
-            }
-            Set<String> rootPackages = root.descriptor().packages();
-            for (var entry : references.entrySet()) {
-                String dependencyName = entry.getKey();
-                if (rootModules.contains(dependencyName)) {
-                    continue;
-                }
-                var dependency = entry.getValue().descriptor();
-                if (!dependency.isAutomatic() || dependency.packages().isEmpty()) {
-                    continue;
-                }
-                if (rootPackages.containsAll(dependency.packages()) && folded.add(dependencyName)) {
-                    Trace.trace("fold %s into automatic module %s", dependencyName, rootName);
-                }
-            }
-        }
-        return Set.copyOf(folded);
     }
 
     private static ModuleFinder finder(Map<String, ModuleReference> references) {
