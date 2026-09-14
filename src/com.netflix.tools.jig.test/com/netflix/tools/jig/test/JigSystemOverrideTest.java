@@ -110,6 +110,30 @@ class JigSystemOverrideTest {
                 "--validate-runtime-access");
 
         assertTrue(arguments.contains("--enable-native-access\njava.logging\n"), arguments);
+        assertEquals(replacement, optionPath(arguments, "--upgrade-module-path"));
+        var lines = arguments.lines().toList();
+        String modulePath = lines.get(lines.indexOf("--module-path") + 1);
+        assertTrue(!modulePath.contains(replacement.toString()), arguments);
+    }
+
+    @Test
+    void fixedSystemOverrideRequiresUpgradeModulePathOutput(@TempDir Path directory) throws Exception {
+        Path replacement = systemModuleWithNativeAccess(directory.resolve("java.logging.jar"), "java.logging");
+        var out = new StringWriter();
+        var err = new StringWriter();
+
+        int result = jig.run(
+                new PrintWriter(out),
+                new PrintWriter(err),
+                "--module-path",
+                replacement.toString(),
+                "-m",
+                "java.logging",
+                "--resolve-options",
+                "module-path,add-modules");
+
+        assertEquals(1, result);
+        assertTrue(err.toString().contains("Module path module java.logging shadows a system module"), err.toString());
     }
 
     @Test

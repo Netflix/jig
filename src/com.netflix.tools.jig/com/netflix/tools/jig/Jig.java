@@ -338,9 +338,19 @@ public class Jig implements ToolProvider, OptionChecker {
                 .filter(resolution.repositoryVersions()::containsKey)
                 .filter(name -> !excludedModules.contains(name))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+        var fixedSystemOverrides = resolution.systemOverrides().stream()
+                .filter(name -> !sourceSystemOverrides.contains(name))
+                .filter(name -> !repositorySystemOverrides.contains(name))
+                .filter(name -> !excludedModules.contains(name))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        var suppliedSystemOverrides = new LinkedHashSet<>(sourceSystemOverrides);
+        suppliedSystemOverrides.addAll(fixedSystemOverrides);
         boolean consumesCompiledModules = resolveOptions.contains("module-path") && !resolveOptions.contains("module-source-path");
-        if (consumesCompiledModules && !resolveOptions.contains("upgrade-module-path")) {
-            requireNoSystemOverrides(sourceSystemOverrides, repositorySystemOverrides);
+        if (resolveOptions.contains("module-path") && !resolveOptions.contains("upgrade-module-path")) {
+            requireNoSystemOverrides(
+                    consumesCompiledModules ? sourceSystemOverrides : Set.of(),
+                    fixedSystemOverrides,
+                    repositorySystemOverrides);
         }
 
         String modulePath = "";
@@ -351,10 +361,10 @@ public class Jig implements ToolProvider, OptionChecker {
             var modulePaths = new LinkedHashSet<Path>();
             var upgradeModulePaths = new LinkedHashSet<Path>();
             for (Path path : options.modulePath) {
-                boolean containsSourceOverride = sourceSystemOverrides.stream().anyMatch(name -> ModuleFinder.of(path)
+                boolean containsSystemOverride = suppliedSystemOverrides.stream().anyMatch(name -> ModuleFinder.of(path)
                         .find(name)
                         .isPresent());
-                if (containsSourceOverride && resolveOptions.contains("upgrade-module-path")) {
+                if (containsSystemOverride && resolveOptions.contains("upgrade-module-path")) {
                     upgradeModulePaths.add(path);
                 } else {
                     modulePaths.add(path);
@@ -563,12 +573,20 @@ public class Jig implements ToolProvider, OptionChecker {
         return arguments.toString();
     }
 
-    private static void requireNoSystemOverrides(Set<String> sourceOverrides, Set<String> repositoryOverrides) {
+    private static void requireNoSystemOverrides(
+            Set<String> sourceOverrides, Set<String> fixedOverrides, Set<String> repositoryOverrides) {
         if (!sourceOverrides.isEmpty()) {
             String modules = sourceOverrides.stream()
                     .sorted()
                     .collect(Collectors.joining(", "));
             String subject = sourceOverrides.size() == 1 ? "Source module " + modules + " shadows a system module" : "Source modules " + modules + " shadow system modules";
+            throw new IllegalArgumentException(subject + ", but the requested options do not support " + "--upgrade-module-path");
+        }
+        if (!fixedOverrides.isEmpty()) {
+            String modules = fixedOverrides.stream()
+                    .sorted()
+                    .collect(Collectors.joining(", "));
+            String subject = fixedOverrides.size() == 1 ? "Module path module " + modules + " shadows a system module" : "Module path modules " + modules + " shadow system modules";
             throw new IllegalArgumentException(subject + ", but the requested options do not support " + "--upgrade-module-path");
         }
         if (!repositoryOverrides.isEmpty()) {
