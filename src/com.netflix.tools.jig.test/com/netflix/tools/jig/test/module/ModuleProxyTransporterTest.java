@@ -453,7 +453,7 @@ class ModuleProxyTransporterTest {
                     trace);
             assertTrue(trace.contains("canonical resource " + "com.example:com.example.library:jar:1.0"), trace);
             assertTrue(trace.contains("map com.example:com.example.library:jar:1.0 " + "-> com.example:library:jar:1.0"), trace);
-            assertTrue(trace.contains("project com.example:com.example.library:jar:1.0 " + "from com.example:library:jar:1.0"), trace);
+            assertTrue(trace.contains("map com.example:com.example.library:jar:1.0 " + "from com.example:library:jar:1.0"), trace);
             assertTrue(trace.contains("copy com.example:library:jar:1.0 from "), trace);
             assertArrayEquals(Files.readAllBytes(artifact.jar()), jarTask.getDataBytes());
 

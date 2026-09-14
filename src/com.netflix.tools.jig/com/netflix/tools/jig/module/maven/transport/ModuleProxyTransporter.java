@@ -69,7 +69,7 @@ import com.netflix.tools.jig.module.MavenArtifactOrigin;
 import com.netflix.tools.jig.module.MavenDependency;
 
 /**
- * Projects Maven artifacts into the canonical module coordinate space.
+ * Maps Maven artifacts into the canonical module coordinate space.
  *
  * <p>Artifact content is returned unchanged; the canonical main jar filename
  * supplies the name of an otherwise unnamed automatic module.
@@ -335,7 +335,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         }
         Artifact targetArtifact = new DefaultArtifact(target.getGroupId(), target.getArtifactId(), requested.getClassifier(),
                 requested.getExtension(), requested.getVersion());
-        trace("project %s from %s", requested, targetArtifact);
+        trace("map %s from %s", requested, targetArtifact);
         return artifactResource(targetArtifact);
     }
 

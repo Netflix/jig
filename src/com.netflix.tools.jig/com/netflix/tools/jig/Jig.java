@@ -257,7 +257,7 @@ public class Jig implements ToolProvider, OptionChecker {
             var sourcePaths = options.hasResolveOption("source-path") ? resolution.sources() : Map.<String, Path>of();
 
             boolean generatesArguments = options.resolveOptions != null;
-            String projectedArguments = !generatesArguments && !options.validateRuntimeAccess
+            String generatedArguments = !generatesArguments && !options.validateRuntimeAccess
                     ? null
                     : renderArguments(generatesArguments ? options.resolveOptions : Set.of(), options, resolution,
                             staticOnly, repositoryPaths, sourceModules, sourcePaths);
@@ -268,9 +268,9 @@ public class Jig implements ToolProvider, OptionChecker {
                 ConsumerPomGenerator.generate(resolution, options.moduleVersion, options.consumerPomDirectory);
             }
             if (options.argumentFile != null) {
-                Files.writeString(options.argumentFile, projectedArguments);
-            } else if (projectedArguments != null) {
-                out.print(projectedArguments);
+                Files.writeString(options.argumentFile, generatedArguments);
+            } else if (generatedArguments != null) {
+                out.print(generatedArguments);
                 out.flush();
             }
             return 0;
@@ -516,10 +516,10 @@ public class Jig implements ToolProvider, OptionChecker {
                 appendArgument(arguments, mainClass.className());
             });
         }
-        boolean projectsRoots = resolveOptions.contains("module") && options.moduleForm == ModuleForm.ROOTS;
+        boolean writesRootsWithModule = resolveOptions.contains("module") && options.moduleForm == ModuleForm.ROOTS;
         if (resolveOptions.contains("add-modules")
                 && !configurationRoots.isEmpty()
-                && (!projectsRoots || configurationRoots.size() != 1)) {
+                && (!writesRootsWithModule || configurationRoots.size() != 1)) {
             appendArgument(arguments, "--add-modules");
             appendArgument(arguments, String.join(",", configurationRoots));
         }
@@ -661,7 +661,7 @@ public class Jig implements ToolProvider, OptionChecker {
         }
         if (reference instanceof SourceModuleReference source) {
             if (sourceModules == null) {
-                throw new IllegalStateException("Source processor has no module-path projection: " + moduleName);
+                throw new IllegalStateException("Source processor has no module path: " + moduleName);
             }
             return sourceModules.modulePath(moduleName, source, false);
         }
