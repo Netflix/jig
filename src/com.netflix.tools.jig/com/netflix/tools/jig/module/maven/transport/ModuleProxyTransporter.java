@@ -480,7 +480,9 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         if (identity == null) {
             throw new FileNotFoundException(target.toString());
         }
-        var dependencies = identity.descriptor() == null ? automaticDependencies(target) : explicitDependencies(identity.descriptor(), target);
+        var dependencies = identity.descriptor() == null
+                ? automaticModuleConsumerPomDependencies(target)
+                : explicitModuleConsumerPomDependencies(identity.descriptor(), target);
         trace("consumer POM %s has %d dependencies", target, dependencies.size());
         var model = Model.newBuilder()
                 .namespaceUri("http://maven.apache.org/POM/4.0.0")
@@ -500,14 +502,18 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 .toString());
     }
 
-    private record SelectedDependency(Artifact artifact, String scope) {}
+    private record BackingArtifact(Artifact artifact, String scope) {}
 
-    private List<Dependency> automaticDependencies(Artifact target) throws IOException {
+    /**
+     * An automatic module has no requires directives. Expose Maven Resolver's selected backing closure as direct
+     * canonical dependencies; exclusions preserve that selection when a client resolves the generated POM.
+     */
+    private List<Dependency> automaticModuleConsumerPomDependencies(Artifact target) throws IOException {
         var transitiveExclusion = Exclusion.newBuilder()
                 .groupId("*")
                 .artifactId("*")
                 .build();
-        return selectedClosure(target, true).entrySet().stream()
+        return selectedBackingArtifactsByModuleName(target, true).entrySet().stream()
                 .map(entry -> {
                     Artifact artifact = entry.getValue().artifact();
                     Artifact canonical = ArtifactCandidates.locationCoordinate(entry.getKey(), artifact.getVersion());
@@ -522,22 +528,27 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 .toList();
     }
 
-    private List<Dependency> explicitDependencies(ModuleDescriptor descriptor, Artifact target) throws IOException {
-        var selected = dependencyInventory(target);
+    /**
+     * The module descriptor defines the generated dependency edges. Backing Maven metadata is traversed only to locate
+     * the artifact and version corresponding to each required module name.
+     */
+    private List<Dependency> explicitModuleConsumerPomDependencies(ModuleDescriptor descriptor, Artifact target)
+            throws IOException {
+        var backingArtifacts = locateBackingArtifactsByModuleName(target);
         var dependencies = new ArrayList<Dependency>();
         for (var requirement : descriptor.requires()) {
             var moduleName = requirement.name();
-            var selectedDependency = selected.get(moduleName);
-            if (selectedDependency == null && ModuleFinder.ofSystem()
+            var backingArtifact = backingArtifacts.get(moduleName);
+            if (backingArtifact == null && ModuleFinder.ofSystem()
                     .find(moduleName)
                     .isPresent()) {
                 continue;
             }
 
-            String version = selectedDependency == null ? requirement.compiledVersion()
+            String version = backingArtifact == null ? requirement.compiledVersion()
                     .map(Object::toString)
                     .orElse(null)
-                    : selectedDependency.artifact().getVersion();
+                    : backingArtifact.artifact().getVersion();
             var optional = MavenDependency.isOptional(requirement);
             if (version == null) {
                 if (optional) {
@@ -560,16 +571,17 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         return List.copyOf(dependencies);
     }
 
-    private record InventoryNode(Artifact artifact, boolean includeOptionalDependencies) {}
+    private record BackingTraversalNode(Artifact artifact, boolean includeOptionalDependencies) {}
 
-    private LinkedHashMap<String, SelectedDependency> dependencyInventory(Artifact target) throws IOException {
-        var selected = new LinkedHashMap<String, SelectedDependency>();
+    private LinkedHashMap<String, BackingArtifact> locateBackingArtifactsByModuleName(Artifact target)
+            throws IOException {
+        var backingArtifacts = new LinkedHashMap<String, BackingArtifact>();
         var visited = new HashSet<String>();
-        var queue = new ArrayDeque<InventoryNode>();
-        queue.add(new InventoryNode(target, true));
+        var queue = new ArrayDeque<BackingTraversalNode>();
+        queue.add(new BackingTraversalNode(target, true));
         visited.add(target.getGroupId() + ":" + target.getArtifactId());
         while (!queue.isEmpty()) {
-            InventoryNode current = queue.removeFirst();
+            BackingTraversalNode current = queue.removeFirst();
             for (var dependency : readArtifactDescriptor(current.artifact()).getDependencies()) {
                 if (!Set.of("compile", "runtime", "provided").contains(dependency.getScope()) || (!current.includeOptionalDependencies() && dependency.isOptional())) {
                     continue;
@@ -591,14 +603,15 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 String moduleName = effectiveModuleName(artifact, identity);
                 ModuleLocationTransporter.registerObservedLocation(session, moduleName, artifact.getVersion(), artifact);
                 String scope = "runtime".equals(dependency.getScope()) ? "runtime" : "compile";
-                selected.putIfAbsent(moduleName, new SelectedDependency(artifact, scope));
-                queue.addLast(new InventoryNode(artifact, false));
+                backingArtifacts.putIfAbsent(moduleName, new BackingArtifact(artifact, scope));
+                queue.addLast(new BackingTraversalNode(artifact, false));
             }
         }
-        return selected;
+        return backingArtifacts;
     }
 
-    private LinkedHashMap<String, SelectedDependency> selectedClosure(Artifact target, boolean requireLocatable) throws IOException {
+    private LinkedHashMap<String, BackingArtifact> selectedBackingArtifactsByModuleName(
+            Artifact target, boolean requireLocatable) throws IOException {
         var rootDependency = new com.netflix.tools.jig.internal.org.eclipse.aether.graph.Dependency(target, "compile");
         var request = new CollectRequest(rootDependency, repositories);
         if (session.getScopeManager() != null) {
@@ -614,7 +627,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
             throw new IOException("Failed to collect dependencies for " + target, e);
         }
 
-        var selected = new LinkedHashMap<String, SelectedDependency>();
+        var selected = new LinkedHashMap<String, BackingArtifact>();
         var queue = new ArrayDeque<DependencyNode>(root.getChildren());
         while (!queue.isEmpty()) {
             var node = queue.removeFirst();
@@ -648,7 +661,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
             String scope = "runtime".equals(dependency.getScope()) ? "runtime" : "compile";
             var prior = selected.get(moduleName);
             if (prior == null) {
-                selected.put(moduleName, new SelectedDependency(artifact, scope));
+                selected.put(moduleName, new BackingArtifact(artifact, scope));
             } else if (!prior.artifact().equals(artifact)) {
                 throw new IOException("Multiple artifacts provide module "
                         + moduleName
@@ -657,7 +670,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                         + " and "
                         + artifact);
             } else if (prior.scope().equals("runtime") && scope.equals("compile")) {
-                selected.put(moduleName, new SelectedDependency(artifact, scope));
+                selected.put(moduleName, new BackingArtifact(artifact, scope));
             }
             queue.addAll(node.getChildren());
         }

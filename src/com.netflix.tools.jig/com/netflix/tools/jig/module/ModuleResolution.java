@@ -35,7 +35,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.SequencedSet;
 import java.util.Set;
@@ -47,32 +46,17 @@ import com.netflix.module.ModuleInfoHash.Builder;
 import com.netflix.module.ModuleInfoHash.Coordinate;
 import com.netflix.tools.jig.module.AetherModuleResolver.Result;
 
-/** A resolved module graph and its optional source JARs. */
+/** The observable modules, resolved configuration, and associated repository metadata. */
 public record ModuleResolution(
-        ModuleFinder finder,
+        ModuleFinder observableModules,
         Configuration configuration,
-        SequencedSet<String> roots,
+        SequencedSet<String> configurationRoots,
         Set<String> staticRoots,
         Map<String, ModuleHash> hashes,
         Map<String, String> repositoryVersions,
-        Map<String, Set<String>> repositoryDependencies,
         Set<String> systemOverrides,
         Map<String, Path> moduleSources,
         Map<String, Path> sources) {
-
-    public ModuleResolution(
-            ModuleFinder finder,
-            Configuration configuration,
-            SequencedSet<String> roots,
-            Set<String> staticRoots,
-            Map<String, ModuleHash> hashes,
-            Map<String, String> repositoryVersions,
-            Set<String> systemOverrides,
-            Map<String, Path> moduleSources,
-            Map<String, Path> sources) {
-        this(finder, configuration, roots, staticRoots, hashes, repositoryVersions,
-                Map.of(), systemOverrides, moduleSources, sources);
-    }
 
     public enum IntegrityMode {
         NONE,
@@ -82,17 +66,14 @@ public record ModuleResolution(
 
     @FunctionalInterface
     public interface DependencyResolver {
-        Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, Set<String> fixedModules,
-                       boolean includeSources);
+        Result resolve(Collection<ModuleDescriptor> roots, boolean includeStatics, boolean includeSources);
     }
 
     public ModuleResolution {
-        roots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(roots));
+        configurationRoots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(configurationRoots));
         staticRoots = Set.copyOf(staticRoots);
         hashes = Map.copyOf(hashes);
         repositoryVersions = Map.copyOf(repositoryVersions);
-        repositoryDependencies = repositoryDependencies.entrySet().stream()
-                .collect(Collectors.toUnmodifiableMap(Entry::getKey, entry -> Set.copyOf(entry.getValue())));
         systemOverrides = Set.copyOf(systemOverrides);
         moduleSources = Map.copyOf(moduleSources);
         sources = Map.copyOf(sources);
@@ -176,7 +157,7 @@ public record ModuleResolution(
         if (!addedRequires.isEmpty()) {
             rootDeclarations.add(addedRequiresDeclaration(addedRequires, available, systemModules));
         }
-        var repositoryModules = dependencyResolver.resolve(rootDeclarations, includeStatics, Set.of(), includeSources);
+        var repositoryModules = dependencyResolver.resolve(rootDeclarations, includeStatics, includeSources);
         var systemOverrides = new LinkedHashSet<String>();
         selectedFixedModules.findAll().stream()
                 .map(reference -> reference.descriptor().name())
@@ -185,44 +166,31 @@ public record ModuleResolution(
         repositoryModules.versions().keySet().stream()
                 .filter(name -> systemModules.find(name).isPresent())
                 .forEach(systemOverrides::add);
-        var modules = modules(selectedFixedModules, repositoryModules.finder(), unresolvedSystemModules);
-        ModuleFinder resolved = finder(modules);
-        ModuleFinder configurationFinder = finder(modules(selectedFixedModules, repositoryModules.finder(), unresolvedSystemModules));
-        List<Configuration> configurationParents = List.of(parent);
-        Set<ModuleReference> inheritedModules = Set.of();
-        boolean hasAutomaticModules = configurationFinder.findAll().stream()
-                .anyMatch(reference -> reference.descriptor().isAutomatic());
-        if (!systemOverrides.isEmpty() && hasAutomaticModules) {
-            // Automatic modules read the parent and child versions of an overridden module.
-            // Rebase inherited references so the selected reference replaces the parent one.
-            inheritedModules = parent.modules().stream()
-                    .map(ResolvedModule::reference)
-                    .collect(Collectors.toUnmodifiableSet());
-            ModuleFinder inheritedFinder = finder(
-                    inheritedModules.stream().collect(
-                            Collectors.toMap(
-                                    reference -> reference.descriptor().name(),
-                                    reference -> reference,
-                                    (left, right) -> left,
-                                    LinkedHashMap::new)));
-            configurationFinder = finder(modules(selectedFixedModules, repositoryModules.finder(), inheritedFinder, unresolvedSystemModules));
-            configurationParents = List.of(Configuration.empty());
-        }
+        var modules = modules(selectedFixedModules, repositoryModules.observableModules(), unresolvedSystemModules);
+        ModuleFinder observableModules = finder(modules);
+        var configurationInputs = configurationInputs(
+                selectedFixedModules,
+                repositoryModules.observableModules(),
+                unresolvedSystemModules,
+                parent,
+                systemOverrides);
         var runtimeRoots = new LinkedHashSet<>(requestedRoots);
         runtimeRoots.addAll(addedRequires.keySet());
-        runtimeRoots.addAll(repositoryModules.supplementalRoots());
+        runtimeRoots.addAll(repositoryModules.automaticModuleRoots());
         Set<String> staticRoots = includeStatics ? staticRequirements(modules, runtimeRoots) : Set.of();
         var roots = new LinkedHashSet<>(runtimeRoots);
         roots.addAll(staticRoots);
 
-        Configuration configuration = Configuration.resolve(configurationFinder, configurationParents, ModuleFinder.of(), roots);
+        Configuration configuration = Configuration.resolve(
+                configurationInputs.before(), configurationInputs.parents(), ModuleFinder.of(), roots);
         var selectedSources = new LinkedHashMap<String, SourceModuleReference>();
         for (ResolvedModule module : configuration.modules()) {
             if (module.reference() instanceof SourceModuleReference source) {
                 selectedSources.put(module.name(), source);
             }
         }
-        var hashes = resolvedHashes(configuration, selectedSources, inheritedModules, repositoryModules.finder(),
+        var hashes = resolvedHashes(configuration, selectedSources, configurationInputs.inheritedModules(),
+                repositoryModules.observableModules(),
                 repositoryModules.hashes(), repositoryModules.versions(), integrityMode);
         var sources = new LinkedHashMap<>(repositoryModules.sources());
         if (includeSources) {
@@ -233,16 +201,52 @@ public record ModuleResolution(
         sourceModules.forEach((name, source) -> moduleSources.put(name, source.sourceModule()
                 .sourceDirectory()));
         return new ModuleResolution(
-                resolved,
+                observableModules,
                 configuration,
                 roots,
                 staticRoots,
                 hashes,
                 repositoryModules.versions(),
-                repositoryModules.dependencies(),
                 systemOverrides,
                 moduleSources,
                 sources);
+    }
+
+    private record ConfigurationInputs(
+            ModuleFinder before, List<Configuration> parents, Set<ModuleReference> inheritedModules) {
+        private ConfigurationInputs {
+            parents = List.copyOf(parents);
+            inheritedModules = Set.copyOf(inheritedModules);
+        }
+    }
+
+    private static ConfigurationInputs configurationInputs(
+            ModuleFinder fixedModules,
+            ModuleFinder repositoryModules,
+            ModuleFinder unresolvedSystemModules,
+            Configuration parent,
+            Set<String> systemOverrides) {
+        ModuleFinder before = finder(modules(fixedModules, repositoryModules, unresolvedSystemModules));
+        boolean hasAutomaticModules = before.findAll().stream()
+                .anyMatch(reference -> reference.descriptor().isAutomatic());
+        if (systemOverrides.isEmpty() || !hasAutomaticModules) {
+            return new ConfigurationInputs(before, List.of(parent), Set.of());
+        }
+
+        // An automatic module would read both the parent and child versions of an overridden module. Rebase the boot
+        // configuration as observable references so finder precedence selects the replacement.
+        Set<ModuleReference> inheritedModules = parent.modules().stream()
+                .map(ResolvedModule::reference)
+                .collect(Collectors.toUnmodifiableSet());
+        ModuleFinder inheritedFinder = finder(
+                inheritedModules.stream().collect(
+                        Collectors.toMap(
+                                reference -> reference.descriptor().name(),
+                                reference -> reference,
+                                (left, right) -> left,
+                                LinkedHashMap::new)));
+        before = finder(modules(fixedModules, repositoryModules, inheritedFinder, unresolvedSystemModules));
+        return new ConfigurationInputs(before, List.of(Configuration.empty()), inheritedModules);
     }
 
     private static Set<String> staticRequirements(Map<String, ModuleReference> modules, Collection<String> roots) {

@@ -239,7 +239,7 @@ public class Jig implements ToolProvider, OptionChecker {
             var resolution = ModuleResolution.resolve(session, fixedModules, options.resolutionRoots(), options.addedRequires, includeStatics,
                     shouldIncludeSources(options), options.integrityMode);
             var config = resolution.configuration();
-            var configurationRoots = resolution.roots();
+            var configurationRoots = resolution.configurationRoots();
             var runtimeRoots = configurationRoots.stream()
                     .filter(root -> !resolution.staticRoots().contains(root))
                     .toList();
@@ -325,7 +325,7 @@ public class Jig implements ToolProvider, OptionChecker {
         boolean describe = resolveOptions.contains("describe-module");
         Set<String> excludedModules = options.compileTime ? Set.of() : staticOnly;
         var config = resolution.configuration();
-        var configurationRoots = resolution.roots().stream()
+        var configurationRoots = resolution.configurationRoots().stream()
                 .filter(name -> !excludedModules.contains(name))
                 .toList();
         var authoritativeRoots = options.rootNames().stream()
@@ -377,7 +377,7 @@ public class Jig implements ToolProvider, OptionChecker {
                 for (String moduleName : repositorySystemOverrides.stream()
                         .sorted()
                         .toList()) {
-                    ModuleReference reference = resolution.finder()
+                    ModuleReference reference = resolution.observableModules()
                             .find(moduleName)
                             .orElse(null);
                     if (reference == null) {
@@ -393,7 +393,7 @@ public class Jig implements ToolProvider, OptionChecker {
                 for (String moduleName : repositorySystemOverrides.stream()
                         .sorted()
                         .toList()) {
-                    ModuleReference reference = resolution.finder()
+                    ModuleReference reference = resolution.observableModules()
                             .find(moduleName)
                             .orElse(null);
                     if (reference == null) {
@@ -481,7 +481,7 @@ public class Jig implements ToolProvider, OptionChecker {
                 authoritativeRoots,
                 configurationRoots,
                 resolution.moduleSources().keySet(),
-                resolution.finder(),
+                resolution.observableModules(),
                 resolveOptions.contains("release") || resolveOptions.contains("multi-release"))
                 : ResolvedAccessOptions.EMPTY;
         if (options.validateRuntimeAccess) {
@@ -606,7 +606,7 @@ public class Jig implements ToolProvider, OptionChecker {
         for (var entry : selectedArtifacts.entrySet()) {
             String moduleName = entry.getKey();
             Path path = entry.getValue();
-            var expected = resolution.finder()
+            var expected = resolution.observableModules()
                     .find(moduleName)
                     .orElseThrow(() -> new IllegalArgumentException("Selected artifact module is not in the resolved graph: " + moduleName))
                     .descriptor();
@@ -649,7 +649,7 @@ public class Jig implements ToolProvider, OptionChecker {
             throws IOException {
         var processorRoots = new LinkedHashSet<String>();
         for (String root : authoritativeRoots) {
-            resolution.finder()
+            resolution.observableModules()
                       .find(root)
                       .filter(SourceModuleReference.class::isInstance)
                       .map(SourceModuleReference.class::cast)
@@ -701,7 +701,7 @@ public class Jig implements ToolProvider, OptionChecker {
         if (selected != null) {
             return selected;
         }
-        var reference = resolution.finder()
+        var reference = resolution.observableModules()
                 .find(moduleName)
                 .orElse(null);
         if (reference == null) {
@@ -787,7 +787,7 @@ public class Jig implements ToolProvider, OptionChecker {
     }
 
     private static Optional<ModuleMainClass> optionalMainClass(String root, ModuleResolution resolution) {
-        var reference = resolution.finder()
+        var reference = resolution.observableModules()
                 .find(root)
                 .orElseThrow(() -> new IllegalArgumentException("Module not found: " + root));
         return reference.descriptor()

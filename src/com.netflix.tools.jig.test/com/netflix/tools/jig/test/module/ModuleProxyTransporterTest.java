@@ -273,21 +273,20 @@ class ModuleProxyTransporterTest {
                      var traceOutput = new PrintStream(traceBytes)) {
                     resolvedModules = Trace.callWithOutput(traceOutput,
                             () -> new AetherModuleResolver(context.system(), context.session(), List.of(modules), metadata::moduleDescriptor)
-                                    .resolve(List.of(rootDescriptor), false, Set.of(), true));
+                                    .resolve(List.of(rootDescriptor), false, true));
                 }
                 String resolutionTrace = traceBytes.toString();
                 assertTrue(resolutionTrace.contains("selected com.example.library@1.0 automatic"), resolutionTrace);
-                assertTrue(resolutionTrace.contains("mediate com.example.core@1.0 -> com.example.core@2.0"), resolutionTrace);
-                assertTrue(resolutionTrace.contains("supplemental root com.example.runtime " + "(explicit module dependency of automatic module " + "com.example.library)"), resolutionTrace);
+                assertTrue(resolutionTrace.contains("selected com.example.core@2.0 automatic"), resolutionTrace);
+                assertTrue(resolutionTrace.contains(
+                        "automatic module root com.example.runtime (dependency of com.example.library)"), resolutionTrace);
                 assertEquals(
                         Set.of("com.example.library", "com.example.bridge", "com.example.runtime", "com.example.core"),
-                        resolvedModules.finder().findAll().stream()
+                        resolvedModules.observableModules().findAll().stream()
                                 .map(reference -> reference.descriptor().name())
                                 .collect(Collectors.toSet()));
-                assertEquals(Set.of("com.example.runtime"), resolvedModules.supplementalRoots());
-                assertEquals(Set.of("com.example.bridge", "com.example.runtime", "com.example.core"),
-                        resolvedModules.dependencies().get("com.example.library"));
-                var libraryDescriptor = resolvedModules.finder()
+                assertEquals(Set.of("com.example.runtime"), resolvedModules.automaticModuleRoots());
+                var libraryDescriptor = resolvedModules.observableModules()
                         .find("com.example.library")
                         .orElseThrow()
                         .descriptor();
@@ -296,7 +295,7 @@ class ModuleProxyTransporterTest {
                         .orElseThrow());
                 assertTrue(libraryDescriptor.provides().stream()
                         .anyMatch(provides -> provides.service().equals("com.example.Service") && provides.providers().equals(List.of("com.example.library.Library"))));
-                assertTrue(resolvedModules.finder()
+                assertTrue(resolvedModules.observableModules()
                         .find("com.example.core")
                         .orElseThrow()
                         .location()
@@ -382,11 +381,11 @@ class ModuleProxyTransporterTest {
                 assertFalse(resolutionTrace.contains("generate module hash"), resolutionTrace);
                 assertTrue(resolvedModules.hashes()
                         .isEmpty());
-                assertTrue(resolvedModules.supplementalRoots()
+                assertTrue(resolvedModules.automaticModuleRoots()
                         .isEmpty());
-                assertTrue(resolvedModules.finder()
+                assertTrue(resolvedModules.observableModules()
                         .find("com.example.compileapi")
-                        .isEmpty());
+                        .isPresent());
 
                 var cachedTraceBytes = new ByteArrayOutputStream();
                 Result cachedModules;

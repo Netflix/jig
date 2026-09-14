@@ -75,7 +75,7 @@ class ModuleResolutionTest {
         try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
             var resolution = ModuleResolution.resolve(repository, sourceModules, List.of("com.example.application"), false, true);
 
-            var module = resolution.finder()
+            var module = resolution.observableModules()
                                    .find("com.example.application")
                                    .orElseThrow();
             assertTrue(module instanceof SourceModuleReference);
@@ -121,7 +121,7 @@ class ModuleResolutionTest {
         };
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                                 Map.of("com.example.dependency", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -140,7 +140,7 @@ class ModuleResolutionTest {
         ModuleFinder repositoryModules = ModuleFinder.of(automaticJar(directory, "com.example.external"));
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     declarations.set(List.copyOf(roots));
                     return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                             Map.of(), Map.of());
@@ -151,7 +151,7 @@ class ModuleResolutionTest {
                 false,
                 false);
 
-        assertEquals(Set.of("com.example.external"), Set.copyOf(resolution.roots()));
+        assertEquals(Set.of("com.example.external"), Set.copyOf(resolution.configurationRoots()));
         var requirement = declarations.get().stream()
                 .flatMap(declaration -> declaration.requires().stream())
                 .filter(candidate -> candidate.name().equals("com.example.external"))
@@ -171,7 +171,7 @@ class ModuleResolutionTest {
         var declarations = new AtomicReference<Collection<ModuleDescriptor>>();
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     declarations.set(List.copyOf(roots));
                     return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                             Map.of(), Map.of());
@@ -220,7 +220,7 @@ class ModuleResolutionTest {
             assertTrue(resolution.configuration()
                     .findModule("com.example.application")
                     .isPresent());
-            assertTrue(resolution.finder()
+            assertTrue(resolution.observableModules()
                     .find("com.example.annotations")
                     .isEmpty());
         }
@@ -263,7 +263,7 @@ class ModuleResolutionTest {
                         .formatted(systemModule));
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
                                 Map.of(), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -274,7 +274,7 @@ class ModuleResolutionTest {
         assertTrue(resolution.configuration()
                              .findModule(systemModule)
                              .isPresent());
-        assertTrue(resolution.finder()
+        assertTrue(resolution.observableModules()
                              .find(systemModule)
                              .isPresent());
         assertTrue(!resolution.hashes().containsKey(systemModule));
@@ -291,9 +291,8 @@ class ModuleResolutionTest {
         Path application = explicitJar(directory, "com.example.application", Map.of("java.logging", systemVersion));
 
         ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     assertFalse(requiredModules(roots).contains("java.logging"));
-                    assertTrue(fixedModules.isEmpty());
                     return new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
                             Map.of(), Map.of());
                 },
@@ -317,7 +316,7 @@ class ModuleResolutionTest {
         ModuleFinder repositoryModules = ModuleFinder.of(replacement);
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     assertTrue(requiredModules(roots).contains("java.sql"));
                     return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                             Map.of("java.sql", "1.0"), Map.of());
@@ -328,7 +327,7 @@ class ModuleResolutionTest {
                 false);
 
         assertEquals(Set.of("java.sql"), resolution.systemOverrides());
-        var selected = resolution.finder()
+        var selected = resolution.observableModules()
                 .find("java.sql")
                 .orElseThrow();
         assertEquals(replacement.toUri(),
@@ -346,7 +345,7 @@ class ModuleResolutionTest {
         ModuleFinder repositoryModules = ModuleFinder.of(replacement);
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     assertTrue(requiredModules(roots).contains("java.sql"));
                     return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                             Map.of("java.sql", "1.0"), Map.of());
@@ -358,7 +357,7 @@ class ModuleResolutionTest {
                 false);
 
         assertEquals(Set.of("java.sql"), resolution.systemOverrides());
-        var selected = resolution.finder()
+        var selected = resolution.observableModules()
                 .find("java.sql")
                 .orElseThrow();
         assertEquals(replacement.toUri(),
@@ -377,7 +376,7 @@ class ModuleResolutionTest {
         var failure = assertThrows(
                 FindException.class,
                 () -> ModuleResolution.resolve(
-                        (roots, includeStatics, fixed, includeSources) ->
+                        (roots, includeStatics, includeSources) ->
                                 new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
                                         Map.of(), Map.of()),
                         fixedModules,
@@ -398,7 +397,7 @@ class ModuleResolutionTest {
         Files.writeString(source.resolve("module-info.java"), "module java.logging {}");
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
                                 Map.of(), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -407,7 +406,7 @@ class ModuleResolutionTest {
                 false);
 
         assertEquals(Set.of("java.logging"), resolution.systemOverrides());
-        assertTrue(resolution.finder()
+        assertTrue(resolution.observableModules()
                              .find("java.logging")
                              .orElseThrow()
                 instanceof SourceModuleReference);
@@ -428,7 +427,7 @@ class ModuleResolutionTest {
         var repositoryModules = ModuleFinder.of(automaticJar(directory, "auto.parent"), automaticJar(directory, "auto.dependency"));
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                                 Map.of(), Map.of()),
                 sourceModules,
@@ -436,7 +435,7 @@ class ModuleResolutionTest {
                 false,
                 false);
 
-        assertEquals(List.of("com.example.application"), List.copyOf(resolution.roots()));
+        assertEquals(List.of("com.example.application"), List.copyOf(resolution.configurationRoots()));
         assertTrue(resolution.configuration()
                              .findModule("auto.parent")
                              .isPresent());
@@ -463,9 +462,10 @@ class ModuleResolutionTest {
                 .orElseThrow());
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of("auto.parent", parentHash, "auto.dependency", dependencyHash),
-                                Map.of("auto.parent", "1.0", "auto.dependency", "1.0"), Map.of(), Map.of("auto.parent", Set.of("auto.dependency"))),
+                (roots, includeStatics, includeSources) ->
+                        new Result(repositoryModules, new LinkedHashSet<>(),
+                                Map.of("auto.parent", parentHash, "auto.dependency", dependencyHash),
+                                Map.of("auto.parent", "1.0", "auto.dependency", "1.0"), Map.of()),
                 SourceModuleFinder.of(sources),
                 List.of("com.example.application", "com.netflix.tools.jig"),
                 Map.of(),
@@ -525,8 +525,7 @@ class ModuleResolutionTest {
         ModuleFinder repositoryModules = ModuleFinder.of(automaticJar(directory, "com.example.library"));
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
-                    assertTrue(fixedModules.isEmpty());
+                (roots, includeStatics, includeSources) -> {
                     return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                             Map.of(), Map.of());
                 },
@@ -537,7 +536,7 @@ class ModuleResolutionTest {
 
         assertEquals(Set.of("com.example.application"),
                 resolution.moduleSources().keySet());
-        assertTrue(!(resolution.finder()
+        assertTrue(!(resolution.observableModules()
                                .find("com.example.library")
                                .orElseThrow()
                 instanceof SourceModuleReference));
@@ -556,9 +555,8 @@ class ModuleResolutionTest {
         source(sources, "com.example.launcher", "module com.example.launcher {}", "Launcher.java", "final class Launcher {}");
 
         var resolution = ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) -> {
+                (roots, includeStatics, includeSources) -> {
                     assertTrue(includeStatics);
-                    assertTrue(fixedModules.isEmpty());
                     return new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
                             Map.of(), Map.of());
                 },
@@ -628,7 +626,7 @@ class ModuleResolutionTest {
                 .write(module.resolve("module-info.hash"));
 
         ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
                                 Map.of("com.example.library", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -656,7 +654,7 @@ class ModuleResolutionTest {
                 .write(module.resolve("module-info.hash"));
 
         ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
                                 Map.of("com.netflix.tools.jig", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -697,7 +695,7 @@ class ModuleResolutionTest {
         var failure = assertThrows(
                 FindException.class,
                 () -> ModuleResolution.resolve(
-                        (roots, includeStatics, fixedModules, includeSources) ->
+                        (roots, includeStatics, includeSources) ->
                                 new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
@@ -729,7 +727,7 @@ class ModuleResolutionTest {
         assertThrows(
                 FindException.class,
                 () -> ModuleResolution.resolve(
-                        (roots, includeStatics, fixedModules, includeSources) ->
+                        (roots, includeStatics, includeSources) ->
                                 new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
@@ -781,7 +779,7 @@ class ModuleResolutionTest {
         assertThrows(
                 FindException.class,
                 () -> ModuleResolution.resolve(
-                        (roots, includeStatics, fixedModules, includeSources) ->
+                        (roots, includeStatics, includeSources) ->
                                 new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", observed),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
@@ -811,7 +809,7 @@ class ModuleResolutionTest {
                 .orElseThrow());
 
         ModuleResolution.resolve(
-                (roots, includeStatics, fixedModules, includeSources) ->
+                (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
                                 Map.of("com.example.library", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
