@@ -170,7 +170,7 @@ public class Jig implements ToolProvider, OptionChecker {
             return 2;
         }
 
-        if (options.help) {
+        if (args.length == 0 || options.help) {
             printHelp(out);
             return 0;
         }

@@ -2458,6 +2458,18 @@ public class JigTest {
     }
 
     @Test
+    void bareInvocationPrintsHelp() {
+        var out = new StringWriter();
+        var err = new StringWriter();
+
+        int result = new Jig().run(new PrintWriter(out), new PrintWriter(err));
+
+        assertEquals(0, result);
+        assertTrue(out.toString().startsWith("Usage: jig [options]\n"), out.toString());
+        assertEquals("", err.toString());
+    }
+
+    @Test
     @DisplayName("no root module prints a diagnostic and exits 2")
     void noRootModuleUsage() {
         var jig = new Jig();
