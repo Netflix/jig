@@ -45,6 +45,7 @@ import com.netflix.module.ModuleRuntimeAccessOptions;
 import com.netflix.module.compile.ModulePathEntry;
 import com.netflix.module.compile.internal.CompilationDiagnostic;
 import com.netflix.module.compile.internal.ContentHash;
+import com.netflix.module.compile.internal.SourceCompilation;
 import com.netflix.module.compile.internal.SourceModuleCompilation;
 import com.netflix.module.compile.internal.SourceModuleCompilation.Configuration;
 import com.netflix.module.compile.internal.SourceModuleCompilation.Paths;
@@ -159,6 +160,51 @@ class SourceModuleCompilationTest {
         assertEquals(Set.of(), unchanged.compiledSources());
         assertEquals(image, unchanged.state()
                 .systemImage());
+    }
+
+    @Test
+    void removedSourceIsNotRecompiledAfterSystemImageChange(@TempDir Path directory) throws Exception {
+        var sources = sources(directory);
+        var removedSource = sources.resolve("p/Removed.java");
+        Files.writeString(removedSource, "package p; public class Removed {}\n");
+        var first = compile(sources, null);
+        var output = write(directory.resolve("removed-system-image-output"), first);
+        Files.delete(removedSource);
+
+        var removedPath = new SourcePath("p/Removed.java");
+        var previousState = first.state();
+        var previousCompilations = new TreeMap<>(previousState.sources());
+        var removedCompilation = previousCompilations.get(removedPath);
+        var changedSystemClasses = new TreeMap<>(removedCompilation.systemClasses());
+        assertFalse(changedSystemClasses.isEmpty());
+        changedSystemClasses.put(changedSystemClasses.firstKey(),
+                ContentHash.sha256("changed".getBytes(StandardCharsets.UTF_8)));
+        previousCompilations.put(removedPath, new SourceCompilation(
+                removedCompilation.source(), removedCompilation.sourceHash(), removedCompilation.declarationHash(),
+                removedCompilation.generatedClasses(), changedSystemClasses));
+        var image = previousState.systemImage();
+        var changedImage = new SystemImage(image.path(), image.size() + 1, image.modifiedSeconds(),
+                image.modifiedNanos(), image.fileKey());
+        var changedState = new State(
+                previousCompilations,
+                previousState.modulePathEntries(),
+                previousState.resources(),
+                previousState.moduleInfoOptionsHash(),
+                changedImage,
+                previousState.diagnostics());
+
+        var result = SourceModuleCompilation.compile(
+                sources,
+                output,
+                null,
+                output,
+                configuration(List.of(), List.of()),
+                SourceModuleOutput.readSources(sources),
+                changedState);
+
+        assertEquals(Set.of(new SourcePath("module-info.java"), new SourcePath("p/Api.java"), new SourcePath("p/Use.java")),
+                result.compiledSources());
+        assertEquals(Set.of("p/Removed.class"), result.removedClasses());
     }
 
     @Test
