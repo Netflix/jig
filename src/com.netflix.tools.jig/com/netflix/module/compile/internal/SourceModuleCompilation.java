@@ -340,17 +340,6 @@ public final class SourceModuleCompilation {
         var compiledSources = new TreeSet<SourcePath>();
         var patch = new TreeMap<String, byte[]>();
         var removed = new TreeSet<String>();
-        var completeCompilation = previousOutput != null && previousState.sources().isEmpty();
-        if (completeCompilation) {
-            pending.addAll(sources.keySet());
-        } else if (systemImageChanged(previousState.systemImage())) {
-            var currentSystemClasses = new HashMap<String, ContentHash>();
-            for (var compilation : previousState.sources().values()) {
-                if (systemClassesChanged(compilation.systemClasses(), currentSystemClasses)) {
-                    pending.add(compilation.source());
-                }
-            }
-        }
         for (var entry : List.copyOf(currentCompilations.entrySet())) {
             if (!sources.containsKey(entry.getKey())) {
                 entry.getValue().generatedClasses().stream()
@@ -359,8 +348,16 @@ public final class SourceModuleCompilation {
                 currentCompilations.remove(entry.getKey());
             }
         }
-        if (!removed.isEmpty()) {
+        var completeCompilation = previousOutput != null && previousState.sources().isEmpty();
+        if (completeCompilation || !removed.isEmpty()) {
             pending.addAll(sources.keySet());
+        } else if (systemImageChanged(previousState.systemImage())) {
+            var currentSystemClasses = new HashMap<String, ContentHash>();
+            for (var compilation : currentCompilations.values()) {
+                if (systemClassesChanged(compilation.systemClasses(), currentSystemClasses)) {
+                    pending.add(compilation.source());
+                }
+            }
         }
         var currentDiagnostics = new ArrayList<CompilationDiagnostic>();
         for (var diagnostic : CompilationDiagnostic.diagnostics(previousState)) {
