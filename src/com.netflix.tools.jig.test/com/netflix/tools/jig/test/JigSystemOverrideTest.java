@@ -162,7 +162,7 @@ class JigSystemOverrideTest {
         Path source = sourceModule(directory, "java.logging", "module java.logging {}");
 
         String arguments = arguments("--module-source-path", directory.resolve("src").toString(),
-                "-m", "java.logging", "--resolve-options", COMPILE_OPTIONS, "--compile-time");
+                "-m", "java.logging", "--resolve-options", COMPILE_OPTIONS);
 
         assertTrue(arguments.contains("--module-source-path"), arguments);
         assertTrue(arguments.contains(source.toString()), arguments);

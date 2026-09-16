@@ -53,6 +53,8 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.artifact.DefaultArtifac
 import com.netflix.tools.jig.internal.org.eclipse.aether.collection.CollectRequest;
 import com.netflix.tools.jig.internal.org.eclipse.aether.collection.DependencyCollectionException;
 import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyNode;
+import com.netflix.tools.jig.internal.org.eclipse.aether.installation.InstallRequest;
+import com.netflix.tools.jig.internal.org.eclipse.aether.installation.InstallationException;
 import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
 import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository.Builder;
 import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactRequest;
@@ -601,7 +603,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 }
                 visited.add(key);
                 String moduleName = effectiveModuleName(artifact, identity);
-                ModuleLocationTransporter.registerObservedLocation(session, moduleName, artifact.getVersion(), artifact);
+                recordLocation(moduleName, artifact);
                 String scope = "runtime".equals(dependency.getScope()) ? "runtime" : "compile";
                 backingArtifacts.putIfAbsent(moduleName, new BackingArtifact(artifact, scope));
                 queue.addLast(new BackingTraversalNode(artifact, false));
@@ -657,7 +659,7 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
                 }
                 moduleName = effectiveModuleName(artifact, identity);
             }
-            ModuleLocationTransporter.registerObservedLocation(session, moduleName, artifact.getVersion(), artifact);
+            recordLocation(moduleName, artifact);
             String scope = "runtime".equals(dependency.getScope()) ? "runtime" : "compile";
             var prior = selected.get(moduleName);
             if (prior == null) {
@@ -675,6 +677,32 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
             queue.addAll(node.getChildren());
         }
         return selected;
+    }
+
+    private void recordLocation(String moduleName, Artifact target) throws IOException {
+        Artifact location = ArtifactCandidates.moduleLocationCoordinate(moduleName, target.getVersion());
+        Path installed = locationSession.getLocalRepositoryManager().getAbsolutePathForLocalArtifact(location);
+        if (Files.isRegularFile(installed)) {
+            Artifact existing = AbstractLocationTransporter.parseRelocationTarget(installed);
+            if (existing != null
+                    && existing.getGroupId().equals(target.getGroupId())
+                    && existing.getArtifactId().equals(target.getArtifactId())) {
+                return;
+            }
+            throw new IOException("Conflicting cached location for module " + moduleName + "@" + target.getVersion());
+        }
+
+        Path temporary = Files.createTempFile("jig-module-location-", ".pom");
+        try {
+            Files.write(temporary, AbstractLocationTransporter.buildRelocationPom(
+                    location.getGroupId(), location.getArtifactId(), location.getVersion(),
+                    target.getGroupId(), target.getArtifactId()));
+            system.install(locationSession, new InstallRequest().addArtifact(location.setPath(temporary)));
+        } catch (InstallationException e) {
+            throw new IOException("Failed to record location of module " + moduleName + "@" + target.getVersion(), e);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private static boolean isCanonical(Artifact artifact) {

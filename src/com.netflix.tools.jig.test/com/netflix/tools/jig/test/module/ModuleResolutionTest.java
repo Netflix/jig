@@ -122,7 +122,7 @@ class ModuleResolutionTest {
 
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                        new Result(repositoryModules, new LinkedHashSet<>(),
                                 Map.of("com.example.dependency", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("com.example.application"),
@@ -142,7 +142,7 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     declarations.set(List.copyOf(roots));
-                    return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                    return new Result(repositoryModules, new LinkedHashSet<>(),
                             Map.of(), Map.of());
                 },
                 ModuleFinder.of(),
@@ -173,7 +173,7 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     declarations.set(List.copyOf(roots));
-                    return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                    return new Result(repositoryModules, new LinkedHashSet<>(),
                             Map.of(), Map.of());
                 },
                 ModuleFinder.of(application, library),
@@ -227,17 +227,113 @@ class ModuleResolutionTest {
     }
 
     @Test
-    void requiresVersionForStaticBinaryRequirementAtCompileTime(@TempDir Path directory) throws Exception {
+    void ignoresStaticRequirementsWhenNoSourceModulesAreCompiled(@TempDir Path directory) throws Exception {
         Path application = explicitJar(directory, "com.example.application",
                 Collections.singletonMap("com.example.annotations", null),
                 Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
 
         try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, ModuleFinder.of(application),
+                    List.of("com.example.application"), true, false);
+
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.application")
+                    .isPresent());
+            assertTrue(resolution.observableModules()
+                    .find("com.example.annotations")
+                    .isEmpty());
+        }
+    }
+
+    @Test
+    void ignoresNonTransitiveStaticRequirementOfCompiledSourceDependency(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        source(sources, "com.example.application",
+                "module com.example.application { requires com.example.library; }",
+                "Application.java", "final class Application {}");
+        Path library = explicitJar(directory, "com.example.library",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE));
+        ModuleFinder modules = ModuleFinder.compose(SourceModuleFinder.of(sources), ModuleFinder.of(library));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, modules,
+                    List.of("com.example.application"), true, false);
+
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.library")
+                    .isPresent());
+            assertTrue(resolution.observableModules()
+                    .find("com.example.annotations")
+                    .isEmpty());
+        }
+    }
+
+    @Test
+    void requiresTransitiveStaticRequirementOfCompiledSourceDependency(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        source(sources, "com.example.application",
+                "module com.example.application { requires com.example.library; }",
+                "Application.java", "final class Application {}");
+        Path library = explicitJar(directory, "com.example.library",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+        ModuleFinder modules = ModuleFinder.compose(SourceModuleFinder.of(sources), ModuleFinder.of(library));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
             var failure = assertThrows(FindException.class,
-                    () -> ModuleResolution.resolve(repository, ModuleFinder.of(application),
+                    () -> ModuleResolution.resolve(repository, modules,
                             List.of("com.example.application"), true, false));
 
             assertEquals("No version declared for module com.example.annotations", failure.getMessage());
+        }
+    }
+
+    @Test
+    void selectsTransitiveStaticRequirementOfCompiledSourceDependency(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        source(sources, "com.example.application",
+                "module com.example.application { requires com.example.library; }",
+                "Application.java", "final class Application {}");
+        Path library = explicitJar(directory, "com.example.library",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+        Path annotations = explicitJar(directory, "com.example.annotations");
+        ModuleFinder modules = ModuleFinder.compose(SourceModuleFinder.of(sources), ModuleFinder.of(library, annotations));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, modules,
+                    List.of("com.example.application"), true, false);
+
+            assertEquals(Set.of("com.example.annotations"), resolution.staticRoots());
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.annotations")
+                    .isPresent());
+        }
+    }
+
+    @Test
+    void ignoresTransitiveStaticRequirementBeyondNonTransitiveDependency(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        source(sources, "com.example.application",
+                "module com.example.application { requires com.example.library; }",
+                "Application.java", "final class Application {}");
+        Path library = explicitJar(directory, "com.example.library", Map.of("com.example.internal", "1.0"));
+        Path internal = explicitJar(directory, "com.example.internal",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+        ModuleFinder modules = ModuleFinder.compose(SourceModuleFinder.of(sources), ModuleFinder.of(library, internal));
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, modules,
+                    List.of("com.example.application"), true, false);
+
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.internal")
+                    .isPresent());
+            assertTrue(resolution.observableModules()
+                    .find("com.example.annotations")
+                    .isEmpty());
         }
     }
 
@@ -264,7 +360,7 @@ class ModuleResolutionTest {
 
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                        new Result(ModuleFinder.of(), new LinkedHashSet<>(),
                                 Map.of(), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("com.example.application"),
@@ -293,7 +389,7 @@ class ModuleResolutionTest {
         ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     assertFalse(requiredModules(roots).contains("java.logging"));
-                    return new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                    return new Result(ModuleFinder.of(), new LinkedHashSet<>(),
                             Map.of(), Map.of());
                 },
                 ModuleFinder.of(application),
@@ -318,7 +414,7 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     assertTrue(requiredModules(roots).contains("java.sql"));
-                    return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                    return new Result(repositoryModules, new LinkedHashSet<>(),
                             Map.of("java.sql", "1.0"), Map.of());
                 },
                 SourceModuleFinder.of(directory.resolve("src")),
@@ -347,7 +443,7 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     assertTrue(requiredModules(roots).contains("java.sql"));
-                    return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                    return new Result(repositoryModules, new LinkedHashSet<>(),
                             Map.of("java.sql", "1.0"), Map.of());
                 },
                 ModuleFinder.of(),
@@ -377,7 +473,7 @@ class ModuleResolutionTest {
                 FindException.class,
                 () -> ModuleResolution.resolve(
                         (roots, includeStatics, includeSources) ->
-                                new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                                new Result(ModuleFinder.of(), new LinkedHashSet<>(),
                                         Map.of(), Map.of()),
                         fixedModules,
                         List.of(),
@@ -398,7 +494,7 @@ class ModuleResolutionTest {
 
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                        new Result(ModuleFinder.of(), new LinkedHashSet<>(),
                                 Map.of(), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("java.logging"),
@@ -428,7 +524,7 @@ class ModuleResolutionTest {
 
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                        new Result(repositoryModules, new LinkedHashSet<>(),
                                 Map.of(), Map.of()),
                 sourceModules,
                 List.of("com.example.application"),
@@ -464,7 +560,6 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
                         new Result(repositoryModules, new LinkedHashSet<>(),
-                                Map.of("auto.parent", parentHash, "auto.dependency", dependencyHash),
                                 Map.of("auto.parent", "1.0", "auto.dependency", "1.0"), Map.of()),
                 SourceModuleFinder.of(sources),
                 List.of("com.example.application", "com.netflix.tools.jig"),
@@ -526,7 +621,7 @@ class ModuleResolutionTest {
 
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
-                    return new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                    return new Result(repositoryModules, new LinkedHashSet<>(),
                             Map.of(), Map.of());
                 },
                 SourceModuleFinder.of(sources),
@@ -557,7 +652,7 @@ class ModuleResolutionTest {
         var resolution = ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) -> {
                     assertTrue(includeStatics);
-                    return new Result(ModuleFinder.of(), new LinkedHashSet<>(), Map.of(),
+                    return new Result(ModuleFinder.of(), new LinkedHashSet<>(),
                             Map.of(), Map.of());
                 },
                 SourceModuleFinder.of(sources),
@@ -597,7 +692,7 @@ class ModuleResolutionTest {
         Path module = source(directory.resolve("src"), "com.example.application", "module com.example.application {}",
                 "Application.java", "final class Application {}");
         ModuleInfoHash.newBuilder()
-                .put("com.example.unexpected", "1.0.0", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
+                .put("com.example.unexpected", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
                 .build()
                 .write(module.resolve("module-info.hash"));
         var sourceModules = SourceModuleFinder.of(directory.resolve("src"));
@@ -620,14 +715,14 @@ class ModuleResolutionTest {
         ModuleHash hash = ModuleHash.moduleSha256(repositoryModules.find("com.example.library")
                 .orElseThrow());
         ModuleInfoHash.newBuilder()
-                .put("com.example.library", "1.0", hash)
-                .put("com.example.unexpected", "1.0.0", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
+                .put("com.example.library", hash)
+                .put("com.example.unexpected", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
                 .build()
                 .write(module.resolve("module-info.hash"));
 
         ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
+                        new Result(repositoryModules, new LinkedHashSet<>(),
                                 Map.of("com.example.library", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("com.example.application"),
@@ -649,13 +744,13 @@ class ModuleResolutionTest {
                 """,
                 "Application.java", "final class Application {}");
         ModuleInfoHash.newBuilder()
-                .put("com.netflix.tools.jig", "1.0", ModuleHash.moduleSha256(dependency))
+                .put("com.netflix.tools.jig", ModuleHash.moduleSha256(dependency))
                 .build()
                 .write(module.resolve("module-info.hash"));
 
         ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of(),
+                        new Result(repositoryModules, new LinkedHashSet<>(),
                                 Map.of("com.netflix.tools.jig", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("com.example.application"),
@@ -696,7 +791,7 @@ class ModuleResolutionTest {
                 FindException.class,
                 () -> ModuleResolution.resolve(
                         (roots, includeStatics, includeSources) ->
-                                new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
+                                new Result(repositoryModules, new LinkedHashSet<>(),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
                         List.of("com.example.application"),
@@ -728,7 +823,7 @@ class ModuleResolutionTest {
                 FindException.class,
                 () -> ModuleResolution.resolve(
                         (roots, includeStatics, includeSources) ->
-                                new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
+                                new Result(repositoryModules, new LinkedHashSet<>(),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
                         List.of("com.example.application"),
@@ -744,7 +839,7 @@ class ModuleResolutionTest {
                 "Application.java", "final class Application {}");
         Path hashFile = module.resolve("module-info.hash");
         ModuleInfoHash.newBuilder()
-                .put("com.example.stale", "1.0", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
+                .put("com.example.stale", new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000"))
                 .build()
                 .write(hashFile);
         var sourceModules = SourceModuleFinder.of(directory.resolve("src"));
@@ -758,7 +853,7 @@ class ModuleResolutionTest {
     }
 
     @Test
-    void updateRejectsChangedContentForAnExistingCoordinate(@TempDir Path directory) throws Exception {
+    void updateRejectsChangedContentForAnUnversionedModule(@TempDir Path directory) throws Exception {
         Path module = source(directory.resolve("src"), "com.example.application",
                 """
                 module com.example.application {
@@ -772,7 +867,7 @@ class ModuleResolutionTest {
         ModuleHash expected = new ModuleHash(Type.MODULE, "sha256", "0000000000000000000000000000000000000000000000000000000000000000");
         Path hashFile = module.resolve("module-info.hash");
         ModuleInfoHash.newBuilder()
-                .put("com.example.library", "1.0", expected)
+                .put("com.example.library", expected)
                 .build()
                 .write(hashFile);
 
@@ -780,7 +875,7 @@ class ModuleResolutionTest {
                 FindException.class,
                 () -> ModuleResolution.resolve(
                         (roots, includeStatics, includeSources) ->
-                                new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", observed),
+                                new Result(repositoryModules, new LinkedHashSet<>(),
                                         Map.of("com.example.library", "1.0"), Map.of()),
                         SourceModuleFinder.of(directory.resolve("src")),
                         List.of("com.example.application"),
@@ -791,12 +886,12 @@ class ModuleResolutionTest {
 
         assertEquals(expected,
                 ModuleInfoHash.read(hashFile)
-                        .get("com.example.library", "1.0")
+                        .get("com.example.library")
                         .orElseThrow());
     }
 
     @Test
-    void updateIncludesStaticModulesOnTheModulePath(@TempDir Path directory) throws Exception {
+    void updateIncludesUnversionedStaticModulesWithoutUsingRepositoryVersions(@TempDir Path directory) throws Exception {
         Path module = source(directory.resolve("src"), "com.example.application",
                 """
                 module com.example.application {
@@ -810,7 +905,7 @@ class ModuleResolutionTest {
 
         ModuleResolution.resolve(
                 (roots, includeStatics, includeSources) ->
-                        new Result(repositoryModules, new LinkedHashSet<>(), Map.of("com.example.library", hash),
+                        new Result(repositoryModules, new LinkedHashSet<>(),
                                 Map.of("com.example.library", "1.0"), Map.of()),
                 SourceModuleFinder.of(directory.resolve("src")),
                 List.of("com.example.application"),
@@ -821,8 +916,10 @@ class ModuleResolutionTest {
 
         assertEquals(hash,
                 ModuleInfoHash.read(module.resolve("module-info.hash"))
-                        .get("com.example.library", "1.0")
+                        .get("com.example.library")
                         .orElseThrow());
+        assertEquals("com.example.library=" + hash + System.lineSeparator(),
+                Files.readString(module.resolve("module-info.hash")));
     }
 
     private static Set<String> requiredModules(Collection<ModuleDescriptor> descriptors) {

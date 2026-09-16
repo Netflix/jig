@@ -52,7 +52,6 @@ import com.netflix.tools.jig.module.ArtifactCandidates;
  */
 public final class ModuleLocationTransporter extends AbstractLocationTransporter {
 
-    private static final String OBSERVED_LOCATIONS_KEY = "jig.module.observed.locations";
     private static final String DISCOVERY_CACHE_KEY = "jig.module.location.discovery";
 
     private final List<RemoteRepository> bomRepositories;
@@ -74,19 +73,6 @@ public final class ModuleLocationTransporter extends AbstractLocationTransporter
         return ArtifactCandidates.locationCoordinate(requested.getArtifactId(), requested.getVersion());
     }
 
-    @SuppressWarnings("unchecked")
-    static void registerObservedLocation(RepositorySystemSession session, String moduleName, String version,
-            Artifact artifact) {
-        var locations = (Map<String, Artifact>) session.getData().computeIfAbsent(OBSERVED_LOCATIONS_KEY, ConcurrentHashMap::new);
-        locations.putIfAbsent(moduleName + "@" + version, artifact);
-    }
-
-    @SuppressWarnings("unchecked")
-    private Artifact observedLocation(String moduleName, String version) {
-        var locations = (Map<String, Artifact>) session.getData().get(OBSERVED_LOCATIONS_KEY);
-        return locations == null ? null : locations.get(moduleName + "@" + version);
-    }
-
     private record DiscoveryKey(String moduleName, String version) {}
 
     @SuppressWarnings("unchecked")
@@ -98,12 +84,6 @@ public final class ModuleLocationTransporter extends AbstractLocationTransporter
     protected Artifact discover(Artifact requested) throws IOException {
         String moduleName = requested.getArtifactId();
         String version = requested.getVersion();
-        Artifact observed = observedLocation(moduleName, version);
-        if (observed != null) {
-            trace("locate module %s -> %s:%s (observed)", moduleName,
-                    observed.getGroupId(), observed.getArtifactId());
-            return observed;
-        }
         var cacheKey = new DiscoveryKey(moduleName, version);
         try {
             return discoveryCache().computeIfAbsent(cacheKey, ignored -> {

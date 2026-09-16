@@ -77,7 +77,6 @@ final class AotWarmup {
                     "--prefer-jmod",
                     "--generate-consumer-pom",
                     work.resolve("publication").toString(),
-                    "--compile-time",
                     "--resolve-options",
                     "module-path,processor-module-path,upgrade-module-path," + "module-source-path,source-path,module=list,module-version," + "patch-module,release,enable-preview,add-exports",
                     "--write-argfile",

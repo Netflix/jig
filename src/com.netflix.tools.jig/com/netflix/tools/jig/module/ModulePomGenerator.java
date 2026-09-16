@@ -143,8 +143,7 @@ public final class ModulePomGenerator {
         Path hashFile = sourceModule.sourceDirectory().resolve("module-info.hash");
         if (Files.isRegularFile(hashFile)) {
             for (var coordinate : ModuleInfoHash.read(hashFile).keys()) {
-                recordedVersions.put(coordinate.moduleName(),
-                        coordinate.version().toString());
+                coordinate.version().ifPresent(version -> recordedVersions.put(coordinate.moduleName(), version.toString()));
             }
         }
 

@@ -379,8 +379,6 @@ class ModuleProxyTransporterTest {
                 String resolutionTrace = traceBytes.toString();
                 assertFalse(resolutionTrace.contains("canonical resource com.example:com.example.explicit:jar:1.0"), resolutionTrace);
                 assertFalse(resolutionTrace.contains("generate module hash"), resolutionTrace);
-                assertTrue(resolvedModules.hashes()
-                        .isEmpty());
                 assertTrue(resolvedModules.automaticModuleRoots()
                         .isEmpty());
                 assertTrue(resolvedModules.observableModules()
@@ -395,7 +393,7 @@ class ModuleProxyTransporterTest {
                     cachedModules = Trace.callWithOutput(traceOutput, () -> new AetherModuleResolver(context.system(), context.session(), List.of(modules), metadata::moduleDescriptor)
                             .resolve(List.of(rootDescriptor), false));
                 }
-                assertEquals(resolvedModules.hashes(), cachedModules.hashes());
+                assertEquals(resolvedModules.versions(), cachedModules.versions());
                 assertFalse(cachedTraceBytes.toString().contains("generate module hash"),
                         cachedTraceBytes.toString());
             }

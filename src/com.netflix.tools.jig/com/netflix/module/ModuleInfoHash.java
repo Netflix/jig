@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
@@ -30,18 +31,27 @@ import javax.lang.model.SourceVersion;
 /** Reads, writes, and verifies detached {@code module-info.hash} files. */
 public final class ModuleInfoHash {
     /**
-     * A versioned module key in a hash file.
+     * A module key in a hash file.
      *
      * @param moduleName the Java module name
-     * @param version the module version
+     * @param version the version reported by the module descriptor, if present
      */
-    public record Coordinate(String moduleName, ModuleDescriptor.Version version) implements Comparable<Coordinate> {
+    public record Coordinate(String moduleName, Optional<ModuleDescriptor.Version> version) implements Comparable<Coordinate> {
         /** Validates and creates a module coordinate. */
         public Coordinate {
             if (!SourceVersion.isName(moduleName)) {
                 throw new IllegalArgumentException("Invalid module name: " + moduleName);
             }
-            java.util.Objects.requireNonNull(version, "version");
+            Objects.requireNonNull(version, "version");
+        }
+
+        /**
+         * Creates an unversioned module coordinate.
+         *
+         * @param moduleName the Java module name
+         */
+        public Coordinate(String moduleName) {
+            this(moduleName, Optional.empty());
         }
 
         /**
@@ -52,12 +62,15 @@ public final class ModuleInfoHash {
          * @throws IllegalArgumentException if the name or version is invalid
          */
         public Coordinate(String moduleName, String version) {
-            this(moduleName, ModuleDescriptor.Version.parse(version));
+            this(moduleName, Optional.of(ModuleDescriptor.Version.parse(version)));
         }
 
         static Coordinate parse(String value) {
             var separator = value.lastIndexOf('@');
-            if (separator <= 0 || separator + 1 == value.length()) {
+            if (separator < 0) {
+                return new Coordinate(value);
+            }
+            if (separator == 0 || separator + 1 == value.length()) {
                 throw new IllegalArgumentException("Invalid module coordinate: " + value);
             }
             return new Coordinate(value.substring(0, separator), value.substring(separator + 1));
@@ -70,7 +83,7 @@ public final class ModuleInfoHash {
 
         @Override
         public String toString() {
-            return moduleName + "@" + version;
+            return moduleName + version.map(value -> "@" + value).orElse("");
         }
     }
 
@@ -139,7 +152,17 @@ public final class ModuleInfoHash {
     }
 
     /**
-     * Returns the hash recorded for a module name and version.
+     * Returns the hash recorded for an unversioned module name.
+     *
+     * @param name the module name
+     * @return the recorded hash, or an empty value
+     */
+    public Optional<ModuleHash> get(String name) {
+        return get(new Coordinate(name));
+    }
+
+    /**
+     * Returns the hash recorded for a module name and descriptor version.
      *
      * @param name the module name
      * @param version the module version
@@ -147,6 +170,21 @@ public final class ModuleInfoHash {
      */
     public Optional<ModuleHash> get(String name, String version) {
         return get(new Coordinate(name, version));
+    }
+
+    /**
+     * Tests whether a module has the hash recorded for the coordinate reported by its descriptor.
+     *
+     * @param reference the resolved module
+     * @return {@code true} if an entry exists and matches the module content
+     * @throws IOException if the module cannot be read
+     */
+    public boolean verify(ModuleReference reference) throws IOException {
+        String name = reference.descriptor().name();
+        var coordinate = new Coordinate(name, reference.descriptor().version());
+        Optional<ModuleHash> expected = get(coordinate);
+        return expected.isPresent()
+                && expected.get().equals(ModuleHash.moduleSha256(reference));
     }
 
     /**
@@ -252,7 +290,18 @@ public final class ModuleInfoHash {
         private Builder() {}
 
         /**
-         * Records a hash by module name and version.
+         * Records a hash by unversioned module name.
+         *
+         * @param name the module name
+         * @param hash the content hash
+         * @return this builder
+         */
+        public Builder put(String name, ModuleHash hash) {
+            return put(new Coordinate(name), hash);
+        }
+
+        /**
+         * Records a hash by module name and descriptor version.
          *
          * @param name the module name
          * @param version the module version
@@ -276,22 +325,15 @@ public final class ModuleInfoHash {
         }
 
         /**
-         * Computes and records the hash of a versioned module.
+         * Computes and records the hash of a module using the coordinate reported by its descriptor.
          *
          * @param reference the resolved module
          * @return this builder
-         * @throws IllegalArgumentException if the module has no version
          * @throws IOException if the module cannot be read
          */
         public Builder computeAndPut(ModuleReference reference) throws IOException {
             String name = reference.descriptor().name();
-            String version =
-                    reference.descriptor()
-                            .version()
-                            .map(Object::toString)
-                            .orElseThrow(() ->
-                                    new IllegalArgumentException("Module " + name + " has no version"));
-            return put(name, version, ModuleHash.moduleSha256(reference));
+            return put(new Coordinate(name, reference.descriptor().version()), ModuleHash.moduleSha256(reference));
         }
 
         /**

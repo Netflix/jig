@@ -68,14 +68,14 @@ public class ModuleInfoHashTest {
         Path hashFile = dir.resolve("module-info.hash");
 
         ModuleInfoHash original = ModuleInfoHash.newBuilder()
-                .put("com.example.lib", "1.2.3", moduleHash("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"))
+                .put("com.example.lib", moduleHash("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"))
                 .put("com.example.api", "2.0.0", moduleHash("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"))
                 .build();
 
         original.write(hashFile);
 
         ModuleInfoHash loaded = ModuleInfoHash.read(hashFile);
-        assertEquals(original.get("com.example.lib", "1.2.3"), loaded.get("com.example.lib", "1.2.3"));
+        assertEquals(original.get("com.example.lib"), loaded.get("com.example.lib"));
         assertEquals(original.get("com.example.api", "2.0.0"), loaded.get("com.example.api", "2.0.0"));
     }
 
@@ -87,14 +87,14 @@ public class ModuleInfoHashTest {
                 """
                 # this is a comment
 
-                com.example.lib@1.2.3=module:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+                com.example.lib=module:sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 
                 # another comment
                 com.example.api@2.0.0=module:sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
                 """);
 
         ModuleInfoHash hashes = ModuleInfoHash.read(hashFile);
-        assertTrue(hashes.get("com.example.lib", "1.2.3")
+        assertTrue(hashes.get("com.example.lib")
                          .isPresent());
         assertTrue(hashes.get("com.example.api", "2.0.0")
                          .isPresent());
@@ -104,8 +104,22 @@ public class ModuleInfoHashTest {
     @DisplayName("get returns empty for unknown module")
     void getUnknown() {
         ModuleInfoHash hashes = ModuleInfoHash.newBuilder().build();
-        assertTrue(hashes.get("nonexistent", "1.0.0")
+        assertTrue(hashes.get("nonexistent")
                          .isEmpty());
+    }
+
+    @Test
+    @DisplayName("compute and put accepts a module without a JPMS version")
+    void computeAndPutUnversionedModule(@TempDir Path dir) throws Exception {
+        ModuleReference ref = ModuleFinder.of(explicitJar(dir, "com.example.unversioned"))
+                .find("com.example.unversioned")
+                .orElseThrow();
+
+        ModuleInfoHash hashes = ModuleInfoHash.newBuilder()
+                .computeAndPut(ref)
+                .build();
+
+        assertEquals(ModuleHash.moduleSha256(ref), hashes.get("com.example.unversioned").orElseThrow());
     }
 
     @Test
@@ -196,5 +210,23 @@ public class ModuleInfoHashTest {
 
     private static ModuleHash moduleHash(String digest) {
         return new ModuleHash(Type.MODULE, "sha256", digest);
+    }
+
+    private static Path explicitJar(Path directory, String moduleName) throws Exception {
+        Path source = directory.resolve("src/module-info.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "module " + moduleName + " {}\n");
+        Path classes = Files.createDirectories(directory.resolve("classes"));
+        int result = javax.tools.ToolProvider.getSystemJavaCompiler().run(null, null, null,
+                "-d", classes.toString(), source.toString());
+        assertEquals(0, result);
+        Path jar = directory.resolve(moduleName + ".jar");
+        try (var output = new java.util.jar.JarOutputStream(Files.newOutputStream(jar))) {
+            var entry = new java.util.jar.JarEntry("module-info.class");
+            output.putNextEntry(entry);
+            Files.copy(classes.resolve("module-info.class"), output);
+            output.closeEntry();
+        }
+        return jar;
     }
 }

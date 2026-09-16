@@ -297,8 +297,7 @@ public class Jig implements ToolProvider, OptionChecker {
     public static boolean shouldIncludeStatics(Options options) {
         return !options.moduleSourcePaths.isEmpty()
                 || options.modulePomRoot != null
-                || options.consumerPomDirectory != null
-                || options.compileTime;
+                || options.consumerPomDirectory != null;
     }
 
     public static boolean shouldIncludeSources(Options options) {
@@ -323,7 +322,7 @@ public class Jig implements ToolProvider, OptionChecker {
             throws IOException {
         validateSelectedArtifacts(resolution, repositoryPaths);
         boolean describe = resolveOptions.contains("describe-module");
-        Set<String> excludedModules = options.compileTime ? Set.of() : staticOnly;
+        Set<String> excludedModules = resolveOptions.contains("module-source-path") ? Set.of() : staticOnly;
         var config = resolution.configuration();
         var configurationRoots = resolution.configurationRoots().stream()
                 .filter(name -> !excludedModules.contains(name))
@@ -1312,7 +1311,6 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("  -w, --write-argfile <path>");
         out.println("                  Write generated options as a Java argument file.");
         out.println("                  Requires --resolve-options.");
-        out.println("  --compile-time  Include dependencies reached through requires static.");
         out.println("  --recompile     Compile source modules without reusing prior output.");
         out.println("  --no-compile-diagnostics");
         out.println("                  Do not report source compilation diagnostics.");
@@ -1366,7 +1364,6 @@ public class Jig implements ToolProvider, OptionChecker {
         public Set<String> resolveOptions;
         public ModuleForm moduleForm = ModuleForm.SINGLE;
         public Path argumentFile;
-        public boolean compileTime;
         public boolean recompile;
         public boolean emitCompileDiagnostics = true;
         public boolean validateRuntimeAccess;
@@ -1410,7 +1407,6 @@ public class Jig implements ToolProvider, OptionChecker {
                     || modulePomRoot != null
                     || consumerPomDirectory != null
                     || integrityMode != IntegrityMode.NONE
-                    || compileTime
                     || recompile
                     || !emitCompileDiagnostics
                     || validateRuntimeAccess;
@@ -1427,7 +1423,6 @@ public class Jig implements ToolProvider, OptionChecker {
                     || consumerPomDirectory != null
                     || integrityMode != IntegrityMode.NONE
                     || resolveOptions != null
-                    || compileTime
                     || recompile
                     || !emitCompileDiagnostics
                     || validateRuntimeAccess;
