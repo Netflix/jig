@@ -1446,7 +1446,7 @@ public class JigTest {
     }
 
     @Test
-    void moduleSourcePathIncludesStaticSourceRequirements(@TempDir Path directory) throws Exception {
+    void moduleSourcePathIncludesStaticSourceRequirementsWithoutRootingThem(@TempDir Path directory) throws Exception {
         Path sources = directory.resolve("src");
         Path application = sources.resolve("com.example.application");
         Path annotations = sources.resolve("com.example.annotations");
@@ -1470,7 +1470,7 @@ public class JigTest {
                 --module-source-path
                 com.example.application=%s
                 --module
-                com.example.application,com.example.annotations
+                com.example.application
                 """
                         .formatted(annotations, application),
                 arguments);

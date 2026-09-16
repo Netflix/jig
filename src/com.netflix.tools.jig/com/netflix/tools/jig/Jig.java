@@ -325,6 +325,7 @@ public class Jig implements ToolProvider, OptionChecker {
         Set<String> excludedModules = resolveOptions.contains("module-source-path") ? Set.of() : staticOnly;
         var config = resolution.configuration();
         var configurationRoots = resolution.configurationRoots().stream()
+                .filter(name -> !resolution.staticRoots().contains(name))
                 .filter(name -> !excludedModules.contains(name))
                 .toList();
         var authoritativeRoots = options.rootNames().stream()
