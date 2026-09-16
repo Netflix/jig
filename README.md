@@ -134,7 +134,6 @@ mkdir -p "$output/modules"
 
 jig --module-source-path src \
   -m com.example.app \
-  --compile-time \
   -r module-path,module-source-path,module=list,release \
   -w "$output/compile.args"
 
@@ -149,7 +148,7 @@ java @"$output/launch.args" \
   --module com.example.app/com.example.app.Main
 ```
 
-The first invocation generates the graph options needed by `javac`, while `-d` is supplied directly to the compiler. `--compile-time` includes dependencies reachable only through `requires static`. The second invocation uses the compiled output as its input and generates the runtime graph options needed by `java`. Each invocation requests only the options consumed by the following command.
+The first invocation generates the options needed by `javac`, including direct `requires static` dependencies of the source modules and `requires static transitive` dependencies inherited along their readability paths, while `-d` is supplied directly to the compiler. The second invocation uses the compiled output as its input and generates the runtime options needed by `java`. Each invocation requests only the options consumed by the following command.
 
 ## Resolve published modules
 
@@ -210,14 +209,7 @@ The `--module` option differs between JDK tools, so its output specification inc
 
 `module` is an alias for `module=single`. `module=roots` must be accompanied by `add-modules`. With `module=main` and no `-m`, the only module declaring a main class is selected automatically. Select it explicitly when more than one module declares a main class.
 
-Graph selection is independent of the options being emitted. Add `--compile-time` to include dependencies reachable only through `requires static`:
-
-```sh
-jig --module-source-path src \
-  -m com.example.app \
-  --compile-time \
-  -r module-path,module-source-path,module=list,release
-```
+Requesting `module-source-path` includes the static dependencies required by `javac`: direct static requirements of selected source modules and static transitive requirements inherited along their readability paths. Plain static requirements of compiled dependencies are not included. Requesting only `module-path` omits dependencies reachable only through `requires static`, even when `jig` compiles source modules internally.
 
 Use `--validate-runtime-access` when the consuming operation will run code. Validation does not emit runtime access options; request those options explicitly with `-r`.
 
@@ -258,7 +250,6 @@ mkdir -p "$output/args" "$output/modules" "$artifacts"
 jig --module-source-path src \
   -m "$module" \
   --module-version "$version" \
-  --compile-time \
   -r module-path,module-source-path,module=list,module-version,release \
   -w "$output/args/compile.args"
 
@@ -266,7 +257,6 @@ javac -d "$output/modules" @"$output/args/compile.args"
 
 jig --module-source-path src \
   -m "$module" \
-  --compile-time \
   -r module-path,module-source-path,module=list,release \
   -w "$output/args/javadoc.args"
 
@@ -416,10 +406,7 @@ jig --module-source-path 'src/*/main/java' -m com.example.app
 
 Request `source-path` to combine the source directories of selected local modules with `sources` artifacts resolved for published modules. A missing optional sources artifact does not affect module resolution.
 
-Request `module-source-path` to generate the source-module path used by compile-time tools. Resolving dependencies and choosing which modules to include in the generated arguments are separate decisions:
-
-- When a source module is selected, `jig` resolves the dependencies needed to compile it, including dependencies declared with `requires static`.
-- `--compile-time` includes those static dependencies in the generated arguments. Without it, the generated arguments omit them even when `jig` compiled source modules internally.
+Request `module-source-path` to generate the source-module path used by tools that compile source. The generated arguments include direct `requires static` dependencies of selected source modules and `requires static transitive` dependencies inherited along their readability paths. They do not include plain static requirements of compiled dependencies. Request only `module-path` for runtime use; dependencies reachable only through `requires static` are omitted even when `jig` compiles source modules internally.
 
 A module is not selected merely because it is visible on `--module-source-path`. If a selected module depends on an unselected source module, that dependency is resolved from published modules instead. Select additional source roots explicitly with `--add-modules` or `--add-requires`, and select annotation processors with `@processWith`.
 
@@ -430,17 +417,19 @@ Use `module=single`, `module=list`, `module=main`, or `module=roots` to choose h
 A `module-info.hash` file alongside `module-info.java` records the expected content hash of each resolved binary dependency:
 
 ```text
-com.example.lib@1.2.3=module:sha256:a1b2c3d4e5f6...
+com.example.lib=module:sha256:a1b2c3d4e5f6...
 org.apache.commons.io@2.15.1=module:sha256:f6a7b8c9d0e1...
 ```
 
-`--update-module-hashes` reconciles the file with the resolved `--module-path`. It verifies retained dependencies, adds new dependencies, and removes entries that are no longer present. Changed content at an existing module and version is rejected.
+The key is the module name followed by the version reported by its JPMS descriptor, when present. Unversioned explicit modules therefore have no `@version` suffix. Versions inferred by the module system for automatic modules are retained; Maven artifact versions are not substituted for missing JPMS versions.
+
+`--update-module-hashes` reconciles the file with the resolved `--module-path`. It verifies retained dependencies, adds new dependencies, and removes entries that are no longer present. Changed content at an existing JPMS module coordinate is rejected.
 
 `--verify-module-hashes` requires every dependency on the resolved binary `--module-path` to have one matching entry. Entries for dependencies that are no longer resolved are permitted; `--update-module-hashes` removes them.
 
 Without either option, the file is not read or written.
 
-The hash file verifies the result of resolution. It does not select versions, record repository origins, or become part of published consumer metadata.
+The hash file verifies the result of module resolution. It does not select Maven versions, record repository origins, or become part of published consumer metadata.
 
 ## Maven module namespace
 

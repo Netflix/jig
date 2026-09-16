@@ -64,7 +64,6 @@ final class JigCommandLine {
     private final ToolOption verifyModuleHashes = flag("--verify-module-hashes", "Verify module-content hashes");
     private final ToolOption resolveOptions = option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private final ToolOption writeArgfile = option("--write-argfile", "PATH", "Write generated options as a Java argument file", "-w");
-    private final ToolOption compileTime = flag("--compile-time", "Include requires static dependencies");
     private final ToolOption recompile = flag("--recompile", "Compile source modules without reusing prior output");
     private final ToolOption noCompileDiagnostics = flag("--no-compile-diagnostics", "Do not report source compilation diagnostics");
     private final ToolOption validateRuntimeAccess = flag("--validate-runtime-access", "Validate runtime access requirements");
@@ -89,7 +88,6 @@ final class JigCommandLine {
                     verifyModuleHashes,
                     resolveOptions,
                     writeArgfile,
-                    compileTime,
                     recompile,
                     noCompileDiagnostics,
                     validateRuntimeAccess,
@@ -211,8 +209,6 @@ final class JigCommandLine {
                 options.setResolveOptions(value);
             } else if (occurrence == writeArgfile) {
                 options.setArgumentFile(value);
-            } else if (occurrence == compileTime) {
-                options.compileTime = true;
             } else if (occurrence == recompile) {
                 options.recompile = true;
             } else if (occurrence == noCompileDiagnostics) {

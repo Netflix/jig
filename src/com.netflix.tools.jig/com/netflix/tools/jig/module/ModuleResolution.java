@@ -153,7 +153,8 @@ public record ModuleResolution(
                                         LinkedHashMap::new)));
         var available = modules(selectedFixedModules, systemModules);
         validateAddedRequires(modules(selectedFixedModules), addedRequires);
-        var rootDeclarations = new ArrayList<>(localRootDeclarations(selectedFixedModules, requestedRoots, includeStatics, available, systemModules));
+        var rootDeclarations = new ArrayList<>(localRootDeclarations(selectedFixedModules, requestedRoots, includeStatics, available,
+                systemModules));
         if (!addedRequires.isEmpty()) {
             rootDeclarations.add(addedRequiresDeclaration(addedRequires, available, systemModules));
         }
@@ -190,8 +191,7 @@ public record ModuleResolution(
             }
         }
         var hashes = resolvedHashes(configuration, selectedSources, configurationInputs.inheritedModules(),
-                repositoryModules.observableModules(),
-                repositoryModules.hashes(), repositoryModules.versions(), integrityMode);
+                repositoryModules.observableModules(), integrityMode);
         var sources = new LinkedHashMap<>(repositoryModules.sources());
         if (includeSources) {
             sourceModules.forEach((name, source) -> sources.put(name, source.sourceModule()
@@ -249,25 +249,41 @@ public record ModuleResolution(
         return new ConfigurationInputs(before, List.of(Configuration.empty()), inheritedModules);
     }
 
+    private record Traversal(String name, boolean requiredForCompilation) {}
+
     private static Set<String> staticRequirements(Map<String, ModuleReference> modules, Collection<String> roots) {
         Set<String> explicitRoots = Set.copyOf(roots);
         var staticRoots = new LinkedHashSet<String>();
-        var visited = new LinkedHashSet<String>();
-        var queue = new ArrayDeque<>(roots);
+        var visited = new LinkedHashMap<String, Boolean>();
+        var queue = new ArrayDeque<Traversal>();
+        roots.forEach(name -> queue.addLast(new Traversal(name, false)));
         while (!queue.isEmpty()) {
-            ModuleReference reference = modules.get(queue.removeFirst());
-            if (reference == null || !visited.add(reference.descriptor()
-                    .name())) {
+            var next = queue.removeFirst();
+            ModuleReference reference = modules.get(next.name());
+            if (reference == null) {
                 continue;
             }
+            boolean source = reference instanceof SourceModuleReference;
+            boolean requiredForCompilation = source || next.requiredForCompilation();
+            Boolean previous = visited.get(next.name());
+            if (previous != null && (previous || !requiredForCompilation)) {
+                continue;
+            }
+            visited.put(next.name(), requiredForCompilation);
             for (var requirement : reference.descriptor().requires()) {
                 if (!modules.containsKey(requirement.name())) {
                     continue;
                 }
-                if (requirement.modifiers().contains(Modifier.STATIC) && !explicitRoots.contains(requirement.name())) {
+                var modifiers = requirement.modifiers();
+                boolean isStatic = modifiers.contains(Modifier.STATIC);
+                boolean isTransitive = modifiers.contains(Modifier.TRANSITIVE);
+                if (isStatic && !(source || requiredForCompilation && isTransitive)) {
+                    continue;
+                }
+                if (isStatic && !explicitRoots.contains(requirement.name())) {
                     staticRoots.add(requirement.name());
                 }
-                queue.addLast(requirement.name());
+                queue.addLast(new Traversal(requirement.name(), source || requiredForCompilation && isTransitive));
             }
         }
         return Set.copyOf(staticRoots);
@@ -303,24 +319,37 @@ public record ModuleResolution(
             Map<String, ModuleReference> resolutionModules, ModuleFinder systemModules) {
         Map<String, ModuleReference> available = modules(fixedModules);
         var declarations = new ArrayList<ModuleDescriptor>();
-        var visited = new LinkedHashSet<String>();
-        var queue = new ArrayDeque<>(roots);
+        var visited = new LinkedHashMap<String, Boolean>();
+        var queue = new ArrayDeque<Traversal>();
+        roots.forEach(name -> queue.addLast(new Traversal(name, false)));
         while (!queue.isEmpty()) {
-            ModuleReference reference = available.get(queue.removeFirst());
-            if (reference == null || !visited.add(reference.descriptor()
-                    .name())) {
+            var next = queue.removeFirst();
+            ModuleReference reference = available.get(next.name());
+            if (reference == null) {
                 continue;
             }
+            boolean source = reference instanceof SourceModuleReference;
+            boolean requiredForCompilation = source || next.requiredForCompilation();
+            Boolean previous = visited.get(next.name());
+            if (previous != null && (previous || !requiredForCompilation)) {
+                continue;
+            }
+            visited.put(next.name(), requiredForCompilation);
 
             var declaration = reference.descriptor();
             if (declaration.isAutomatic()) {
                 continue;
             }
-            var sourceDeclaration = reference instanceof SourceModuleReference;
             var repositoryRequirements = declaration.requires().stream()
                     .filter(requirement -> {
+                        var modifiers = requirement.modifiers();
+                        boolean isStatic = modifiers.contains(Modifier.STATIC);
+                        boolean isTransitive = modifiers.contains(Modifier.TRANSITIVE);
+                        return !isStatic || includeStatics && (source || requiredForCompilation && isTransitive);
+                    })
+                    .filter(requirement -> {
                         var name = requirement.name();
-                        var explicitSystemOverride = sourceDeclaration && requirement.compiledVersion().isPresent() && systemModules.find(name).isPresent();
+                        var explicitSystemOverride = source && requirement.compiledVersion().isPresent() && systemModules.find(name).isPresent();
                         return !resolutionModules.containsKey(name) || explicitSystemOverride;
                     })
                     .toList();
@@ -331,10 +360,13 @@ public record ModuleResolution(
             }
 
             for (var requirement : declaration.requires()) {
-                var isStatic = requirement.modifiers().contains(Modifier.STATIC);
-                if (!isStatic || includeStatics) {
-                    queue.addLast(requirement.name());
+                var modifiers = requirement.modifiers();
+                boolean isStatic = modifiers.contains(Modifier.STATIC);
+                boolean isTransitive = modifiers.contains(Modifier.TRANSITIVE);
+                if (isStatic && !(includeStatics && (source || requiredForCompilation && isTransitive))) {
+                    continue;
                 }
+                queue.addLast(new Traversal(requirement.name(), source || requiredForCompilation && isTransitive));
             }
         }
         return List.copyOf(declarations);
@@ -394,10 +426,8 @@ public record ModuleResolution(
             Map<String, SourceModuleReference> sourceModules,
             Set<ModuleReference> inheritedModules,
             ModuleFinder repositoryModules,
-            Map<String, ModuleHash> repositoryHashes,
-            Map<String, String> repositoryVersions,
             IntegrityMode integrityMode) {
-        var hashes = new LinkedHashMap<>(repositoryHashes);
+        var hashes = new LinkedHashMap<String, ModuleHash>();
         if (integrityMode == IntegrityMode.NONE) {
             return Map.copyOf(hashes);
         }
@@ -423,7 +453,7 @@ public record ModuleResolution(
                 }
             }
             for (String moduleName : sourceModules.keySet()) {
-                var observed = observedHashes(configuration, moduleName, hashes, repositoryVersions);
+                var observed = observedHashes(configuration, moduleName, hashes);
                 var path = sourceModules.get(moduleName)
                                         .sourceModule()
                                         .sourceDirectory()
@@ -462,33 +492,25 @@ public record ModuleResolution(
         return Map.copyOf(hashes);
     }
 
-    private static ModuleInfoHash observedHashes(Configuration configuration, String sourceModule, Map<String, ModuleHash> hashes,
-            Map<String, String> repositoryVersions) {
+    private static ModuleInfoHash observedHashes(Configuration configuration, String sourceModule,
+            Map<String, ModuleHash> hashes) {
         var builder = ModuleInfoHash.newBuilder();
         var source = configuration.findModule(sourceModule).orElseThrow();
         source.reads().stream()
                 .sorted(Comparator.comparing(ResolvedModule::name))
-                .forEach(readable -> addObserved(sourceModule, readable, null, hashes, repositoryVersions, builder));
+                .forEach(readable -> addObserved(sourceModule, readable, hashes, builder));
         return builder.build();
     }
 
-    private static void addObserved(String sourceModule, ResolvedModule dependency, String requiredVersion,
-            Map<String, ModuleHash> hashes, Map<String, String> repositoryVersions, Builder builder) {
+    private static void addObserved(String sourceModule, ResolvedModule dependency,
+            Map<String, ModuleHash> hashes, Builder builder) {
         String name = dependency.name();
         if (name.equals(sourceModule)) {
             return;
         }
         ModuleHash hash = hashes.get(name);
         if (hash != null) {
-            String version = requiredVersion != null ? requiredVersion : repositoryVersions.get(name);
-            if (version == null) {
-                version = dependency.reference()
-                                    .descriptor()
-                                    .version()
-                                    .map(Object::toString)
-                                    .orElseThrow(() -> new FindException("No version found for resolved module " + name));
-            }
-            builder.put(name, version, hash);
+            builder.put(new Coordinate(name, dependency.reference().descriptor().version()), hash);
         }
     }
 

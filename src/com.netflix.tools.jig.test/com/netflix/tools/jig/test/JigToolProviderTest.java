@@ -155,8 +155,7 @@ class JigToolProviderTest {
                 "-m",
                 "com.example.application",
                 "--resolve-options",
-                COMPILE_OPTIONS,
-                "--compile-time");
+                COMPILE_OPTIONS);
 
         assertEquals(0, result, err.toString());
         assertTrue(out.toString().contains("--module-source-path"),
@@ -333,7 +332,7 @@ class JigToolProviderTest {
                     out.toString());
             assertTrue(out.toString().contains("-w, --write-argfile"),
                     out.toString());
-            assertTrue(out.toString().contains("--compile-time"),
+            assertFalse(out.toString().contains("--compile-time"),
                     out.toString());
             assertTrue(out.toString().contains("--version"),
                     out.toString());

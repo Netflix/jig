@@ -351,7 +351,6 @@ public class JigTest {
                 compiled.toString(),
                 "--module",
                 "com.example.application",
-                "--compile-time",
                 "--resolve-options",
                 "module-path,module-source-path,module=list",
                 "--write-argfile",
@@ -627,7 +626,6 @@ public class JigTest {
                 directory.resolve("src").toString(),
                 "--module",
                 "com.example.application",
-                "--compile-time",
                 "--resolve-options",
                 "module-source-path,module=list",
                 "--write-argfile",
@@ -1448,7 +1446,7 @@ public class JigTest {
     }
 
     @Test
-    void compileTimeSelectsCompileTimeGraphForCustomTools(@TempDir Path directory) throws Exception {
+    void moduleSourcePathIncludesStaticSourceRequirements(@TempDir Path directory) throws Exception {
         Path sources = directory.resolve("src");
         Path application = sources.resolve("com.example.application");
         Path annotations = sources.resolve("com.example.annotations");
@@ -1462,20 +1460,9 @@ public class JigTest {
                 """);
         Files.writeString(annotations.resolve("module-info.java"), "module com.example.annotations {}");
 
-        String runtimeGraph = runJig("--module-source-path", sources.toString(), "-m", "com.example.application", "--resolve-options",
-                "module-source-path,module");
-        assertEquals(
-                """
-                --module-source-path
-                com.example.application=%s
-                --module
-                com.example.application
-                """
-                        .formatted(application),
-                runtimeGraph);
+        String arguments = runJig("--module-source-path", sources.toString(), "-m", "com.example.application", "--resolve-options",
+                "module-source-path,module=list");
 
-        String compileTimeGraph = runJig("--module-source-path", sources.toString(), "-m", "com.example.application", "--resolve-options",
-                "module-source-path,module=list", "--compile-time");
         assertEquals(
                 """
                 --module-source-path
@@ -1486,7 +1473,37 @@ public class JigTest {
                 com.example.application,com.example.annotations
                 """
                         .formatted(annotations, application),
-                compileTimeGraph);
+                arguments);
+    }
+
+    @Test
+    void modulePathExcludesStaticSourceRequirements(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        Path application = sources.resolve("com.example.application");
+        Path annotations = sources.resolve("com.example.annotations");
+        Files.createDirectories(application);
+        Files.createDirectories(annotations);
+        Files.writeString(application.resolve("module-info.java"),
+                """
+                module com.example.application {
+                    requires static com.example.annotations;
+                }
+                """);
+        Files.writeString(annotations.resolve("module-info.java"), "module com.example.annotations {}");
+
+        String arguments = runJig("--module-source-path", sources.toString(), "-m", "com.example.application", "--resolve-options",
+                "module-path,add-modules");
+        var lines = arguments.lines().toList();
+        var paths = Arrays.stream(lines.get(lines.indexOf("--module-path") + 1)
+                .split(Pattern.quote(System.getProperty("path.separator"))))
+                .map(Path::of)
+                .toArray(Path[]::new);
+        var modules = ModuleFinder.of(paths).findAll().stream()
+                .map(reference -> reference.descriptor().name())
+                .collect(Collectors.toSet());
+
+        assertEquals(Set.of("com.example.application"), modules);
+        assertEquals("com.example.application", lines.get(lines.indexOf("--add-modules") + 1));
     }
 
     @Test
@@ -1967,7 +1984,7 @@ public class JigTest {
         Files.writeString(unrelated.resolve("module-info.java"), "module com.example.unrelated {}\n");
 
         var arguments = runJig("--module-source-path", directory.resolve("src").toString(),
-                "-m", "com.example.application", "--resolve-options", COMPILE_OPTIONS, "--compile-time");
+                "-m", "com.example.application", "--resolve-options", COMPILE_OPTIONS);
 
         var lines = arguments.lines().toList();
         var option = lines.indexOf("--processor-module-path");
@@ -2003,8 +2020,7 @@ public class JigTest {
                 "-m",
                 "com.example.application",
                 "--resolve-options",
-                COMPILE_OPTIONS,
-                "--compile-time");
+                COMPILE_OPTIONS);
 
         var lines = arguments.lines().toList();
         var option = lines.indexOf("--processor-module-path");
@@ -2058,8 +2074,7 @@ public class JigTest {
                 "-m",
                 "com.example.application",
                 "--resolve-options",
-                COMPILE_OPTIONS,
-                "--compile-time");
+                COMPILE_OPTIONS);
 
         List<String> lines = arguments.lines().toList();
         int option = lines.indexOf("--processor-module-path");
@@ -2189,7 +2204,7 @@ public class JigTest {
                 Set.of("java.logging"),
                 Map.of(),
                 Map.of());
-        Options options = Options.parse(new String[] {"--resolve-options", COMPILE_OPTIONS, "--compile-time"});
+        Options options = Options.parse(new String[] {"--resolve-options", COMPILE_OPTIONS});
 
         String arguments = Jig.renderArguments(options.resolveOptions, options, resolution, Set.of(),
                 new RepositoryPaths(Map.of("java.logging", replacement), Map.of()));
@@ -2269,7 +2284,6 @@ public class JigTest {
                 "1.2.3",
                 "--generate-consumer-pom",
                 poms.toString(),
-                "--compile-time",
                 "--resolve-options",
                 "module-path,module-source-path,module=list,module-version",
                 "--write-argfile",
@@ -2318,9 +2332,14 @@ public class JigTest {
     }
 
     @Test
-    void compileTimeSelectsStaticRequirements() {
-        assertTrue(Jig.shouldIncludeStatics(Options.parse(new String[] {"--resolve-options", "module-path", "--compile-time", "-m", "app"})));
+    void staticRequirementsAreNotSelectedWithoutSources() {
         assertFalse(Jig.shouldIncludeStatics(Options.parse(new String[] {"--resolve-options", "module-path", "-m", "app"})));
+    }
+
+    @Test
+    void rejectsRemovedCompileTimeOption() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Options.parse(new String[] {"--resolve-options", "module-path", "--compile-time", "-m", "app"}));
     }
 
     @Test

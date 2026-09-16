@@ -59,10 +59,9 @@ public final class AetherModuleResolver {
     }
 
     public record Result(ModuleFinder observableModules, SequencedSet<String> automaticModuleRoots,
-                         Map<String, ModuleHash> hashes, Map<String, String> versions, Map<String, Path> sources) {
+                         Map<String, String> versions, Map<String, Path> sources) {
         public Result {
             automaticModuleRoots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(automaticModuleRoots));
-            hashes = Map.copyOf(hashes);
             versions = Map.copyOf(versions);
             sources = Map.copyOf(sources);
         }
@@ -199,7 +198,7 @@ public final class AetherModuleResolver {
             if (includeSources) {
                 artifacts.forEach((name, artifact) -> resolveSources(artifact).ifPresent(path -> sources.put(name, path)));
             }
-            return new Result(finder(references), automaticModuleRoots, Map.of(), versions, sources);
+            return new Result(finder(references), automaticModuleRoots, versions, sources);
         } catch (DependencyCollectionException | IOException e) {
             throw new FindException("Failed to resolve modules", e);
         }
