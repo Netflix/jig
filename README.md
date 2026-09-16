@@ -162,6 +162,8 @@ jig --add-requires org.junit.platform.console@6.1.2 \
 
 Each `--add-requires` option adds a published root module. It may be repeated or combined with source modules and an existing module path. Transitive dependencies are resolved using the versions recorded in module descriptors.
 
+`--add-modules` can also name a module that is not yet on the module path. Like an unversioned `requires` directive in a source module, it is resolved when another module in the graph declares a version for that module. A `requires static` directive can supply that version without selecting the static dependency itself. If no module supplies a version, use `--add-requires <module>@<version>` instead.
+
 ## Look up a Maven artifact's module name
 
 Find the Java module name provided by a Maven package:
@@ -618,7 +620,7 @@ jig maven deploy-central [--name <name>] [--manual] <artifact-directory>
 jig maven serve [--listen <host:port>]
 ```
 
-Resolution accepts the familiar JDK options `--module-path`, `--module-source-path`, and `--module`. Use `--add-modules` to add roots already available locally, or `--add-requires <module>@<version>` to resolve published roots.
+Resolution accepts the familiar JDK options `--module-path`, `--module-source-path`, and `--module`. Use `--add-modules` to add unversioned roots satisfied by the module graph, or `--add-requires <module>@<version>` to supply a version explicitly.
 
 With no resolve or generation operation requested, the selected module graph is resolved and validated.
 

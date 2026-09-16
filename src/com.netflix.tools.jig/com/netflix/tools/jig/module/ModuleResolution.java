@@ -151,14 +151,25 @@ public record ModuleResolution(
                                         reference -> reference,
                                         (left, right) -> left,
                                         LinkedHashMap::new)));
-        var available = modules(selectedFixedModules, systemModules);
         validateAddedRequires(modules(selectedFixedModules), addedRequires);
-        var rootDeclarations = new ArrayList<>(localRootDeclarations(selectedFixedModules, requestedRoots, includeStatics, available,
-                systemModules));
-        if (!addedRequires.isEmpty()) {
-            rootDeclarations.add(addedRequiresDeclaration(addedRequires, available, systemModules));
+        var repositoryRoots = new LinkedHashSet<>(requestedRoots);
+        repositoryRoots.addAll(addedRequires.keySet());
+        Result repositoryModules = null;
+        List<ModuleDescriptor> previousDeclarations = null;
+        // Resolving one root can expose version declarations that satisfy an unversioned root or source requirement.
+        // Re-plan from the returned metadata until no additional repository requirements can be expressed.
+        while (true) {
+            var plan = repositoryPlan(selectedFixedModules, repositoryModules, repositoryRoots, addedRequires,
+                    includeStatics, systemModules);
+            if (plan.declarations().equals(previousDeclarations)) {
+                if (!plan.unresolved().isEmpty()) {
+                    throw new FindException("No version declared for module " + plan.unresolved().getFirst());
+                }
+                break;
+            }
+            previousDeclarations = plan.declarations();
+            repositoryModules = dependencyResolver.resolve(plan.declarations(), includeStatics, includeSources);
         }
-        var repositoryModules = dependencyResolver.resolve(rootDeclarations, includeStatics, includeSources);
         var systemOverrides = new LinkedHashSet<String>();
         selectedFixedModules.findAll().stream()
                 .map(reference -> reference.descriptor().name())
@@ -305,26 +316,57 @@ public record ModuleResolution(
                 .collect(Collectors.toSet());
     }
 
-    private static ModuleDescriptor addedRequiresDeclaration(Map<String, String> addedRequires, Map<String, ModuleReference> available, ModuleFinder systemModules) {
-        var builder = ModuleDescriptor.newModule("com.netflix.tools.jig.resolution");
-        addedRequires.forEach((moduleName, version) -> {
-            if (!available.containsKey(moduleName) || systemModules.find(moduleName).isPresent()) {
-                builder.requires(Set.of(), moduleName, Version.parse(version));
-            }
-        });
-        return builder.build();
+    private record RepositoryDemand(String owner, String name, Set<Modifier> modifiers, String declaredVersion) {
+        private RepositoryDemand(String owner, ModuleDescriptor.Requires requirement) {
+            this(owner, requirement.name(), requirement.modifiers(),
+                    requirement.compiledVersion().map(Object::toString).orElse(null));
+        }
     }
 
-    private static List<ModuleDescriptor> localRootDeclarations(ModuleFinder fixedModules, Collection<String> roots, boolean includeStatics,
-            Map<String, ModuleReference> resolutionModules, ModuleFinder systemModules) {
-        Map<String, ModuleReference> available = modules(fixedModules);
-        var declarations = new ArrayList<ModuleDescriptor>();
+    private record RepositoryRequirement(String name, Set<Modifier> modifiers, String version) {}
+
+    private record RepositoryPlan(List<ModuleDescriptor> declarations, SequencedSet<String> unresolved) {
+        private RepositoryPlan {
+            declarations = List.copyOf(declarations);
+            unresolved = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(unresolved));
+        }
+    }
+
+    private static RepositoryPlan repositoryPlan(
+            ModuleFinder fixedModules,
+            Result repositoryModules,
+            Collection<String> roots,
+            Map<String, String> addedRequires,
+            boolean includeStatics,
+            ModuleFinder systemModules) {
+        Map<String, ModuleReference> fixed = modules(fixedModules);
+        var opinions = new LinkedHashMap<String, String>();
+        addedRequires.forEach(opinions::put);
+        if (repositoryModules != null) {
+            repositoryModules.versions().forEach(opinions::putIfAbsent);
+            // Every versioned requires directive contributes an opinion, but only demands collected below become edges.
+            repositoryModules.observableModules().findAll().stream()
+                    .map(ModuleReference::descriptor)
+                    .filter(descriptor -> !descriptor.isAutomatic())
+                    .flatMap(descriptor -> descriptor.requires().stream())
+                    .forEach(requirement -> requirement.compiledVersion()
+                            .ifPresent(version -> opinions.putIfAbsent(requirement.name(), version.toString())));
+        }
+
+        var demands = new ArrayList<RepositoryDemand>();
+        for (String root : roots) {
+            String addedVersion = addedRequires.get(root);
+            if (!fixed.containsKey(root) && (systemModules.find(root).isEmpty() || addedVersion != null)) {
+                demands.add(new RepositoryDemand("com.netflix.tools.jig.resolution", root, Set.of(), addedVersion));
+            }
+        }
+
         var visited = new LinkedHashMap<String, Boolean>();
         var queue = new ArrayDeque<Traversal>();
         roots.forEach(name -> queue.addLast(new Traversal(name, false)));
         while (!queue.isEmpty()) {
             var next = queue.removeFirst();
-            ModuleReference reference = available.get(next.name());
+            ModuleReference reference = fixed.get(next.name());
             if (reference == null) {
                 continue;
             }
@@ -340,25 +382,8 @@ public record ModuleResolution(
             if (declaration.isAutomatic()) {
                 continue;
             }
-            var repositoryRequirements = declaration.requires().stream()
-                    .filter(requirement -> {
-                        var modifiers = requirement.modifiers();
-                        boolean isStatic = modifiers.contains(Modifier.STATIC);
-                        boolean isTransitive = modifiers.contains(Modifier.TRANSITIVE);
-                        return !isStatic || includeStatics && (source || requiredForCompilation && isTransitive);
-                    })
-                    .filter(requirement -> {
-                        var name = requirement.name();
-                        var explicitSystemOverride = source && requirement.compiledVersion().isPresent() && systemModules.find(name).isPresent();
-                        return !resolutionModules.containsKey(name) || explicitSystemOverride;
-                    })
-                    .toList();
-            if (!repositoryRequirements.isEmpty()) {
-                var builder = ModuleDescriptor.newModule(declaration.name());
-                repositoryRequirements.forEach(builder::requires);
-                declarations.add(builder.build());
-            }
-
+            declaration.requires().forEach(requirement -> requirement.compiledVersion()
+                    .ifPresent(version -> opinions.putIfAbsent(requirement.name(), version.toString())));
             for (var requirement : declaration.requires()) {
                 var modifiers = requirement.modifiers();
                 boolean isStatic = modifiers.contains(Modifier.STATIC);
@@ -366,10 +391,36 @@ public record ModuleResolution(
                 if (isStatic && !(includeStatics && (source || requiredForCompilation && isTransitive))) {
                     continue;
                 }
-                queue.addLast(new Traversal(requirement.name(), source || requiredForCompilation && isTransitive));
+                String name = requirement.name();
+                boolean explicitSystemOverride = source && requirement.compiledVersion().isPresent()
+                        && systemModules.find(name).isPresent();
+                if (!fixed.containsKey(name) && (systemModules.find(name).isEmpty() || explicitSystemOverride)) {
+                    demands.add(new RepositoryDemand(declaration.name(), requirement));
+                }
+                queue.addLast(new Traversal(name, source || requiredForCompilation && isTransitive));
             }
         }
-        return List.copyOf(declarations);
+
+        var unresolved = new LinkedHashSet<String>();
+        var requirements = new LinkedHashMap<String, List<RepositoryRequirement>>();
+        for (var demand : demands) {
+            String version = demand.declaredVersion() == null ? opinions.get(demand.name()) : demand.declaredVersion();
+            if (version == null) {
+                unresolved.add(demand.name());
+                continue;
+            }
+            requirements.computeIfAbsent(demand.owner(), _ -> new ArrayList<>())
+                    .add(new RepositoryRequirement(demand.name(), demand.modifiers(), version));
+        }
+
+        var declarations = new ArrayList<ModuleDescriptor>();
+        requirements.forEach((owner, declaredRequirements) -> {
+            var builder = ModuleDescriptor.newModule(owner);
+            declaredRequirements.forEach(requirement -> builder.requires(requirement.modifiers(), requirement.name(),
+                    Version.parse(requirement.version())));
+            declarations.add(builder.build());
+        });
+        return new RepositoryPlan(declarations, unresolved);
     }
 
     private static void validateAddedRequires(Map<String, ModuleReference> available, Map<String, String> addedRequires) {
@@ -398,9 +449,6 @@ public record ModuleResolution(
         while (!queue.isEmpty()) {
             String name = queue.removeFirst();
             ModuleReference reference = available.get(name);
-            if (reference == null) {
-                throw new FindException("Module " + name + " not found on module source path or module path");
-            }
             if (!(reference instanceof SourceModuleReference source) || result.putIfAbsent(name, source) != null) {
                 continue;
             }
