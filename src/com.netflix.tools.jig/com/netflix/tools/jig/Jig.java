@@ -1281,7 +1281,7 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("  -m, --module <module>");
         out.println("                  Root module to resolve.");
         out.println("  --add-modules <module>[,<module>...]");
-        out.println("                  Additional root modules already available locally.");
+        out.println("                  Additional root modules.");
         out.println("  --add-requires <module>@<version>");
         out.println("                  Add a versioned external module as a root.");
         out.println("                  May be specified multiple times.");

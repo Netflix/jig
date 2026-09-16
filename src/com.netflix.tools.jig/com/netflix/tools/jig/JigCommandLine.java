@@ -38,7 +38,7 @@ final class JigCommandLine {
 
     private final ToolOption modulePath = option("--module-path", "PATH", "Where to find precompiled modules", "-p");
     private final ToolOption module = option("--module", "MODULE", "Root module to resolve", "-m");
-    private final ToolOption addModules = option("--add-modules", "MODULE[,MODULE...]", "Additional local root modules");
+    private final ToolOption addModules = option("--add-modules", "MODULE[,MODULE...]", "Additional root modules");
     private final ToolOption addRequires = option("--add-requires", "MODULE@VERSION", "Add a versioned external root module");
     private final ToolOption moduleSourcePath = option("--module-source-path", "PATH", "Where to find module source trees");
     private final ToolOption moduleVersion = option("--module-version", "VERSION", "Version for compiled modules and generated POMs");

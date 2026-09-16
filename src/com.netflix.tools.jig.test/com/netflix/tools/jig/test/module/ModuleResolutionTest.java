@@ -28,6 +28,7 @@ import java.lang.module.ModuleReference;
 import java.lang.reflect.AccessFlag;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -161,6 +162,95 @@ class ModuleResolutionTest {
                 requirement.compiledVersion()
                            .orElseThrow()
                            .toString());
+    }
+
+    @Test
+    void resolvesUnversionedSourceRequirementFromStaticVersionOpinion(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        source(sources, "com.example.application",
+                """
+                module com.example.application {
+                    requires com.example.library;
+                    requires com.example.annotations;
+                }
+                """,
+                "Application.java", "final class Application {}");
+        Path library = explicitJar(directory, "com.example.library",
+                Map.of("com.example.annotations", "2.0"), Set.of(AccessFlag.STATIC_PHASE));
+        ModuleFinder annotations = ModuleFinder.of(automaticJar(directory, "com.example.annotations"));
+        var declarations = new AtomicReference<Collection<ModuleDescriptor>>();
+
+        var resolution = ModuleResolution.resolve(
+                (roots, includeStatics, includeSources) -> {
+                    declarations.set(List.copyOf(roots));
+                    return new Result(annotations, new LinkedHashSet<>(),
+                            Map.of("com.example.annotations", "2.0"), Map.of());
+                },
+                ModuleFinder.compose(SourceModuleFinder.of(sources), ModuleFinder.of(library)),
+                List.of("com.example.application"),
+                true,
+                false);
+
+        var requirement = declarations.get().stream()
+                .flatMap(declaration -> declaration.requires().stream())
+                .filter(candidate -> candidate.name().equals("com.example.annotations"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("2.0", requirement.compiledVersion().orElseThrow().toString());
+        assertTrue(resolution.configuration().findModule("com.example.annotations").isPresent());
+        assertEquals(Set.of(), resolution.staticRoots());
+    }
+
+    @Test
+    void resolvesAddedModuleFromStaticVersionOpinionDiscoveredInRepository(@TempDir Path directory) throws Exception {
+        Path application = explicitJar(directory, "com.example.application",
+                Map.of("com.example.tool", "2.0"), Set.of(AccessFlag.STATIC_PHASE));
+        Path tool = automaticJar(directory, "com.example.tool");
+        ModuleFinder applicationOnly = ModuleFinder.of(application);
+        ModuleFinder applicationAndTool = ModuleFinder.of(application, tool);
+        var requests = new ArrayList<Set<String>>();
+
+        var resolution = ModuleResolution.resolve(
+                (roots, includeStatics, includeSources) -> {
+                    Set<String> required = new LinkedHashSet<>(requiredModules(roots));
+                    required.remove("java.base");
+                    requests.add(required);
+                    return required.contains("com.example.tool")
+                            ? new Result(applicationAndTool, new LinkedHashSet<>(),
+                                    Map.of("com.example.application", "1.0", "com.example.tool", "2.0"), Map.of())
+                            : new Result(applicationOnly, new LinkedHashSet<>(),
+                                    Map.of("com.example.application", "1.0"), Map.of());
+                },
+                ModuleFinder.of(),
+                List.of("com.example.tool"),
+                Map.of("com.example.application", "1.0"),
+                false,
+                false);
+
+        assertEquals(List.of(Set.of("com.example.application"),
+                Set.of("com.example.application", "com.example.tool")), requests);
+        assertEquals(Set.of("com.example.application", "com.example.tool"),
+                Set.copyOf(resolution.configurationRoots()));
+        assertTrue(resolution.configuration().findModule("com.example.tool").isPresent());
+    }
+
+    @Test
+    void resolvesAddedOptionalModuleWithRepositoryMetadata(@TempDir Path directory) throws Exception {
+        Path repository = directory.resolve("repository");
+        installExplicitModule(repository, "com.example.application", "1.0",
+                Map.of("com.example.tool", "2.0"), Set.of(AccessFlag.STATIC_PHASE));
+        installAutomaticModule(repository, "com.example.tool", "2.0");
+        var remote = new Builder("test", "default", repository.toUri().toString()).build();
+
+        try (var session = ModuleRepositorySession.create(directory.resolve("cache"), List.of(remote))) {
+            var resolution = ModuleResolution.resolve(session, ModuleFinder.of(),
+                    List.of("com.example.tool"), Map.of("com.example.application", "1.0"), false, false);
+
+            assertEquals("1.0", resolution.repositoryVersions().get("com.example.application"));
+            assertEquals("2.0", resolution.repositoryVersions().get("com.example.tool"));
+            assertEquals(Set.of("com.example.application", "com.example.tool"),
+                    Set.copyOf(resolution.configurationRoots()));
+        }
     }
 
     @Test
@@ -970,6 +1060,47 @@ class ModuleResolutionTest {
                 </project>
                 """
                         .formatted(moduleName.substring(0, moduleName.lastIndexOf('.')), moduleName, version));
+    }
+
+    private static void installExplicitModule(Path repository, String moduleName, String version,
+            Map<String, String> requirements, Set<AccessFlag> requirementFlags) throws Exception {
+        String group = moduleName.substring(0, moduleName.lastIndexOf('.'));
+        Path versionDirectory = repository.resolve(group.replace('.', '/') + "/" + moduleName + "/" + version);
+        Files.createDirectories(versionDirectory);
+        Path jar = versionDirectory.resolve(moduleName + "-" + version + ".jar");
+        byte[] descriptor = ClassFile.of().buildModule(ModuleAttribute.of(ModuleDesc.of(moduleName),
+                builder -> {
+                    builder.requires(ModuleDesc.of("java.base"), Set.of(AccessFlag.MANDATED), null);
+                    requirements.forEach((name, requiredVersion) ->
+                            builder.requires(ModuleDesc.of(name), requirementFlags, requiredVersion));
+                }));
+        try (var output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new ZipEntry("module-info.class"));
+            output.write(descriptor);
+            output.closeEntry();
+        }
+        String dependencies = requirements.entrySet().stream()
+                .map(entry -> """
+                      <dependency>
+                        <groupId>%s</groupId>
+                        <artifactId>%s</artifactId>
+                        <version>%s</version>
+                        <optional>true</optional>
+                      </dependency>
+                    """.formatted(entry.getKey().substring(0, entry.getKey().lastIndexOf('.')),
+                        entry.getKey(), entry.getValue()))
+                .collect(Collectors.joining());
+        Files.writeString(versionDirectory.resolve(moduleName + "-" + version + ".pom"),
+                """
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <groupId>%s</groupId>
+                  <artifactId>%s</artifactId>
+                  <version>%s</version>
+                  <dependencies>
+                %s  </dependencies>
+                </project>
+                """.formatted(group, moduleName, version, dependencies));
     }
 
     private static Path explicitSystemModuleReplacement(Path directory, String moduleName) throws Exception {
