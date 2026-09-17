@@ -32,21 +32,6 @@ Follow the `ja` [Installation Guide](https://github.com/Netflix/ja#installation)
 
 For standalone use, `jar` and `jmod` artifacts for the tool are available on Maven Central.
 
-## Get started
-
-Start with an application JAR already available locally:
-
-```sh
-jig --module-path /path/to/com.example.app.jar \
-  --module com.example.app \
-  --resolve-options module-path,module=main \
-  --write-argfile /path/to/launch.args
-
-java @/path/to/launch.args
-```
-
-The supplied JAR remains on the module path. Missing dependencies are resolved from Maven repositories using the versions recorded in their module descriptors. The generated argument file contains ordinary `java` options and can be combined with arguments supplied directly by the caller.
-
 ## Documentation
 
 The [jig wiki](https://github.com/Netflix/jig/wiki) contains the complete documentation:
