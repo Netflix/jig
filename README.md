@@ -39,7 +39,7 @@ The [jig wiki](https://github.com/Netflix/jig/wiki) contains the complete docume
 - [Getting started](https://github.com/Netflix/jig/wiki/Getting-Started): resolve and run a module, compile source modules, and look up published modules
 - [Tool arguments](https://github.com/Netflix/jig/wiki/Tool-Arguments): compose standard options for JDK tools and resolve for a target platform
 - [Source modules](https://github.com/Netflix/jig/wiki/Source-Modules): declare version, compilation, runtime access, annotation processing, and dependency integrity metadata
-- [Maven module namespace](https://github.com/Netflix/jig/wiki/Maven-Module-Namespace): map Java module names to Maven artifacts, serve the namespace, generate Maven reactors, and configure repositories
+- [Maven modules](https://github.com/Netflix/jig/wiki/Maven-Modules): map Java module names to Maven artifacts, serve the namespace, generate Maven reactors, and configure repositories
 - [Publishing modules](https://github.com/Netflix/jig/wiki/Publishing-Modules): assemble, install, and deploy module artifacts
 - [Command reference](https://github.com/Netflix/jig/wiki/Command-Reference): command forms and an overview of resolution options
 
