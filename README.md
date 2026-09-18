@@ -32,6 +32,36 @@ Follow the `ja` [Installation Guide](https://github.com/Netflix/ja#installation)
 
 For standalone use, `jar` and `jmod` artifacts for the tool are available on Maven Central.
 
+## Quick start
+
+### Look up a Maven artifact's module name
+
+```sh
+jig --lookup-module \
+  pkg:maven/org.junit.platform/junit-platform-console@6.1.3
+```
+
+```text
+org.junit.platform.console
+```
+
+### Run a published module
+
+Resolve the JUnit Platform Console Launcher by module name and write its `java` arguments to a file:
+
+```sh
+jig --add-requires org.junit.platform.console@6.1.3 \
+  --resolve-options module-path,module \
+  --write-argfile junit.args
+
+java @junit.args --help
+```
+
+```text
+Usage: junit [OPTIONS] COMMAND
+Launches the JUnit Platform for test discovery and execution.
+```
+
 ## Documentation
 
 The [jig wiki](https://github.com/Netflix/jig/wiki) contains the complete documentation:
