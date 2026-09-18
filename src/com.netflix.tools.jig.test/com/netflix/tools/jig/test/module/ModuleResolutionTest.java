@@ -235,6 +235,25 @@ class ModuleResolutionTest {
     }
 
     @Test
+    void resolvesRequestedExternalModuleAlreadyPresentInTheRuntimeImage(@TempDir Path directory) throws Exception {
+        Path repository = directory.resolve("repository");
+        installExplicitModule(repository, "com.example.application", "1.0",
+                Map.of("java.sql", "1.0"), Set.of(AccessFlag.STATIC_PHASE));
+        installExplicitModule(repository, "java.sql", "1.0", Map.of(), Set.of());
+        var remote = new Builder("test", "default", repository.toUri().toString()).build();
+
+        try (var session = ModuleRepositorySession.create(directory.resolve("cache"), List.of(remote))) {
+            var resolution = ModuleResolution.resolve(session, ModuleFinder.of(),
+                    List.of("java.sql"), Map.of("com.example.application", "1.0"), false, false);
+
+            assertEquals("1.0", resolution.repositoryVersions().get("java.sql"));
+            assertEquals(Set.of("java.sql"), resolution.systemOverrides());
+            assertSame(resolution.observableModules().find("java.sql").orElseThrow(),
+                    resolution.configuration().findModule("java.sql").orElseThrow().reference());
+        }
+    }
+
+    @Test
     void resolvesAddedOptionalModuleWithRepositoryMetadata(@TempDir Path directory) throws Exception {
         Path repository = directory.resolve("repository");
         installExplicitModule(repository, "com.example.application", "1.0",

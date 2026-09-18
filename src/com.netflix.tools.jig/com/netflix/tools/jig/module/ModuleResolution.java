@@ -344,6 +344,7 @@ public record ModuleResolution(
         addedRequires.forEach(opinions::put);
         if (repositoryModules != null) {
             repositoryModules.versions().forEach(opinions::putIfAbsent);
+            repositoryModules.dependencyVersions().forEach(opinions::putIfAbsent);
             // Every versioned requires directive contributes an opinion, but only demands collected below become edges.
             repositoryModules.observableModules().findAll().stream()
                     .map(ModuleReference::descriptor)
@@ -356,7 +357,8 @@ public record ModuleResolution(
         var demands = new ArrayList<RepositoryDemand>();
         for (String root : roots) {
             String addedVersion = addedRequires.get(root);
-            if (!fixed.containsKey(root) && (systemModules.find(root).isEmpty() || addedVersion != null)) {
+            boolean external = repositoryModules != null && repositoryModules.dependencyVersions().containsKey(root);
+            if (!fixed.containsKey(root) && (systemModules.find(root).isEmpty() || addedVersion != null || external)) {
                 demands.add(new RepositoryDemand("com.netflix.tools.jig.resolution", root, Set.of(), addedVersion));
             }
         }

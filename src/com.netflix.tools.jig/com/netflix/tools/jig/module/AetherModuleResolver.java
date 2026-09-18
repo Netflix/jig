@@ -44,6 +44,8 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.collection.DependencyCo
 import com.netflix.tools.jig.internal.org.eclipse.aether.graph.Dependency;
 import com.netflix.tools.jig.internal.org.eclipse.aether.graph.DependencyNode;
 import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteRepository;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorException;
+import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactDescriptorRequest;
 import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactRequest;
 import com.netflix.tools.jig.internal.org.eclipse.aether.resolution.ArtifactResolutionException;
 
@@ -59,11 +61,18 @@ public final class AetherModuleResolver {
     }
 
     public record Result(ModuleFinder observableModules, SequencedSet<String> automaticModuleRoots,
-                         Map<String, String> versions, Map<String, Path> sources) {
+                         Map<String, String> versions, Map<String, String> dependencyVersions,
+                         Map<String, Path> sources) {
         public Result {
             automaticModuleRoots = Collections.unmodifiableSequencedSet(new LinkedHashSet<>(automaticModuleRoots));
             versions = Map.copyOf(versions);
+            dependencyVersions = Map.copyOf(dependencyVersions);
             sources = Map.copyOf(sources);
+        }
+
+        public Result(ModuleFinder observableModules, SequencedSet<String> automaticModuleRoots,
+                Map<String, String> versions, Map<String, Path> sources) {
+            this(observableModules, automaticModuleRoots, versions, Map.of(), sources);
         }
     }
 
@@ -194,14 +203,30 @@ public final class AetherModuleResolver {
 
             var versions = new LinkedHashMap<String, String>();
             artifacts.forEach((name, artifact) -> versions.put(name, artifact.getVersion()));
+            var dependencyVersions = dependencyVersions(artifacts.values());
             var sources = new LinkedHashMap<String, Path>();
             if (includeSources) {
                 artifacts.forEach((name, artifact) -> resolveSources(artifact).ifPresent(path -> sources.put(name, path)));
             }
-            return new Result(finder(references), automaticModuleRoots, versions, sources);
-        } catch (DependencyCollectionException | IOException e) {
+            return new Result(finder(references), automaticModuleRoots, versions, dependencyVersions, sources);
+        } catch (ArtifactDescriptorException | DependencyCollectionException | IOException e) {
             throw new FindException("Failed to resolve modules", e);
         }
+    }
+
+    private Map<String, String> dependencyVersions(Collection<Artifact> artifacts)
+            throws ArtifactDescriptorException {
+        var versions = new LinkedHashMap<String, String>();
+        for (var artifact : artifacts) {
+            var request = new ArtifactDescriptorRequest(artifact, repositories, null);
+            for (var dependency : system.readArtifactDescriptor(session, request).getDependencies()) {
+                if (Set.of("compile", "runtime", "provided").contains(dependency.getScope())) {
+                    versions.putIfAbsent(dependency.getArtifact().getArtifactId(),
+                            dependency.getArtifact().getVersion());
+                }
+            }
+        }
+        return Map.copyOf(versions);
     }
 
     /** Converts the root descriptors' requires directives into direct dependencies for Aether collection. */
