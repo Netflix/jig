@@ -45,6 +45,20 @@ jig --lookup-module \
 org.junit.platform.console
 ```
 
+### List a module's available versions
+
+```sh
+jig --list-module-versions org.junit.platform.console
+```
+
+```text
+...
+6.1.0
+6.1.1
+6.1.2
+6.1.3
+```
+
 ### Run a published module
 
 Resolve the JUnit Platform Console Launcher by module name and write its `java` arguments to a file:
