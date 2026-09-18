@@ -49,7 +49,8 @@ final class MavenCommands {
         try {
             Request request = parse(operation, Arrays.copyOfRange(arguments, 1, arguments.length));
             try (var session = sessions.get();
-                 var deployment = MavenDeployment.create(request.artifacts(), session)) {
+                 var deployment = MavenDeployment.create(request.artifacts(), session,
+                         request.moduleVersion())) {
                 if (operation.equals("install")) {
                     session.install(deployment.artifacts());
                 } else if (operation.equals("deploy")) {
@@ -97,11 +98,18 @@ final class MavenCommands {
         Path artifacts = null;
         RemoteRepository repository = null;
         String name = null;
+        String moduleVersion = null;
         boolean sign = false;
         boolean manual = false;
         for (int i = 0; i < arguments.length; i++) {
             String argument = arguments[i];
-            if (argument.equals("--repository")) {
+            if (argument.equals("--module-version")) {
+                moduleVersion = moduleVersion(moduleVersion,
+                        requireArgument(arguments, ++i, argument));
+            } else if (argument.startsWith("--module-version=")) {
+                moduleVersion = moduleVersion(moduleVersion,
+                        argument.substring("--module-version=".length()));
+            } else if (argument.equals("--repository")) {
                 repository = repository(requireArgument(arguments, ++i, argument));
             } else if (argument.startsWith("--repository=")) {
                 repository = repository(argument.substring("--repository=".length()));
@@ -136,7 +144,14 @@ final class MavenCommands {
         if (!operation.equals("deploy-central") && manual) {
             throw new IllegalArgumentException("--manual applies only to Maven deploy-central");
         }
-        return new Request(artifacts, repository, name, sign, manual);
+        return new Request(artifacts, repository, name, moduleVersion, sign, manual);
+    }
+
+    private static String moduleVersion(String current, String value) {
+        if (current != null) {
+            throw new IllegalArgumentException("--module-version may only be specified once");
+        }
+        return Jig.Options.parseModuleVersion(value);
     }
 
     private static String requireArgument(String[] arguments, int index, String option) {
@@ -205,13 +220,13 @@ final class MavenCommands {
     }
 
     private static void printHelp(PrintWriter out) {
-        out.println("Usage: jig maven install <artifact-directory>");
-        out.println("       jig maven deploy --repository <id=uri|path> [--sign] <artifact-directory>");
-        out.println("       jig maven deploy-central [--name <name>] [--manual] <artifact-directory>");
+        out.println("Usage: jig maven install [--module-version <version>] <artifact-directory>");
+        out.println("       jig maven deploy [--module-version <version>] --repository <id=uri|path> [--sign] <artifact-directory>");
+        out.println("       jig maven deploy-central [--module-version <version>] [--name <name>] [--manual] <artifact-directory>");
         out.println();
         out.println("Installs or deploys flat, module-named artifacts.");
     }
 
     private record Request(Path artifacts, RemoteRepository repository, String name,
-                           boolean sign, boolean manual) {}
+                           String moduleVersion, boolean sign, boolean manual) {}
 }

@@ -105,7 +105,7 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.util.ConfigUtils;
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils;
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils.CollocatedTempFile;
 import com.netflix.tools.jig.internal.org.eclipse.aether.util.FileUtils.TempFile;
-import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
+import com.netflix.tools.jig.module.ModuleIdentity;
 import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.AuthenticationScope;
 import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.ClientProfile;
 import com.netflix.tools.jig.module.maven.transport.JdkHttpClientState.ProxyProfile;

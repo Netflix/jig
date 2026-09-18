@@ -12,7 +12,7 @@
  * the License.
  */
 
-package com.netflix.tools.jig.test.module.maven.transport;
+package com.netflix.tools.jig.test.module;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
+import com.netflix.tools.jig.module.ModuleIdentity;
 import com.netflix.tools.jig.module.maven.transport.ZipCentralDirectory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

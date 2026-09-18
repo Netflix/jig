@@ -61,6 +61,18 @@ public final class ArtifactCandidates {
         return new DefaultArtifact(moduleNamespace(moduleName), moduleName, "pom", version);
     }
 
+    /** Returns whether an artifact uses the canonical coordinate for its module name. */
+    public static boolean isLocationCoordinate(Artifact artifact) {
+        return isLocationCoordinate(artifact.getGroupId(), artifact.getArtifactId());
+    }
+
+    /** Returns whether a group and artifact ID form the canonical coordinate for a module name. */
+    public static boolean isLocationCoordinate(String groupId, String artifactId) {
+        return artifactId != null
+                && groupId != null
+                && locationCoordinate(artifactId, null).getGroupId().equals(groupId);
+    }
+
     /** Returns the coordinate used by the virtual module location repository. */
     public static Artifact moduleLocationCoordinate(String moduleName, String version) {
         return new DefaultArtifact(moduleNamespace(moduleName) + ".module", moduleName, "pom", version);

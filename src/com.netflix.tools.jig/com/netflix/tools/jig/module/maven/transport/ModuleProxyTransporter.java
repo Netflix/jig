@@ -69,6 +69,7 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.util.graph.transformer.
 import com.netflix.tools.jig.module.ArtifactCandidates;
 import com.netflix.tools.jig.module.MavenArtifactOrigin;
 import com.netflix.tools.jig.module.MavenDependency;
+import com.netflix.tools.jig.module.ModuleIdentity;
 
 /**
  * Maps Maven artifacts into the canonical module coordinate space.
@@ -286,11 +287,11 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
             }
         }
         Artifact requested = parseArtifactPath(contentPath);
-        if (requested != null && isCanonical(requested)) {
+        if (requested != null && ArtifactCandidates.isLocationCoordinate(requested)) {
             return "resolve " + requested.getArtifactId() + "@" + requested.getVersion();
         }
         Artifact metadata = parseMetadataPath(URI.create(contentPath));
-        if (metadata != null && isCanonical(metadata)) {
+        if (metadata != null && ArtifactCandidates.isLocationCoordinate(metadata)) {
             return "resolve " + metadata.getArtifactId() + " versions";
         }
         return null;
@@ -312,14 +313,14 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         }
 
         Artifact metadata = parseMetadataPath(URI.create(path));
-        if (metadata != null && isCanonical(metadata)) {
+        if (metadata != null && ArtifactCandidates.isLocationCoordinate(metadata)) {
             trace("generate canonical metadata %s:%s", metadata.getGroupId(), metadata.getArtifactId());
             var model = metadataModel(metadata);
             return generatedResource(output -> serializeMetadata(output, model));
         }
 
         Artifact requested = parseArtifactPath(path);
-        if (requested == null || !isCanonical(requested)) {
+        if (requested == null || !ArtifactCandidates.isLocationCoordinate(requested)) {
             throw new FileNotFoundException(path);
         }
         trace("canonical resource %s", requested);
@@ -705,9 +706,4 @@ public final class ModuleProxyTransporter extends AbstractModuleTransporter impl
         }
     }
 
-    private static boolean isCanonical(Artifact artifact) {
-        return ArtifactCandidates.locationCoordinate(artifact.getArtifactId(), null)
-                .getGroupId()
-                .equals(artifact.getGroupId());
-    }
 }

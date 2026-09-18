@@ -47,6 +47,11 @@ public final class MavenDeployment implements AutoCloseable {
     }
 
     public static MavenDeployment create(Path artifactDirectory, ModuleRepositorySession session) throws IOException {
+        return create(artifactDirectory, session, null);
+    }
+
+    public static MavenDeployment create(Path artifactDirectory, ModuleRepositorySession session,
+            String automaticModuleVersion) throws IOException {
         Path directory = artifactDirectory.toAbsolutePath().normalize();
         if (!Files.isDirectory(directory)) {
             throw new IllegalArgumentException("Maven artifact directory is not a directory: " + directory);
@@ -63,6 +68,10 @@ public final class MavenDeployment implements AutoCloseable {
             var modules = new LinkedHashMap<String, ModuleDescriptor>();
             for (Path mainArtifact : mainArtifacts) {
                 ModuleDescriptor descriptor = descriptor(mainArtifact);
+                if (descriptor.isAutomatic() && ModuleIdentity.parseJar(mainArtifact).moduleName() == null) {
+                    throw new IllegalArgumentException("Automatic module has no Automatic-Module-Name: "
+                            + mainArtifact.getFileName());
+                }
                 Path expected = directory.resolve(descriptor.name() + ".jar");
                 if (!mainArtifact.equals(expected)) {
                     throw new IllegalArgumentException("Module JAR must be named " + expected.getFileName() + ": " + mainArtifact);
@@ -72,16 +81,45 @@ public final class MavenDeployment implements AutoCloseable {
                 }
             }
 
+            var suppliedPoms = new LinkedHashMap<String, Model>();
+            var moduleVersions = new LinkedHashMap<String, String>();
             for (var entry : modules.entrySet()) {
                 String moduleName = entry.getKey();
                 ModuleDescriptor descriptor = entry.getValue();
-                String version = descriptor.rawVersion().orElseThrow(() -> new IllegalArgumentException("Module has no version: " + moduleName));
-                Artifact coordinate = ArtifactCandidates.locationCoordinate(moduleName, version);
                 Path modulePom = directory.resolve(moduleName + ".pom");
-                Model metadata = Files.isRegularFile(modulePom)
-                        ? PublicationMetadataReader.read(modulePom)
+                Model suppliedPom = Files.isRegularFile(modulePom)
+                        ? descriptor.isAutomatic()
+                                ? PublicationMetadataReader.readAutomaticModulePom(modulePom)
+                                : PublicationMetadataReader.read(modulePom)
                         : null;
-                Model consumer = consumerPom(metadata, coordinate, descriptor, modules, session);
+                String suppliedVersion = suppliedPom == null ? null : suppliedPom.getVersion();
+                String version = descriptor.rawVersion()
+                        .orElseGet(() -> descriptor.isAutomatic() && suppliedVersion != null
+                                ? suppliedVersion
+                                : automaticModuleVersion);
+                if (version == null || version.isBlank()) {
+                    throw new IllegalArgumentException("Module has no version: " + moduleName);
+                }
+                suppliedPoms.put(moduleName, suppliedPom);
+                moduleVersions.put(moduleName, version);
+            }
+
+            for (var entry : modules.entrySet()) {
+                String moduleName = entry.getKey();
+                ModuleDescriptor descriptor = entry.getValue();
+                Path modulePom = directory.resolve(moduleName + ".pom");
+                Model suppliedPom = suppliedPoms.get(moduleName);
+                String version = moduleVersions.get(moduleName);
+                Artifact coordinate = ArtifactCandidates.locationCoordinate(moduleName, version);
+                boolean completePom = descriptor.isAutomatic() && isCompletePom(suppliedPom);
+                if (completePom) {
+                    validateAutomaticModulePom(modulePom, suppliedPom, coordinate,
+                            automaticModuleVersion);
+                }
+                Model consumer = completePom
+                        ? automaticModulePom(suppliedPom, moduleVersions, session)
+                        : consumerPom(suppliedPom, coordinate, descriptor, modules, moduleVersions,
+                                session);
                 Path generatedPom = temporaryDirectory.resolve(moduleName + ".pom");
                 writePom(consumer, generatedPom);
                 artifacts.add(artifact(coordinate, "pom", "", generatedPom));
@@ -187,18 +225,88 @@ public final class MavenDeployment implements AutoCloseable {
         if (references.size() != 1) {
             throw new IllegalArgumentException("Artifact does not contain exactly one module: " + artifact);
         }
-        ModuleDescriptor descriptor = references.iterator()
-                .next()
-                .descriptor();
-        if (descriptor.isAutomatic()) {
-            throw new IllegalArgumentException("Artifact does not contain module-info.class: " + artifact);
+        return references.iterator()
+                         .next()
+                         .descriptor();
+    }
+
+    private static boolean isCompletePom(Model model) {
+        return model != null && (model.getGroupId() != null
+                || model.getArtifactId() != null
+                || model.getVersion() != null
+                || model.getPackaging() != null
+                || !model.getDependencies().isEmpty());
+    }
+
+    private static void validateAutomaticModulePom(Path pom, Model model, Artifact coordinate,
+            String requestedVersion) {
+        if (!coordinate.getGroupId().equals(model.getGroupId())) {
+            throw new IllegalArgumentException(pom.getFileName() + " requires groupId "
+                    + coordinate.getGroupId());
         }
-        return descriptor;
+        if (!coordinate.getArtifactId().equals(model.getArtifactId())) {
+            throw new IllegalArgumentException(pom.getFileName() + " requires artifactId "
+                    + coordinate.getArtifactId());
+        }
+        if (!coordinate.getVersion().equals(model.getVersion())) {
+            throw new IllegalArgumentException(pom.getFileName() + " requires version "
+                    + coordinate.getVersion());
+        }
+        if (requestedVersion != null && !requestedVersion.equals(model.getVersion())) {
+            throw new IllegalArgumentException(pom.getFileName() + " has version "
+                    + model.getVersion() + " but --module-version is " + requestedVersion);
+        }
+        if (model.getPackaging() != null && !"jar".equals(model.getPackaging())) {
+            throw new IllegalArgumentException(pom.getFileName() + " requires packaging jar");
+        }
+    }
+
+    private static Model automaticModulePom(Model supplied, Map<String, String> localVersions,
+            ModuleRepositorySession session) throws IOException {
+        var dependencies = new ArrayList<Dependency>();
+        for (var dependency : supplied.getDependencies()) {
+            if (!ArtifactCandidates.isLocationCoordinate(dependency.getGroupId(),
+                    dependency.getArtifactId())) {
+                dependencies.add(dependency);
+                continue;
+            }
+            String moduleName = dependency.getArtifactId();
+            if (isSystemModule(moduleName)) {
+                continue;
+            }
+            String version = dependency.getVersion();
+            if (version == null || version.isBlank()) {
+                throw new IllegalArgumentException("Required module has no version: " + moduleName);
+            }
+            Artifact coordinate;
+            String localVersion = localVersions.get(moduleName);
+            if (localVersion == null) {
+                coordinate = session.locateModule(moduleName, version);
+            } else {
+                if (!version.equals(localVersion)) {
+                    throw new IllegalArgumentException("Required module "
+                            + moduleName
+                            + "@"
+                            + version
+                            + " does not match the artifact directory version "
+                            + localVersion);
+                }
+                coordinate = ArtifactCandidates.locationCoordinate(moduleName, version);
+            }
+            dependencies.add(Dependency.newBuilder(dependency)
+                    .groupId(coordinate.getGroupId())
+                    .artifactId(coordinate.getArtifactId())
+                    .version(coordinate.getVersion())
+                    .build());
+        }
+        return Model.newBuilder(supplied)
+                .dependencies(dependencies)
+                .build();
     }
 
     private static Model consumerPom(Model merged, Artifact coordinate, ModuleDescriptor descriptor,
-            Map<String, ModuleDescriptor> localModules, ModuleRepositorySession session)
-            throws IOException {
+            Map<String, ModuleDescriptor> localModules, Map<String, String> localVersions,
+            ModuleRepositorySession session) throws IOException {
         var dependencies = new ArrayList<Dependency>();
         for (var requirement : descriptor.requires()) {
             String name = requirement.name();
@@ -213,7 +321,7 @@ public final class MavenDeployment implements AutoCloseable {
             if (local == null) {
                 dependencyCoordinate = session.locateModule(name, version);
             } else {
-                String localVersion = local.rawVersion().orElseThrow(() -> new IllegalArgumentException("Module has no version: " + name));
+                String localVersion = localVersions.get(name);
                 if (!version.equals(localVersion)) {
                     throw new IllegalArgumentException(descriptor.name()
                             + " requires "

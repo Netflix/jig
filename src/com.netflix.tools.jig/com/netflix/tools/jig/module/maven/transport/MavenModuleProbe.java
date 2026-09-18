@@ -17,7 +17,7 @@ package com.netflix.tools.jig.module.maven.transport;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
+import com.netflix.tools.jig.module.ModuleIdentity;
 
 /**
  * Scoped probe for module identity via the Maven transport layer.

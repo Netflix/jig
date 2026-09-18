@@ -110,16 +110,17 @@ final class JigCommandLine {
     private final ToolOption manualApproval = flag("--manual", "Wait for manual approval after validation");
     private final CommandLine mavenInstallCommandLine = CommandLine.builder()
             .description("Install flat module artifacts in the local Maven repository")
+            .option(moduleVersion)
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenDeployCommandLine = CommandLine.builder()
             .description("Deploy flat module artifacts to a Maven repository")
-            .options(repository, sign)
+            .options(moduleVersion, repository, sign)
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenDeployCentralCommandLine = CommandLine.builder()
             .description("Deploy flat module artifacts to Maven Central")
-            .options(deploymentName, manualApproval)
+            .options(moduleVersion, deploymentName, manualApproval)
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenCommandLine = CommandLine.builder()
