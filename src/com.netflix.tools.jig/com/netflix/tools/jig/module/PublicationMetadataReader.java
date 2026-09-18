@@ -28,7 +28,7 @@ import com.netflix.tools.jig.internal.org.apache.maven.model.v4.MavenStaxReader;
 /** Reads the publication metadata contributed by a module POM. */
 final class PublicationMetadataReader {
     private static final String MODEL_NAMESPACE = "http://maven.apache.org/POM/4.0.0";
-    private static final Set<String> ALLOWED_ELEMENTS = Set.of(
+    private static final Set<String> PUBLICATION_ELEMENTS = Set.of(
             "modelVersion",
             "name",
             "description",
@@ -36,12 +36,33 @@ final class PublicationMetadataReader {
             "licenses",
             "developers",
             "scm");
+    private static final Set<String> AUTOMATIC_MODULE_ELEMENTS = Set.of(
+            "modelVersion",
+            "groupId",
+            "artifactId",
+            "version",
+            "packaging",
+            "name",
+            "description",
+            "url",
+            "licenses",
+            "developers",
+            "scm",
+            "dependencies");
 
     private PublicationMetadataReader() {}
 
     static Model read(Path pom) throws IOException {
+        return read(pom, PUBLICATION_ELEMENTS);
+    }
+
+    static Model readAutomaticModulePom(Path pom) throws IOException {
+        return read(pom, AUTOMATIC_MODULE_ELEMENTS);
+    }
+
+    private static Model read(Path pom, Set<String> allowedElements) throws IOException {
         Path absolute = pom.toAbsolutePath().normalize();
-        validateElements(absolute);
+        validateElements(absolute, allowedElements);
         try (var input = Files.newInputStream(absolute)) {
             Model model = new MavenStaxReader().read(input);
             if (!"4.0.0".equals(model.getModelVersion())) {
@@ -53,7 +74,7 @@ final class PublicationMetadataReader {
         }
     }
 
-    private static void validateElements(Path pom) throws IOException {
+    private static void validateElements(Path pom, Set<String> allowedElements) throws IOException {
         var inputFactory = XMLInputFactory.newFactory();
         inputFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         inputFactory.setProperty("javax.xml.stream.isSupportingExternalEntities", false);
@@ -69,7 +90,7 @@ final class PublicationMetadataReader {
                         throw new IllegalArgumentException(pom.getFileName()
                                 + " must be a Maven 4.0.0 project model");
                     }
-                    if (depth == 2 && !ALLOWED_ELEMENTS.contains(reader.getLocalName())) {
+                    if (depth == 2 && !allowedElements.contains(reader.getLocalName())) {
                         throw new IllegalArgumentException(pom.getFileName()
                                 + " contains unsupported element "
                                 + reader.getLocalName());

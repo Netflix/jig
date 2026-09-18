@@ -68,11 +68,11 @@ import com.netflix.tools.jig.module.ModulePomGenerator;
 import com.netflix.tools.jig.module.ModuleRepositorySession;
 import com.netflix.tools.jig.module.ModuleResolution;
 import com.netflix.tools.jig.module.ModuleResolution.IntegrityMode;
+import com.netflix.tools.jig.module.ModuleIdentity;
 import com.netflix.tools.jig.module.SourceModule;
 import com.netflix.tools.jig.module.SourceModuleFinder;
 import com.netflix.tools.jig.module.SourceModuleReference;
 import com.netflix.tools.jig.module.Trace;
-import com.netflix.tools.jig.module.maven.transport.AbstractModuleTransporter.ModuleIdentity;
 import com.netflix.tools.jig.module.maven.transport.TransporterHttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
