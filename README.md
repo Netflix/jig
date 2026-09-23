@@ -78,13 +78,13 @@ Launches the JUnit Platform for test discovery and execution.
 
 ## Documentation
 
-The [jig wiki](https://github.com/Netflix/jig/wiki) contains the complete documentation:
+The [wiki](https://github.com/Netflix/jig/wiki) covers:
 
-- [Getting started](https://github.com/Netflix/jig/wiki/Getting-Started): resolve and run a module, compile source modules, and look up published modules
-- [Tool arguments](https://github.com/Netflix/jig/wiki/Tool-Arguments): compose standard options for JDK tools and resolve for a target platform
-- [Source modules](https://github.com/Netflix/jig/wiki/Source-Modules): declare version, compilation, runtime access, annotation processing, and dependency integrity metadata
-- [Maven modules](https://github.com/Netflix/jig/wiki/Maven-Modules): map Java module names to Maven artifacts, serve the namespace, generate Maven reactors, and configure repositories
-- [Publishing modules](https://github.com/Netflix/jig/wiki/Publishing-Modules): assemble, install, and deploy module artifacts
-- [Command reference](https://github.com/Netflix/jig/wiki/Command-Reference): command forms and an overview of resolution options
+- [Getting Started](https://github.com/Netflix/jig/wiki/Getting-Started)
+- [Tool Arguments](https://github.com/Netflix/jig/wiki/Tool-Arguments)
+- [Source Modules](https://github.com/Netflix/jig/wiki/Source-Modules)
+- [Maven Modules](https://github.com/Netflix/jig/wiki/Maven-Modules)
+- [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules)
+- [Command Reference](https://github.com/Netflix/jig/wiki/Command-Reference)
 
 Use `jig --help` for the complete option reference.
