@@ -30,7 +30,13 @@ module com.example.application {
 
 Follow the `ja` [Installation Guide](https://github.com/Netflix/ja#installation) to install the bundled tools, including `jig`.
 
-For standalone use, `jar` and `jmod` artifacts for the tool are available on Maven Central.
+For standalone use, download the modular JAR from [Maven Central](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig). JDK 25 or later is required. Run it as module `com.netflix.tools.jig`:
+
+```sh
+java --module-path com.netflix.tools.jig-VERSION.jar --module com.netflix.tools.jig --help
+```
+
+JMOD artifacts are also published for building custom runtime images.
 
 ## Quick start
 
