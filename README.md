@@ -30,9 +30,10 @@ module com.example.application {
 
 Follow the `ja` [Installation Guide](https://github.com/Netflix/ja#installation) to install the bundled tools, including `jig`.
 
-For standalone use, download the modular JAR from [Maven Central](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig). JDK 25 or later is required. Run it as module `com.netflix.tools.jig`:
+For standalone use, download the modular JAR from [Maven Central](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig). JDK 25 or later is required. Run it directly or as module `com.netflix.tools.jig`:
 
 ```sh
+java -jar com.netflix.tools.jig-VERSION.jar --help
 java --module-path com.netflix.tools.jig-VERSION.jar --module com.netflix.tools.jig --help
 ```
 
