@@ -100,7 +100,20 @@ public record ModuleResolution(
             boolean includeSources,
             IntegrityMode integrityMode) {
         return resolve(repository::resolveModules, fixedModules, requestedRoots, addedRequires, includeStatics,
-                includeSources, integrityMode);
+                includeSources, false, integrityMode);
+    }
+
+    public static ModuleResolution resolve(
+            ModuleRepositorySession repository,
+            ModuleFinder fixedModules,
+            Collection<String> requestedRoots,
+            Map<String, String> addedRequires,
+            boolean includeStatics,
+            boolean includeSources,
+            boolean compileAgainstRoots,
+            IntegrityMode integrityMode) {
+        return resolve(repository::resolveModules, fixedModules, requestedRoots, addedRequires, includeStatics,
+                includeSources, compileAgainstRoots, integrityMode);
     }
 
     public static ModuleResolution resolve(ModuleRepositorySession repository, ModuleFinder fixedModules, Collection<String> requestedRoots,
@@ -128,6 +141,19 @@ public record ModuleResolution(
             Map<String, String> addedRequires,
             boolean includeStatics,
             boolean includeSources,
+            IntegrityMode integrityMode) {
+        return resolve(dependencyResolver, fixedModules, requestedRoots, addedRequires, includeStatics, includeSources,
+                false, integrityMode);
+    }
+
+    public static ModuleResolution resolve(
+            DependencyResolver dependencyResolver,
+            ModuleFinder fixedModules,
+            Collection<String> requestedRoots,
+            Map<String, String> addedRequires,
+            boolean includeStatics,
+            boolean includeSources,
+            boolean compileAgainstRoots,
             IntegrityMode integrityMode) {
         ModuleFinder systemModules = ModuleFinder.ofSystem();
         Configuration parent = ModuleLayer.boot().configuration();
@@ -160,7 +186,7 @@ public record ModuleResolution(
         // Re-plan from the returned metadata until no additional repository requirements can be expressed.
         while (true) {
             var plan = repositoryPlan(selectedFixedModules, repositoryModules, repositoryRoots, addedRequires,
-                    includeStatics, systemModules);
+                    includeStatics, compileAgainstRoots, systemModules);
             if (plan.declarations().equals(previousDeclarations)) {
                 if (!plan.unresolved().isEmpty()) {
                     throw new FindException("No version declared for module " + plan.unresolved().getFirst());
@@ -189,7 +215,7 @@ public record ModuleResolution(
         var runtimeRoots = new LinkedHashSet<>(requestedRoots);
         runtimeRoots.addAll(addedRequires.keySet());
         runtimeRoots.addAll(repositoryModules.automaticModuleRoots());
-        Set<String> staticRoots = includeStatics ? staticRequirements(modules, runtimeRoots) : Set.of();
+        Set<String> staticRoots = includeStatics ? staticRequirements(modules, runtimeRoots, compileAgainstRoots) : Set.of();
         var roots = new LinkedHashSet<>(runtimeRoots);
         roots.addAll(staticRoots);
 
@@ -262,12 +288,13 @@ public record ModuleResolution(
 
     private record Traversal(String name, boolean requiredForCompilation) {}
 
-    private static Set<String> staticRequirements(Map<String, ModuleReference> modules, Collection<String> roots) {
+    private static Set<String> staticRequirements(
+            Map<String, ModuleReference> modules, Collection<String> roots, boolean compileAgainstRoots) {
         Set<String> explicitRoots = Set.copyOf(roots);
         var staticRoots = new LinkedHashSet<String>();
         var visited = new LinkedHashMap<String, Boolean>();
         var queue = new ArrayDeque<Traversal>();
-        roots.forEach(name -> queue.addLast(new Traversal(name, false)));
+        roots.forEach(name -> queue.addLast(new Traversal(name, compileAgainstRoots)));
         while (!queue.isEmpty()) {
             var next = queue.removeFirst();
             ModuleReference reference = modules.get(next.name());
@@ -338,6 +365,7 @@ public record ModuleResolution(
             Collection<String> roots,
             Map<String, String> addedRequires,
             boolean includeStatics,
+            boolean compileAgainstRoots,
             ModuleFinder systemModules) {
         Map<String, ModuleReference> fixed = modules(fixedModules);
         var opinions = new LinkedHashMap<String, String>();
@@ -365,7 +393,7 @@ public record ModuleResolution(
 
         var visited = new LinkedHashMap<String, Boolean>();
         var queue = new ArrayDeque<Traversal>();
-        roots.forEach(name -> queue.addLast(new Traversal(name, false)));
+        roots.forEach(name -> queue.addLast(new Traversal(name, compileAgainstRoots)));
         while (!queue.isEmpty()) {
             var next = queue.removeFirst();
             ModuleReference reference = fixed.get(next.name());

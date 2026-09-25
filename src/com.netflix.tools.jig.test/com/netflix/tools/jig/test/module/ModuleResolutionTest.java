@@ -355,6 +355,42 @@ class ModuleResolutionTest {
     }
 
     @Test
+    void resolvesStaticTransitiveRequirementOfCompilationRoot(@TempDir Path directory) throws Exception {
+        Path application = explicitJar(directory, "com.example.application",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE, AccessFlag.TRANSITIVE));
+        Path annotations = explicitJar(directory, "com.example.annotations");
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, ModuleFinder.of(application, annotations),
+                    List.of("com.example.application"), Map.of(), true, false, true, IntegrityMode.NONE);
+
+            assertEquals(Set.of("com.example.annotations"), resolution.staticRoots());
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.annotations")
+                    .isPresent());
+        }
+    }
+
+    @Test
+    void ignoresPlainStaticRequirementOfCompilationRoot(@TempDir Path directory) throws Exception {
+        Path application = explicitJar(directory, "com.example.application",
+                Collections.singletonMap("com.example.annotations", null),
+                Set.of(AccessFlag.STATIC_PHASE));
+        Path annotations = explicitJar(directory, "com.example.annotations");
+
+        try (var repository = ModuleRepositorySession.create(directory.resolve("repository"), List.of())) {
+            var resolution = ModuleResolution.resolve(repository, ModuleFinder.of(application, annotations),
+                    List.of("com.example.application"), Map.of(), true, false, true, IntegrityMode.NONE);
+
+            assertEquals(Set.of(), resolution.staticRoots());
+            assertTrue(resolution.configuration()
+                    .findModule("com.example.annotations")
+                    .isEmpty());
+        }
+    }
+
+    @Test
     void ignoresNonTransitiveStaticRequirementOfCompiledSourceDependency(@TempDir Path directory) throws Exception {
         Path sources = directory.resolve("src");
         source(sources, "com.example.application",

@@ -332,7 +332,7 @@ class JigToolProviderTest {
                     out.toString());
             assertTrue(out.toString().contains("-w, --write-argfile"),
                     out.toString());
-            assertFalse(out.toString().contains("--compile-time"),
+            assertTrue(out.toString().contains("--compile-time"),
                     out.toString());
             assertTrue(out.toString().contains("--version"),
                     out.toString());
