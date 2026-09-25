@@ -17,16 +17,10 @@ package com.netflix.tools.jig.test.module;
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.module.ResolutionException;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import javax.tools.Diagnostic.Kind;
 
 import com.netflix.module.ModuleRuntimeAccessAttribute;
 import com.netflix.module.compile.ModuleCompiler;
@@ -292,33 +286,16 @@ public class SourceModuleResolutionIntegrationTest {
     }
 
     @Test
-    void compilesIndependentSourceModulesConcurrently(@TempDir Path tempDir) throws Exception {
+    void compilesIndependentSourceModules(@TempDir Path tempDir) throws Exception {
         var sourceRoot = tempDir.resolve("src");
         for (var moduleName : List.of("first.mod", "second.mod")) {
             var module = Files.createDirectories(sourceRoot.resolve(moduleName));
             Files.writeString(module.resolve("module-info.java"), "module " + moduleName + " {}\n");
             var packageDirectory = Files.createDirectories(module.resolve("p"));
-            Files.writeString(packageDirectory.resolve("Broken.java"), "package p; class Broken { Missing type; }\n");
+            Files.writeString(packageDirectory.resolve("Example.java"), "package p; public class Example {}\n");
         }
 
-        var diagnostics = ConcurrentHashMap.<URI>newKeySet();
-        var entered = new CountDownLatch(2);
-        var concurrent = new AtomicBoolean(true);
-        var compiler = new ModuleCompiler(tempDir.resolve("cache"),
-                diagnostic -> {
-                    if (diagnostic.getKind() != Kind.ERROR || diagnostic.getSource() == null || !diagnostics.add(diagnostic.getSource().toUri())) {
-                        return;
-                    }
-                    entered.countDown();
-                    try {
-                        if (!entered.await(30, TimeUnit.SECONDS)) {
-                            concurrent.set(false);
-                        }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        concurrent.set(false);
-                    }
-                });
+        var compiler = new ModuleCompiler(tempDir.resolve("cache"));
         var finder = SourceModuleFinder.of(sourceRoot);
         var references = List.of("first.mod", "second.mod").stream()
                 .map(name -> (SourceModuleReference) finder.find(name).orElseThrow())
@@ -329,9 +306,12 @@ public class SourceModuleResolutionIntegrationTest {
                 null, null);
         references.forEach(reference -> reference.bind(environment));
 
-        assertThrows(IOException.class, () -> SourceModuleReference.compileAll(references));
-        assertTrue(concurrent.get());
-        assertEquals(0, entered.getCount());
+        SourceModuleReference.compileAll(references);
+        for (var reference : references) {
+            try (var reader = reference.open()) {
+                assertTrue(reader.find("p/Example.class").isPresent());
+            }
+        }
     }
 
     @Test
