@@ -1505,6 +1505,36 @@ public class JigTest {
     }
 
     @Test
+    void compileTimeModulePathIncludesStaticSourceRequirements(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        Path application = sources.resolve("com.example.application");
+        Path annotations = sources.resolve("com.example.annotations");
+        Files.createDirectories(application);
+        Files.createDirectories(annotations);
+        Files.writeString(application.resolve("module-info.java"),
+                """
+                module com.example.application {
+                    requires static com.example.annotations;
+                }
+                """);
+        Files.writeString(annotations.resolve("module-info.java"), "module com.example.annotations {}");
+
+        String arguments = runJig("--module-source-path", sources.toString(), "-m", "com.example.application", "--compile-time",
+                "--resolve-options", "module-path,add-modules");
+        var lines = arguments.lines().toList();
+        var paths = Arrays.stream(lines.get(lines.indexOf("--module-path") + 1)
+                .split(Pattern.quote(System.getProperty("path.separator"))))
+                .map(Path::of)
+                .toArray(Path[]::new);
+        var modules = ModuleFinder.of(paths).findAll().stream()
+                .map(reference -> reference.descriptor().name())
+                .collect(Collectors.toSet());
+
+        assertEquals(Set.of("com.example.application", "com.example.annotations"), modules);
+        assertEquals("com.example.application", lines.get(lines.indexOf("--add-modules") + 1));
+    }
+
+    @Test
     void sourceOptionsIncludeExplicitlySelectedStaticModules(@TempDir Path directory) throws Exception {
         Path sources = directory.resolve("src");
         Path application = sources.resolve("com.example.application");
@@ -2317,9 +2347,9 @@ public class JigTest {
     }
 
     @Test
-    void rejectsRemovedCompileTimeOption() {
-        assertThrows(IllegalArgumentException.class,
-                () -> Options.parse(new String[] {"--resolve-options", "module-path", "--compile-time", "-m", "app"}));
+    void compileTimeResolutionIncludesStaticRequirements() {
+        assertTrue(Jig.shouldIncludeStatics(Options.parse(
+                new String[] {"--resolve-options", "module-path", "--compile-time", "-m", "app"})));
     }
 
     @Test

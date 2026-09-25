@@ -237,7 +237,7 @@ public class Jig implements ToolProvider, OptionChecker {
 
             boolean includeStatics = shouldIncludeStatics(options);
             var resolution = ModuleResolution.resolve(session, fixedModules, options.resolutionRoots(), options.addedRequires, includeStatics,
-                    shouldIncludeSources(options), options.integrityMode);
+                    shouldIncludeSources(options), options.compileTime, options.integrityMode);
             var config = resolution.configuration();
             var configurationRoots = resolution.configurationRoots();
             var runtimeRoots = configurationRoots.stream()
@@ -297,7 +297,8 @@ public class Jig implements ToolProvider, OptionChecker {
     public static boolean shouldIncludeStatics(Options options) {
         return !options.moduleSourcePaths.isEmpty()
                 || options.modulePomRoot != null
-                || options.consumerPomDirectory != null;
+                || options.consumerPomDirectory != null
+                || options.compileTime;
     }
 
     public static boolean shouldIncludeSources(Options options) {
@@ -322,7 +323,7 @@ public class Jig implements ToolProvider, OptionChecker {
             throws IOException {
         validateSelectedArtifacts(resolution, repositoryPaths);
         boolean describe = resolveOptions.contains("describe-module");
-        Set<String> excludedModules = resolveOptions.contains("module-source-path") ? Set.of() : staticOnly;
+        Set<String> excludedModules = options.compileTime || resolveOptions.contains("module-source-path") ? Set.of() : staticOnly;
         var config = resolution.configuration();
         var configurationRoots = resolution.configurationRoots().stream()
                 .filter(name -> !resolution.staticRoots().contains(name))
@@ -1312,6 +1313,7 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("  -w, --write-argfile <path>");
         out.println("                  Write generated options as a Java argument file.");
         out.println("                  Requires --resolve-options.");
+        out.println("  --compile-time  Include dependencies needed to compile against the selected modules.");
         out.println("  --recompile     Compile source modules without reusing prior output.");
         out.println("  --no-compile-diagnostics");
         out.println("                  Do not report source compilation diagnostics.");
@@ -1365,6 +1367,7 @@ public class Jig implements ToolProvider, OptionChecker {
         public Set<String> resolveOptions;
         public ModuleForm moduleForm = ModuleForm.SINGLE;
         public Path argumentFile;
+        public boolean compileTime;
         public boolean recompile;
         public boolean emitCompileDiagnostics = true;
         public boolean validateRuntimeAccess;
@@ -1408,6 +1411,7 @@ public class Jig implements ToolProvider, OptionChecker {
                     || modulePomRoot != null
                     || consumerPomDirectory != null
                     || integrityMode != IntegrityMode.NONE
+                    || compileTime
                     || recompile
                     || !emitCompileDiagnostics
                     || validateRuntimeAccess;
@@ -1424,6 +1428,7 @@ public class Jig implements ToolProvider, OptionChecker {
                     || consumerPomDirectory != null
                     || integrityMode != IntegrityMode.NONE
                     || resolveOptions != null
+                    || compileTime
                     || recompile
                     || !emitCompileDiagnostics
                     || validateRuntimeAccess;
