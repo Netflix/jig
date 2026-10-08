@@ -153,6 +153,13 @@ final class JigCommandLine {
 
     private List<Completion> complete(CompletionRequest request) {
         List<String> arguments = request.invocation().arguments();
+        if (!arguments.isEmpty() && arguments.getFirst().equals("gradle")) {
+            return GradleCommandLine.complete(
+                    new CompletionRequest(
+                            new ToolInvocation(request.invocation().workingDirectory(),
+                                    arguments.subList(1, arguments.size())),
+                            request.current()));
+        }
         if (!arguments.isEmpty() && arguments.getFirst().equals("maven")) {
             return mavenCommandLine.complete(
                     new CompletionRequest(
@@ -162,6 +169,9 @@ final class JigCommandLine {
         }
         var completions = new ArrayList<>(commandLine.complete(request));
         if (arguments.isEmpty() && !request.current().startsWith("-")) {
+            if ("gradle".startsWith(request.current())) {
+                completions.add(new Completion("gradle", "Resolve Gradle project arguments"));
+            }
             if ("maven".startsWith(request.current())) {
                 completions.add(new Completion("maven", "Maven repository operations"));
             }

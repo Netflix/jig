@@ -156,6 +156,9 @@ public class Jig implements ToolProvider, OptionChecker {
 
     int runWithSessions(PrintWriter out, PrintWriter err, Supplier<ModuleRepositorySession> sessions,
                         String... args) {
+        if (args.length > 0 && args[0].equals("gradle")) {
+            return GradleCommands.run(out, err, Arrays.copyOfRange(args, 1, args.length));
+        }
         if (args.length > 0 && args[0].equals("maven")) {
             if (args.length > 1 && args[1].equals("serve")) {
                 return serve(out, err, Arrays.copyOfRange(args, 2, args.length));
@@ -1271,6 +1274,7 @@ public class Jig implements ToolProvider, OptionChecker {
 
     private static void printHelp(PrintWriter out) {
         out.println("Usage: jig [options]");
+        out.println("       jig gradle [options]");
         out.println("       jig maven <operation> [options]");
         out.println("       jig maven serve [--listen <host:port>]");
         out.println();
