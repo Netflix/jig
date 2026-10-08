@@ -27,6 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up Gradle test JDK 8
+        id: java8
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '8'
+
+      - name: Set up Gradle test JDK 11
+        id: java11
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '11'
+
+      - name: Set up Gradle test JDK 17
+        id: java17
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '17'
+
       - name: Set up Zulu JDK
         uses: actions/setup-java@v5
         with:
@@ -37,56 +58,8 @@ jobs:
         uses: Netflix/ja/.github/actions/setup-ja@v0.22.1
 
       - name: Test
+        env:
+          JIG_TEST_GRADLE_JAVA_8_HOME: ${{ steps.java8.outputs.path }}
+          JIG_TEST_GRADLE_JAVA_11_HOME: ${{ steps.java11.outputs.path }}
+          JIG_TEST_GRADLE_JAVA_17_HOME: ${{ steps.java17.outputs.path }}
         run: ja test --all
-
-  gradle-interop:
-    name: Gradle ${{ matrix.gradle }} / JDK ${{ matrix.java }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { gradle: '3.5.1', java: '8' }
-          - { gradle: '4.10.3', java: '8' }
-          - { gradle: '5.6.4', java: '11' }
-          - { gradle: '6.6.1', java: '11' }
-          - { gradle: '6.9.4', java: '11' }
-          - { gradle: '7.6.6', java: '17' }
-          - { gradle: '8.5', java: '17' }
-          - { gradle: '9.6.1', java: '17' }
-          - { gradle: '9.7.1', java: '17' }
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Gradle's JDK
-        id: gradle-java
-        uses: actions/setup-java@v5
-        with:
-          distribution: zulu
-          java-version: ${{ matrix.java }}
-
-      - name: Set up jig's JDK
-        uses: actions/setup-java@v5
-        with:
-          distribution: zulu
-          java-version-file: .java-version
-
-      - name: Set up ja
-        uses: Netflix/ja/.github/actions/setup-ja@v0.22.1
-
-      - name: Download Gradle
-        env:
-          GRADLE_VERSION: ${{ matrix.gradle }}
-        run: |
-          archive="$RUNNER_TEMP/gradle-$GRADLE_VERSION-bin.zip"
-          url="https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
-          curl --fail --location --retry 3 "$url" --output "$archive"
-          curl --fail --location --retry 3 "$url.sha256" --output "$archive.sha256"
-          echo "$(cat "$archive.sha256")  $archive" | sha256sum --check
-          unzip -q "$archive" -d "$RUNNER_TEMP"
-          echo "JIG_TEST_GRADLE=$RUNNER_TEMP/gradle-$GRADLE_VERSION/bin/gradle" >> "$GITHUB_ENV"
-
-      - name: Test Gradle interoperability
-        env:
-          JIG_TEST_GRADLE_JAVA_HOME: ${{ steps.gradle-java.outputs.path }}
-        run: ja test --all com.netflix.tools.jig.test.GradleIntegrationTest com.netflix.tools.jig.test.GradleCommandsTest

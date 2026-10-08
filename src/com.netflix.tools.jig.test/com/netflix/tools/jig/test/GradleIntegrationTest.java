@@ -22,8 +22,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
-import java.util.regex.Pattern;
 import java.util.jar.Attributes.Name;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
@@ -31,24 +29,25 @@ import java.util.jar.Manifest;
 import com.netflix.tools.jig.Jig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.Parameter;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Runs against an explicitly supplied Gradle executable and compatible Java
- * home, without remote dependencies.
- */
+/** Tests each Gradle version against local projects without remote project dependencies. */
 @EnabledOnOs({OS.LINUX, OS.MAC})
-@EnabledIfEnvironmentVariable(named = "JIG_TEST_GRADLE", matches = ".+")
-@EnabledIfEnvironmentVariable(named = "JIG_TEST_GRADLE_JAVA_HOME", matches = ".+")
+@EnabledIf("availableJdks")
+@ParameterizedClass(name = "Gradle {0}")
+@MethodSource("gradleVersions")
 class GradleIntegrationTest {
-    private static Integer gradleVersion;
+    @Parameter
+    GradleDistribution gradle;
 
     @TempDir
     Path temporaryDirectory;
@@ -326,9 +325,9 @@ class GradleIntegrationTest {
         Path lib = Files.createDirectories(root.resolve("library"));
         Files.createDirectories(root.resolve("plain"));
         Files.writeString(root.resolve("gradlew"), "#!/bin/sh\nexport JAVA_HOME="
-                + shellQuote(System.getenv("JIG_TEST_GRADLE_JAVA_HOME"))
-                + "\nexec "
-                + shellQuote(System.getenv("JIG_TEST_GRADLE"))
+                + shellQuote(gradle.javaHome().toString())
+                + "\nexec sh "
+                + shellQuote(gradle.executable().toString())
                 + " \"$@\"\n");
         Files.writeString(root.resolve("settings.gradle"),
                 """
@@ -384,50 +383,47 @@ class GradleIntegrationTest {
         return new Fixture(root, app);
     }
 
-    private static synchronized boolean atLeast(int major, int minor) throws Exception {
-        if (gradleVersion == null) {
-            var builder = new ProcessBuilder(System.getenv("JIG_TEST_GRADLE"), "--version").redirectErrorStream(true);
-            builder.environment().put("JAVA_HOME", System.getenv("JIG_TEST_GRADLE_JAVA_HOME"));
-            var process = builder.start();
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            assertEquals(0, process.waitFor(), output);
-            var matcher = Pattern.compile("(?m)^Gradle (\\d+)\\.(\\d+)").matcher(output);
-            assertTrue(matcher.find(), output);
-            gradleVersion = Integer.parseInt(matcher.group(1)) * 100 + Integer.parseInt(matcher.group(2));
-        }
-        return gradleVersion >= major * 100 + minor;
+    private static List<GradleDistribution> gradleVersions() {
+        return List.of(new GradleDistribution("3.5.1", 8), new GradleDistribution("4.10.3", 8),
+                new GradleDistribution("5.6.4", 11), new GradleDistribution("6.6.1", 11),
+                new GradleDistribution("6.9.4", 11), new GradleDistribution("7.6.6", 17),
+                new GradleDistribution("8.5", 17), new GradleDistribution("9.6.1", 17),
+                new GradleDistribution("9.7.1", 17));
     }
 
-    private static String classesDirectory() throws Exception {
+    private static boolean availableJdks() {
+        return List.of(8, 11, 17).stream().allMatch(version -> System.getenv("JIG_TEST_GRADLE_JAVA_" + version + "_HOME") != null);
+    }
+
+    private boolean atLeast(int major, int minor) {
+        return gradle.atLeast(major, minor);
+    }
+
+    private String classesDirectory() {
         return atLeast(4, 0) ? "build/classes/java/main" : "build/classes/main";
     }
 
-    private static int javaRelease() throws Exception {
-        var values = new Properties();
-        try (var input = Files.newInputStream(Path.of(System.getenv("JIG_TEST_GRADLE_JAVA_HOME"), "release"))) {
-            values.load(input);
-        }
-        String[] version = values.getProperty("JAVA_VERSION").replace("\"", "").split("[._+\\-]");
-        return Integer.parseInt(version[version[0].equals("1") ? 1 : 0]);
+    private int javaRelease() {
+        return gradle.javaVersion();
     }
 
-    private static boolean supportsRelease() throws Exception {
+    private boolean supportsRelease() {
         return atLeast(6, 6);
     }
 
-    private static boolean supportsModules() throws Exception {
+    private boolean supportsModules() {
         return atLeast(6, 6) && javaRelease() >= 9;
     }
 
-    private static boolean supportsArgumentProviders() throws Exception {
+    private boolean supportsArgumentProviders() {
         return atLeast(4, 6);
     }
 
-    private static boolean supportsLazyTasks() throws Exception {
+    private boolean supportsLazyTasks() {
         return atLeast(4, 9);
     }
 
-    private static boolean supportsConfigurationCache() throws Exception {
+    private boolean supportsConfigurationCache() {
         return atLeast(6, 6);
     }
 
