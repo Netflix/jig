@@ -21,6 +21,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.jar.Attributes.Name;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -130,8 +132,8 @@ class GradleCommandsTest {
         String invocation = Files.readString(fixture.root()
                 .resolve("invocation.txt"));
         assertTrue(invocation.contains("--project-dir\n" + fixture.root()), invocation);
-        assertTrue(invocation.contains("-Djig.gradle.project-dir=" + fixture.project()), invocation);
-        assertTrue(invocation.contains("-Djig.gradle.scope=compile"), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.project-dir=" + fixture.project()), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.scope=compile"), invocation);
         assertFalse(result.output()
                           .contains("Gradle build output"));
     }
@@ -364,6 +366,66 @@ class GradleCommandsTest {
         }
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void equivalentRequestsUseStableConfigurationCacheInputs() throws Exception {
+        var fixture = fixture();
+        var first = resolve(fixture, "compile", "source-path,release");
+        assertEquals(0, first.exitCode(), first.error());
+        Path invocationFile = fixture.root().resolve("invocation.txt");
+        String invocation = Files.readString(invocationFile);
+        var second = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-dir", fixture.project().toString(),
+                "--scope", "compile", "-r", "release,source-path", "-w", temporaryDirectory.resolve("equivalent.args").toString());
+        assertEquals(0, second.exitCode(), second.error());
+        assertEquals(invocation, Files.readString(invocationFile));
+        assertFalse(invocation.contains("configuration-cache=false"), invocation);
+        assertEquals(first.output(), Files.readString(temporaryDirectory.resolve("equivalent.args")));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void missingCaptureCannotReturnAStaleResultFromAnEarlierQuery() throws Exception {
+        var fixture = fixture();
+        var first = resolve(fixture, "compile", "source-path");
+        assertEquals(0, first.exitCode(), first.error());
+        Files.writeString(fixture.root().resolve("gradlew"), "#!/bin/sh\nexit 0\n");
+        var second = resolve(fixture, "compile", "source-path");
+        assertEquals(1, second.exitCode(), second.error());
+        assertEquals("", second.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void concurrentQueriesSerializeAccessToTheirInterchangeFile() throws Exception {
+        var fixture = fixture();
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("scope=compile", """
+                if ! mkdir active-query; then
+                    echo 'concurrent query' >&2
+                    exit 11
+                fi
+                trap 'rmdir active-query' EXIT
+                sleep 0.1
+                scope=compile
+                """));
+        var start = new CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var queries = new ArrayList<java.util.concurrent.Future<Result>>();
+            for (int i = 0; i < 2; i++) {
+                queries.add(executor.submit(() -> {
+                    start.await();
+                    return resolve(fixture, "compile", "source-path");
+                }));
+            }
+            start.countDown();
+            Result first = queries.getFirst().get();
+            assertEquals(0, first.exitCode(), first.error());
+            Result second = queries.getLast().get();
+            assertEquals(0, second.exitCode(), second.error());
+            assertEquals(first.output(), second.output());
+        }
+    }
+
     private Fixture fixture() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root with spaces")).toRealPath();
         Path project = Files.createDirectories(root.resolve("custom project")).toRealPath();
@@ -378,8 +440,8 @@ class GradleCommandsTest {
                 scope=compile
                 for argument do
                     case "$argument" in
-                        -Djig.gradle.output=*) output=${argument#*=} ;;
-                        -Djig.gradle.scope=*) scope=${argument#*=} ;;
+                        -Pjig.gradle.output=*) output=${argument#*=} ;;
+                        -Pjig.gradle.scope=*) scope=${argument#*=} ;;
                     esac
                 done
                 cp "$scope.properties" "$output"

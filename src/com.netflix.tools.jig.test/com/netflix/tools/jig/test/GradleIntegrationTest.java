@@ -22,12 +22,15 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
+import java.util.regex.Pattern;
 import java.util.jar.Attributes.Name;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
 import com.netflix.tools.jig.Jig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -45,6 +48,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledIfEnvironmentVariable(named = "JIG_TEST_GRADLE", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "JIG_TEST_GRADLE_JAVA_HOME", matches = ".+")
 class GradleIntegrationTest {
+    private static Integer gradleVersion;
+
     @TempDir
     Path temporaryDirectory;
 
@@ -75,7 +80,9 @@ class GradleIntegrationTest {
                 .resolve("sources/java")
                 .toString()),
                 source);
-        assertTrue(source.contains("\"--release\"\n\"17\""), source);
+        if (supportsRelease()) {
+            assertTrue(source.contains("\"--release\"\n\"" + javaRelease() + "\""), source);
+        }
         assertFalse(Files.exists(fixture.app()
                 .resolve("build")));
         assertEquals(
@@ -100,21 +107,19 @@ class GradleIntegrationTest {
         String compile = resolve(fixture, "compile", "class-path");
         assertTrue(compile.contains("compile only.jar"), compile);
         assertTrue(compile.contains("shared.jar"), compile);
-        assertTrue(compile.contains("library/build/classes/java/main"), compile);
+        assertTrue(compile.contains("library/" + classesDirectory()), compile);
         assertFalse(compile.contains("runtime only.jar"), compile);
-        assertTrue(Files.isRegularFile(fixture.root()
-                .resolve("library/build/classes/java/main/lib/Library.class")));
-        assertFalse(Files.exists(fixture.app()
-                .resolve("build/classes/java/main/app/Main.class")));
+        assertTrue(Files.isRegularFile(fixture.root().resolve("library/" + classesDirectory() + "/lib/Library.class")));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
         String runtime = resolve(fixture, "runtime", "class-path");
         assertTrue(runtime.contains("runtime only.jar"), runtime);
         assertTrue(runtime.contains("shared.jar"), runtime);
         assertFalse(runtime.contains("compile only.jar"), runtime);
-        assertTrue(Files.isRegularFile(fixture.app()
-                .resolve("build/classes/java/main/app/Main.class")));
+        assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
     }
 
     @Test
+    @EnabledIf("supportsModules")
     void resolvesModuleOptionsThatComposeWithJavacAndJava() throws Exception {
         var fixture = fixture(true);
         Path options = temporaryDirectory.resolve("compile.args");
@@ -157,6 +162,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("supportsModules")
     void respectsDisabledModulePathInference() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
@@ -168,16 +174,19 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("supportsRelease")
     void capturesEffectiveReleaseWithoutConflictingSourceAndTargetOptions() throws Exception {
         var fixture = fixture(false);
         String capture = resolve(fixture, "compile", "release,source,target");
-        assertEquals("\"--release\"\n\"17\"\n", capture);
-        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava { options.release = null; options.compilerArgs += ['--release', '17'] }\n",
+        String expected = "\"--release\"\n\"" + javaRelease() + "\"\n";
+        assertEquals(expected, capture);
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava { options.release = null; options.compilerArgs += ['--release', '" + javaRelease() + "'] }\n",
                 StandardOpenOption.APPEND);
-        assertEquals("\"--release\"\n\"17\"\n", resolve(fixture, "compile", "release,source,target"));
+        assertEquals(expected, resolve(fixture, "compile", "release,source,target"));
     }
 
     @Test
+    @EnabledIf("supportsArgumentProviders")
     void materializesAnnotationProcessorDependenciesWithoutCompilingTheSelectedProject() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ndependencies { annotationProcessor project(':library') }\n",
@@ -191,6 +200,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("supportsModules")
     void runtimeModuleInferenceUsesTheRunTasksConfiguration() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.run { modularity.inferModulePath = false }\n",
@@ -202,6 +212,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("supportsArgumentProviders")
     void capturesArgumentProvidersAndApplicationMetadata() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -216,6 +227,97 @@ class GradleIntegrationTest {
                 resolve(fixture, "compile", "main-class,add-exports"));
         assertEquals("\"--add-opens\"\n\"java.base/java.lang=ALL-UNNAMED\"\n",
                 resolve(fixture, "runtime", "add-opens"));
+    }
+
+    @Test
+    @EnabledIf("supportsLazyTasks")
+    void sourceDiscoveryDoesNotRealizeCompileRunOrUnrelatedTasks() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                tasks.named('compileJava').configure { throw new GradleException('compileJava was realized') }
+                tasks.register('unrelated') { throw new GradleException('unrelated task was realized') }
+                afterEvaluate { sourceSets.main.java.srcDirs = ['late/sources'] }
+                """ + (atLeast(5, 0) ? "tasks.named('run').configure { throw new GradleException('run was realized') }\n" : ""), StandardOpenOption.APPEND);
+        String capture = resolve(fixture, "compile", "source-path");
+        assertTrue(capture.contains(fixture.app().resolve("late/sources").toString()), capture);
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void reusesConfigurationCacheForDiscoveryCompileAndRuntimeAndInvalidatesChangedConfiguration() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.root().resolve("build.gradle"), """
+                rootProject.file('evaluations.txt') << 'evaluated\\n'
+                """, StandardOpenOption.APPEND);
+        // Each request has its own cache entry. Replay must execute capture again,
+        // but must not evaluate the build, even when dependencies have changed.
+        for (String scope : List.of("discovery", "compile", "runtime")) {
+            String first = scope.equals("discovery")
+                    ? run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs")
+                    : resolve(fixture, scope, "class-path,source-path,release,main-class");
+            String second = scope.equals("discovery")
+                    ? run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs")
+                    : resolve(fixture, scope, "main-class,release,source-path,class-path");
+            assertEquals(first, second);
+        }
+        Path evaluations = fixture.root().resolve("evaluations.txt");
+        assertEquals(3, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
+        Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
+        Files.delete(compiled);
+        resolve(fixture, "runtime", "class-path,source-path,release,main-class");
+        assertTrue(Files.isRegularFile(compiled));
+        assertEquals(3, Files.readAllLines(evaluations).size());
+        Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs += ['changed/sources']\n", StandardOpenOption.APPEND);
+        String changed = resolve(fixture, "compile", "class-path,source-path,release,main-class");
+        assertTrue(changed.contains(fixture.app().resolve("changed/sources").toString()), changed);
+        assertEquals(4, Files.readAllLines(evaluations).size());
+    }
+
+    @Test
+    void configurationOnDemandEvaluatesOnlyTheSelectedProjectAndRequiredDependencies() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configureondemand=true\n");
+        Files.writeString(fixture.root().resolve("plain/build.gradle"), "throw new GradleException('unrelated project was evaluated')\n");
+        String capture = resolve(fixture, "compile", "class-path");
+        assertTrue(capture.contains("library/" + classesDirectory()), capture);
+        String projects = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs");
+        assertTrue(projects.contains(fixture.root().resolve("plain").toString()), projects);
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void argumentProvidersRemainLazyAndRetainProducerDependenciesOnCacheReplay() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                abstract class GenerateArguments extends DefaultTask {
+                    @OutputFile abstract org.gradle.api.file.RegularFileProperty getDestination()
+                    @TaskAction void generate() {
+                        def file = destination.get().asFile
+                        file.parentFile.mkdirs()
+                        file.text = 'java.base/java.lang=ALL-UNNAMED'
+                    }
+                }
+                class ArgumentsFromFile implements CommandLineArgumentProvider {
+                    @InputFile @PathSensitive(PathSensitivity.NONE)
+                    org.gradle.api.provider.Provider<org.gradle.api.file.RegularFile> input
+                    Iterable<String> asArguments() { return ['--add-exports', input.get().asFile.text] }
+                }
+                def producer = tasks.register('generateArguments', GenerateArguments) {
+                    destination = layout.buildDirectory.file('generated-arguments.txt')
+                }
+                tasks.named('compileJava').configure {
+                    options.compilerArgumentProviders.add(new ArgumentsFromFile(input: producer.flatMap { it.destination }))
+                }
+                """, StandardOpenOption.APPEND);
+        String first = resolve(fixture, "compile", "add-exports");
+        assertEquals("\"--add-exports\"\n\"java.base/java.lang=ALL-UNNAMED\"\n", first);
+        assertFalse(Files.exists(fixture.app().resolve("build/classes/java/main/app/Main.class")));
+        Path generated = fixture.app().resolve("build/generated-arguments.txt");
+        Files.delete(generated);
+        assertEquals(first, resolve(fixture, "compile", "add-exports"));
+        assertTrue(Files.isRegularFile(generated));
     }
 
     private Fixture fixture(boolean modular) throws Exception {
@@ -253,7 +355,6 @@ class GradleIntegrationTest {
                 """
                 plugins { id 'application' }
                 sourceSets.main.java.srcDirs = ['sources/java']
-                tasks.withType(JavaCompile) { options.release = 17 }
                 dependencies {
                     implementation project(':library')
                     implementation files(rootProject.file('shared.jar'))
@@ -261,9 +362,11 @@ class GradleIntegrationTest {
                     compileOnly files(rootProject.file('compile only.jar'))
                     runtimeOnly files(rootProject.file('runtime only.jar'))
                 }
-                application { mainClass = 'app.Main' }
                 """
-                        + (modular ? "application { mainModule = 'app.mod' }\n" : ""));
+                        + (atLeast(6, 4) ? "application { mainClass = 'app.Main' }\n" : "mainClassName = 'app.Main'\n")
+                        + (supportsRelease() ? "tasks.withType(JavaCompile).configureEach { options.release = " + javaRelease() + " }\n"
+                                : "sourceCompatibility = targetCompatibility = '" + javaRelease() + "'\n")
+                        + (modular ? "java.modularity.inferModulePath = true\napplication { mainModule = 'app.mod' }\n" : ""));
         Path sources = Files.createDirectories(app.resolve("sources/java/app"));
         Files.writeString(sources.resolve("Main.java"), "package app; public class Main { public static void main(String[] args) { System.out.println(lib.Library.hello()); } }\n");
         if (modular) {
@@ -279,6 +382,53 @@ class GradleIntegrationTest {
         jar(root.resolve("runtime only.jar"), "runtime.only");
         jar(root.resolve("plain.jar"), null);
         return new Fixture(root, app);
+    }
+
+    private static synchronized boolean atLeast(int major, int minor) throws Exception {
+        if (gradleVersion == null) {
+            var builder = new ProcessBuilder(System.getenv("JIG_TEST_GRADLE"), "--version").redirectErrorStream(true);
+            builder.environment().put("JAVA_HOME", System.getenv("JIG_TEST_GRADLE_JAVA_HOME"));
+            var process = builder.start();
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertEquals(0, process.waitFor(), output);
+            var matcher = Pattern.compile("(?m)^Gradle (\\d+)\\.(\\d+)").matcher(output);
+            assertTrue(matcher.find(), output);
+            gradleVersion = Integer.parseInt(matcher.group(1)) * 100 + Integer.parseInt(matcher.group(2));
+        }
+        return gradleVersion >= major * 100 + minor;
+    }
+
+    private static String classesDirectory() throws Exception {
+        return atLeast(4, 0) ? "build/classes/java/main" : "build/classes/main";
+    }
+
+    private static int javaRelease() throws Exception {
+        var values = new Properties();
+        try (var input = Files.newInputStream(Path.of(System.getenv("JIG_TEST_GRADLE_JAVA_HOME"), "release"))) {
+            values.load(input);
+        }
+        String[] version = values.getProperty("JAVA_VERSION").replace("\"", "").split("[._+\\-]");
+        return Integer.parseInt(version[version[0].equals("1") ? 1 : 0]);
+    }
+
+    private static boolean supportsRelease() throws Exception {
+        return atLeast(6, 6);
+    }
+
+    private static boolean supportsModules() throws Exception {
+        return atLeast(6, 6) && javaRelease() >= 9;
+    }
+
+    private static boolean supportsArgumentProviders() throws Exception {
+        return atLeast(4, 6);
+    }
+
+    private static boolean supportsLazyTasks() throws Exception {
+        return atLeast(4, 9);
+    }
+
+    private static boolean supportsConfigurationCache() throws Exception {
+        return atLeast(6, 6);
     }
 
     private static void jar(Path path, String module) throws Exception {
@@ -298,7 +448,7 @@ class GradleIntegrationTest {
 
     private static String execute(String tool, String... arguments) throws Exception {
         var command = new ArrayList<String>();
-        command.add(Path.of(System.getenv("JIG_TEST_GRADLE_JAVA_HOME"), "bin", tool)
+        command.add(Path.of(System.getProperty("java.home"), "bin", tool)
                 .toString());
         command.addAll(List.of(arguments));
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
