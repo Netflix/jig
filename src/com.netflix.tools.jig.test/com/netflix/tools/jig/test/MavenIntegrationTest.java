@@ -85,7 +85,7 @@ class MavenIntegrationTest {
         var initial = discover(root);
         assertEquals(0, initial.status(), initial.error());
         assertTrue(initial.output().contains(root.resolve("extra").toString()), initial.output());
-        Files.writeString(root.resolve(".mvn/maven.config"), "--offline\n");
+        Files.delete(root.resolve("extra.enabled"));
         var profileDisabled = discover(root);
         assertEquals(0, profileDisabled.status(), profileDisabled.error());
         assertEquals(List.of(root.toString(), root.resolve("app").toString()), profileDisabled.output().lines().toList());
@@ -94,6 +94,22 @@ class MavenIntegrationTest {
         var changedModel = discover(root);
         assertEquals(0, changedModel.status(), changedModel.error());
         assertEquals(List.of(root.toString(), root.resolve("extra").toString()), changedModel.output().lines().toList());
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    @EnabledIf("supportsMavenConfig")
+    void readsCurrentMavenConfigWhenSupportedByTheNativeVersion() throws Exception {
+        Path root = fixture();
+        Files.delete(root.resolve("extra.enabled"));
+        Files.writeString(root.resolve(".mvn/maven.config"), "--offline\n-Pextra\n");
+        var enabled = discover(root);
+        assertEquals(0, enabled.status(), enabled.error());
+        assertEquals(List.of(root.toString(), root.resolve("app").toString(), root.resolve("extra").toString()), enabled.output().lines().toList());
+        Files.writeString(root.resolve(".mvn/maven.config"), "--offline\n");
+        var disabled = discover(root);
+        assertEquals(0, disabled.status(), disabled.error());
+        assertEquals(List.of(root.toString(), root.resolve("app").toString()), disabled.output().lines().toList());
         assertNoBuildOutputs();
     }
 
@@ -122,7 +138,10 @@ class MavenIntegrationTest {
                 <packaging>pom</packaging>
                 <modules><module>app</module></modules>
                 <profiles>
-                  <profile><id>extra</id><modules><module>extra</module></modules></profile>
+                  <profile>
+                    <id>extra</id><activation><file><exists>extra.enabled</exists></file></activation>
+                    <modules><module>extra</module></modules>
+                  </profile>
                 </profiles>
                 <build><plugins><plugin>
                   <groupId>fixture.nonexistent</groupId><artifactId>must-not-execute</artifactId><version>1</version>
@@ -133,7 +152,8 @@ class MavenIntegrationTest {
             Path directory = Files.createDirectories(root.resolve(module));
             Files.writeString(directory.resolve("pom.xml"), pom(module, "", ""));
         }
-        launcher(root, "--offline\n-Pextra\n");
+        Files.writeString(root.resolve("extra.enabled"), "");
+        launcher(root, "--offline\n");
         return root;
     }
 
@@ -143,7 +163,7 @@ class MavenIntegrationTest {
         Files.writeString(project.resolve("mvnw"), """
                 #!/bin/sh
                 export JAVA_HOME=%s
-                exec sh %s "$@"
+                exec sh %s --offline "$@"
                 """.formatted(shellQuote(maven.javaHome().toString()), shellQuote(maven.executable().toString())));
     }
 
@@ -173,9 +193,15 @@ class MavenIntegrationTest {
     }
 
     private static List<MavenDistribution> mavenVersions() {
-        return List.of(new MavenDistribution("3.3.9", 8), new MavenDistribution("3.6.3", 8),
+        return List.of(new MavenDistribution("3.0.3", 8), new MavenDistribution("3.0.5", 8),
+                new MavenDistribution("3.1.1", 8), new MavenDistribution("3.2.5", 8),
+                new MavenDistribution("3.3.9", 8), new MavenDistribution("3.6.3", 8),
                 new MavenDistribution("3.9.16", 8), new MavenDistribution("3.10.0", 17),
                 new MavenDistribution("4.0.0-rc-5", 17));
+    }
+
+    private boolean supportsMavenConfig() {
+        return List.of("3.0.", "3.1.", "3.2.").stream().noneMatch(maven.version()::startsWith);
     }
 
     private static boolean availableJdks() {

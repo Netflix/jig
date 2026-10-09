@@ -58,7 +58,7 @@ record MavenDistribution(String version, int javaVersion) {
         try {
             String url = "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/" + version + "/apache-maven-" + version + "-bin.zip";
             // Older distributions predate Maven Central's SHA-512 checksums.
-            String suffix = List.of("3.3.9", "3.6.3").contains(version) ? "sha1" : "sha512";
+            String suffix = List.of("3.0.3", "3.0.5", "3.1.1", "3.2.5", "3.3.9", "3.6.3").contains(version) ? "sha1" : "sha512";
             Path archive = staging.resolve("distribution.zip");
             try (var client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build()) {
                 var download = client.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), BodyHandlers.ofFile(archive));
