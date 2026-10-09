@@ -271,8 +271,8 @@ class GradleIntegrationTest {
         Files.writeString(fixture.root().resolve("build.gradle"), """
                 rootProject.file('evaluations.txt') << 'evaluated\\n'
                 """, StandardOpenOption.APPEND);
-        // Each request has its own cache entry. Replay must execute capture again,
-        // but must not evaluate the build, even when dependencies have changed.
+        // Repeated requests must return a fresh response without evaluating the
+        // build again, even when dependency outputs have changed.
         for (String[] discovery : List.of(
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths"},
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets"})) {
@@ -290,7 +290,8 @@ class GradleIntegrationTest {
         assertEquals(6, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
         Files.delete(compiled);
-        resolve(fixture, "runtime", "class-path,source-path,release,main-class");
+        // Repeat the last request to check producer freshness on cache replay.
+        resolve(fixture, "test", "runtime", "class-path,source-path,release,main-class");
         assertTrue(Files.isRegularFile(compiled));
         assertEquals(6, Files.readAllLines(evaluations).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs += ['changed/sources']\n", StandardOpenOption.APPEND);

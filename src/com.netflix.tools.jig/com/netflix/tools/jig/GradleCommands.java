@@ -14,29 +14,30 @@
 
 package com.netflix.tools.jig;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.ProcessBuilder.Redirect;
-import java.nio.channels.FileChannel;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HexFormat;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 
+import com.netflix.module.compile.internal.ContentHash;
 import com.netflix.tools.jig.GradleCommandLine.Request;
+import com.netflix.tools.jig.module.ModuleRepositorySession;
 
 /** Queries the explicitly selected Gradle build using its own runtime. */
 final class GradleCommands {
+    private static final String CAPTURE_PREFIX = "jig-gradle:";
+    private static final String CAPTURE_TASK = "_jigCapture";
+
     private GradleCommands() {}
 
     static int run(PrintWriter out, PrintWriter err, String[] arguments) {
@@ -52,60 +53,40 @@ final class GradleCommands {
             return 2;
         }
         try {
-            byte[] script;
-            try (var resource = GradleCommands.class.getResourceAsStream("gradle-init.gradle")) {
-                if (resource == null) {
-                    throw new IOException("Gradle capture init script is missing");
-                }
-                script = resource.readAllBytes();
+            var values = new Properties();
+            int status = capture(request, initScript(), values, err);
+            if (status != 0) {
+                return status;
             }
-            // Stable script, task, parameters, and result path let Gradle reuse its
-            // configuration cache. Lock the interchange file across threads and processes.
-            String identity = identity(request, script);
-            Path work = Files.createDirectories(request.root().resolve(".gradle/jig").resolve(identity));
-            try (var channel = FileChannel.open(work.resolve("capture.lock"), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-                    var lock = lock(channel)) {
-                Path init = work.resolve("capture.gradle");
-                Path output = work.resolve("capture.properties");
-                if (!Files.exists(init) || !Arrays.equals(script, Files.readAllBytes(init))) {
-                    Files.write(init, script);
+            if (values.isEmpty()) {
+                throw new IOException("Gradle did not return a capture");
+            }
+            if (!"1".equals(values.getProperty("version"))) {
+                throw new IOException("Unsupported Gradle capture version: " + values.getProperty("version"));
+            }
+            List<String> projects = GradleArguments.list(values, "project-paths");
+            if (request.listProjects()) {
+                projects.stream().distinct().sorted().forEach(out::println);
+            } else {
+                if (!projects.contains(request.projectPath())) {
+                    throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());
                 }
-                Files.deleteIfExists(output);
-                int status = capture(request, init, output, "_jigCapture" + identity, err);
-                if (status != 0) {
-                    return status;
-                }
-                var values = new Properties();
-                try (var input = Files.newInputStream(output)) {
-                    values.load(input);
-                }
-                if (!"1".equals(values.getProperty("version"))) {
-                    throw new IOException("Unsupported Gradle capture version: " + values.getProperty("version"));
-                }
-                List<String> projects = GradleArguments.list(values, "project-paths");
-                if (request.listProjects()) {
-                    projects.stream().distinct().sorted().forEach(out::println);
+                List<String> sourceSets = GradleArguments.list(values, "source-sets");
+                if (request.listSourceSets()) {
+                    sourceSets.stream().distinct().sorted().forEach(out::println);
                 } else {
-                    if (!projects.contains(request.projectPath())) {
-                        throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());
+                    if (!sourceSets.contains(request.sourceSet())) {
+                        throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
                     }
-                    List<String> sourceSets = GradleArguments.list(values, "source-sets");
-                    if (request.listSourceSets()) {
-                        sourceSets.stream().distinct().sorted().forEach(out::println);
+                    String generated = GradleArguments.render(request, values);
+                    if (request.argumentFile() == null) {
+                        out.print(generated);
                     } else {
-                        if (!sourceSets.contains(request.sourceSet())) {
-                            throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
-                        }
-                        String generated = GradleArguments.render(request, values);
-                        if (request.argumentFile() == null) {
-                            out.print(generated);
-                        } else {
-                            Files.writeString(request.argumentFile(), generated);
-                        }
+                        Files.writeString(request.argumentFile(), generated);
                     }
                 }
-                return 0;
             }
+            return 0;
         } catch (IllegalArgumentException e) {
             err.println("jig gradle: " + e.getMessage());
             return 2;
@@ -119,38 +100,33 @@ final class GradleCommands {
         }
     }
 
-    private static String identity(Request request, byte[] script) {
-        try {
-            var digest = MessageDigest.getInstance("SHA-256");
-            digest.update(script);
-            digest.update(String.join("\u0000", request.root().toString(),
-                    request.projectPath() == null ? "" : request.projectPath(),
-                    request.sourceSet() == null ? "" : request.sourceSet(),
-                    request.classpath() == null ? "" : request.classpath(),
-                    Boolean.toString(request.listProjects()), Boolean.toString(request.listSourceSets()), Boolean.toString(request.compiler()),
-                    String.join(",", request.options().stream().sorted().toList())).getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest.digest());
-        } catch (NoSuchAlgorithmException e) {
-            throw new AssertionError(e);
-        }
-    }
-
-    private static FileLock lock(FileChannel channel) throws IOException, InterruptedException {
-        while (true) {
-            try {
-                FileLock lock = channel.tryLock();
-                if (lock != null) {
-                    return lock;
-                }
-            } catch (OverlappingFileLockException e) {
-                // Another query in this JVM owns the same request; wait just as for another process.
+    private static Path initScript() throws IOException {
+        byte[] script;
+        try (var resource = GradleCommands.class.getResourceAsStream("gradle-init.gradle")) {
+            if (resource == null) {
+                throw new IOException("Gradle capture init script is missing");
             }
-            Thread.sleep(50);
+            script = resource.readAllBytes();
         }
+        // Only the bundled script is cached. Its content-addressed path stays
+        // stable for Gradle's configuration cache; requests and results are not stored.
+        Path directory = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
+                .resolve("gradle").toAbsolutePath().normalize();
+        Files.createDirectories(directory);
+        Path init = directory.resolve(ContentHash.sha256(script).hex() + ".gradle");
+        if (!Files.exists(init)) {
+            Path temporary = Files.createTempFile(directory, "capture-", ".tmp");
+            try {
+                Files.write(temporary, script);
+                Files.move(temporary, init, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        }
+        return init;
     }
 
-    private static int capture(Request request, Path init, Path output, String task,
-            PrintWriter err)
+    private static int capture(Request request, Path init, Properties values, PrintWriter err)
             throws IOException, InterruptedException {
         var arguments = new ArrayList<>(launcher(request.root()));
         arguments.addAll(
@@ -164,8 +140,6 @@ final class GradleCommands {
                         "--quiet",
                         "-Dorg.gradle.unsafe.isolated-projects=false",
                         "-Pjig.gradle.root=" + request.root(),
-                        "-Pjig.gradle.output=" + output,
-                        "-Pjig.gradle.task=" + task,
                         "-Pjig.gradle.list=" + request.listProjects(),
                         "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
         if (!request.listProjects()) {
@@ -175,12 +149,10 @@ final class GradleCommands {
             arguments.add("-Pjig.gradle.compiler=" + request.compiler());
             arguments.add("-Pjig.gradle.source-set=" + request.sourceSet());
             arguments.add("-Pjig.gradle.classpath=" + request.classpath());
-            arguments.add("-Pjig.gradle.options=" + String.join(",",
-                    request.options().stream()
-                            .sorted()
-                            .toList()));
+            arguments.add("-Pjig.gradle.options=" + String.join(",", request.options().stream().sorted().toList()));
         }
-        arguments.add(task);
+        String projectPath = request.listProjects() ? ":" : request.projectPath();
+        arguments.add((projectPath.equals(":") ? ":" : projectPath + ":") + CAPTURE_TASK);
         if (request.verbose()) {
             err.println("jig gradle: " + arguments);
         }
@@ -193,7 +165,15 @@ final class GradleCommands {
             try (var reader = process.inputReader(StandardCharsets.UTF_8)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    err.println(line);
+                    if (line.startsWith(CAPTURE_PREFIX)) {
+                        try {
+                            values.load(new ByteArrayInputStream(Base64.getDecoder().decode(line.substring(CAPTURE_PREFIX.length()))));
+                        } catch (IllegalArgumentException e) {
+                            throw new IOException("Invalid Gradle capture", e);
+                        }
+                    } else {
+                        err.println(line);
+                    }
                 }
             }
             return process.waitFor();

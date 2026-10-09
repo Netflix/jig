@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.spi.ToolProvider;
 
 import com.netflix.tools.jig.Jig;
+import com.netflix.tools.jig.module.ModuleRepositorySession;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -215,7 +216,14 @@ class GradleCommandsTest {
         var fixture = fixture();
         Files.writeString(fixture.root()
                 .resolve("gradlew"),
-                "#!/bin/sh\necho 'configuration failed' >&2\nexit 7\n");
+                """
+                #!/bin/sh
+                printf 'jig-gradle:'
+                base64 < compile.properties | tr -d '\\n'
+                printf '\\n'
+                echo 'configuration failed' >&2
+                exit 7
+                """);
         var result = resolve(fixture, "compile", "source-path");
         assertEquals(7, result.exitCode());
         assertEquals("", result.output());
@@ -329,6 +337,35 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void requestsUseOnlyTheCachedScriptArtifactAndProcessResponse() throws Exception {
+        var fixture = fixture();
+        var result = resolve(fixture, "compile", "source-path");
+        assertEquals(0, result.exitCode(), result.error());
+        List<String> invocation = Files.readAllLines(fixture.root().resolve("invocation.txt"));
+        Path script = Path.of(invocation.get(invocation.indexOf("--init-script") + 1));
+        Path cache = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
+                .toAbsolutePath().normalize();
+        assertTrue(script.startsWith(cache), script.toString());
+        assertTrue(Files.isRegularFile(script));
+        assertTrue(script.getFileName().toString().matches("[0-9a-f]{64}\\.gradle"), script.toString());
+        assertEquals(":app:_jigCapture", invocation.getLast());
+        assertFalse(invocation.stream().anyMatch(argument -> argument.startsWith("-Pjig.gradle.output=") || argument.startsWith("-Pjig.gradle.task=")));
+        assertFalse(Files.exists(fixture.root().resolve(".gradle/jig")));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void invalidProcessCaptureDoesNotReturnArguments() throws Exception {
+        var fixture = fixture();
+        Files.writeString(fixture.root().resolve("gradlew"), "#!/bin/sh\nprintf 'jig-gradle:not-base64!\\n'\n");
+        var result = resolve(fixture, "compile", "source-path");
+        assertEquals(1, result.exitCode(), result.error());
+        assertTrue(result.error().contains("Invalid Gradle capture"), result.error());
+        assertEquals("", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void equivalentRequestsUseStableConfigurationCacheInputs() throws Exception {
         var fixture = fixture();
         var first = resolve(fixture, "compile", "source-path,release");
@@ -357,16 +394,20 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void concurrentQueriesSerializeAccessToTheirInterchangeFile() throws Exception {
+    void concurrentQueriesHaveIndependentProcessResponsesWithoutSerialization() throws Exception {
         var fixture = fixture();
         Path wrapper = fixture.root().resolve("gradlew");
         Files.writeString(wrapper, Files.readString(wrapper).replace("classpath=compile", """
-                if ! mkdir active-query; then
-                    echo 'concurrent query' >&2
-                    exit 11
-                fi
-                trap 'rmdir active-query' EXIT
-                sleep 0.1
+                touch "ready-$$"
+                attempts=0
+                while [ "$(find . -name 'ready-*' | wc -l)" -lt 2 ]; do
+                    attempts=$((attempts + 1))
+                    if [ "$attempts" -ge 100 ]; then
+                        echo 'queries were serialized' >&2
+                        exit 11
+                    fi
+                    sleep 0.02
+                done
                 classpath=compile
                 """));
         var start = new CountDownLatch(1);
@@ -399,7 +440,7 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void sourceSetSelectionHasItsOwnConfigurationCacheIdentity() throws Exception {
+    void sourceSetSelectionIsPassedToGradle() throws Exception {
         var fixture = fixture();
         var main = resolve(fixture, "compile", "source-path");
         String first = Files.readString(fixture.root().resolve("invocation.txt"));
@@ -414,6 +455,31 @@ class GradleCommandsTest {
                 "--source-set", "missing", "--classpath", "compile", "-r", "source-path");
         assertEquals(2, unknown.exitCode(), unknown.error());
         assertEquals("", unknown.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void compilerAndMetadataResponsesAreMergedWithoutPublishingTransportRecords() throws Exception {
+        var fixture = fixture();
+        var compiler = new Properties();
+        List<String> options = List.of("-g:none", "-Akey=value with spaces");
+        putList(compiler, "compiler-options", options);
+        try (var output = Files.newOutputStream(fixture.root().resolve("compiler.properties"))) {
+            compiler.store(output, "compiler");
+        }
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Gradle build output'", """
+                echo 'Gradle build output'
+                printf 'jig-gradle:'
+                base64 < compiler.properties | tr -d '\\n'
+                printf '\\n'
+                """));
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(options, arguments(result));
+        assertTrue(result.error().contains("Gradle build output"), result.error());
+        assertFalse(result.error().contains("jig-gradle:"), result.error());
     }
 
     @Test
@@ -469,11 +535,12 @@ class GradleCommandsTest {
                 classpath=compile
                 for argument do
                     case "$argument" in
-                        -Pjig.gradle.output=*) output=${argument#*=} ;;
                         -Pjig.gradle.classpath=*) classpath=${argument#*=} ;;
                     esac
                 done
-                cp "$classpath.properties" "$output"
+                printf 'jig-gradle:'
+                base64 < "$classpath.properties" | tr -d '\\n'
+                printf '\\n'
                 """);
         return new Fixture(root, project);
     }

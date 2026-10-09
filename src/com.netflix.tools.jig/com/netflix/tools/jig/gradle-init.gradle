@@ -29,11 +29,9 @@ import org.gradle.api.internal.tasks.compile.JavaCompilerArgumentsBuilder
 import org.gradle.util.GradleVersion
 
 // This predicate receives its own task at execution, after Gradle has run that
-// task's producers. Only the interchange file crosses the configuration-cache
-// boundary: no other task holds a reference to JavaCompile or its managed options.
+// task's producers. No other task holds a reference to JavaCompile or its managed
+// options across the configuration-cache boundary.
 class JigCompilerCapture implements Spec<Task> {
-    File resultFile
-
     @Override
     boolean isSatisfiedBy(Task task) {
         def method
@@ -64,7 +62,7 @@ class JigCompilerCapture implements Spec<Task> {
         }
         def values = new Properties()
         JigCaptureTask.putList(values, 'compiler-options', arguments)
-        resultFile.withOutputStream { values.store(it, 'jig Gradle compiler option capture') }
+        JigCaptureTask.emit(values)
         // Skip before compiler actions, incremental processing, or output cleanup.
         return false
     }
@@ -88,21 +86,10 @@ class JigCaptureTask extends DefaultTask {
     @Input boolean detectSourceModule = true
     @Classpath FileCollection binaryPath
     @Classpath FileCollection processorPath
-    @Internal File resultFile
-    @Input boolean compilerRequest = false
 
     @TaskAction
     void capture() {
         def values = new Properties()
-        if (compilerRequest) {
-            if (!resultFile.isFile()) {
-                throw new GradleException('The selected JavaCompile task did not capture compiler options')
-            }
-            resultFile.withInputStream { values.load(it) }
-            if (values.getProperty('compiler-options.count') == null) {
-                throw new GradleException('The selected JavaCompile task did not capture compiler options')
-            }
-        }
         values.setProperty('version', '1')
         metadata.each { name, value -> values.setProperty(name, value) }
         putList(values, 'project-paths', projectPaths)
@@ -129,9 +116,16 @@ class JigCaptureTask extends DefaultTask {
         argumentProviders.each { arguments.addAll(it.asArguments()) }
         putList(values, 'additional', arguments)
         values.setProperty('modular', modular.toString())
-        // Deliberately no task output: each query refreshes the interchange file,
-        // while Gradle independently reuses configuration and dependency outputs.
-        resultFile.withOutputStream { values.store(it, 'jig Gradle argument capture') }
+        // No declared output: every query returns a fresh response, while Gradle
+        // independently reuses configuration and dependency outputs.
+        emit(values)
+    }
+
+    static void emit(Properties values) {
+        def bytes = new ByteArrayOutputStream()
+        values.store(bytes, null)
+        // A framed line keeps arbitrary build output separate from capture data.
+        println('\njig-gradle:' + Base64.encoder.encodeToString(bytes.toByteArray()))
     }
 
     static void putList(Properties values, String name, List entries) {
@@ -143,13 +137,24 @@ class JigCaptureTask extends DefaultTask {
 def gradleVersion = GradleVersion.current().baseVersion
 def lazyTasks = gradleVersion >= GradleVersion.version('4.9')
 
-// Settings already define project identities and directories. Selecting a fully
-// qualified task here avoids an unqualified task search configuring every project
-// when the build enables configuration on demand.
+// Settings already define project identities and directories. The launcher
+// selects a fully qualified task to avoid searching unselected projects.
 gradle.settingsEvaluated { settings ->
-    // Command-line project properties are tracked configuration inputs even in
-    // the first configuration-cache releases, without newer settings APIs.
     def parameters = gradle.startParameter.projectProperties
+    if (gradleVersion >= GradleVersion.version('6.6')) {
+        // Explicit provider reads let Gradle track changed request properties,
+        // including in its earliest configuration-cache releases.
+        def providers = settings.services.get(org.gradle.api.provider.ProviderFactory)
+        parameters = [:]
+        for (def name : ['root', 'project-path', 'list', 'list-source-sets', 'compiler', 'source-set', 'classpath', 'options']) {
+            def key = 'jig.gradle.' + name
+            def value = providers.gradleProperty(key)
+            if (gradleVersion < GradleVersion.version('7.4')) {
+                value = value.forUseAtConfigurationTime()
+            }
+            parameters[key] = value.orNull
+        }
+    }
     def rootDirectory = new File(parameters['jig.gradle.root']).canonicalFile
     def selectedPath = parameters['jig.gradle.project-path']
     def listProjects = Boolean.parseBoolean(parameters['jig.gradle.list'])
@@ -158,8 +163,7 @@ gradle.settingsEvaluated { settings ->
     def sourceSetName = parameters['jig.gradle.source-set']
     def classpath = parameters['jig.gradle.classpath']
     def requested = ((parameters['jig.gradle.options'] ?: '').split(',') as List).toSet()
-    def captureTaskName = parameters['jig.gradle.task']
-    def resultFile = new File(parameters['jig.gradle.output'])
+    def captureTaskName = '_jigCapture'
     def needsClasspath = requested.contains('class-path') || requested.contains('module-path')
     def needsProcessors = classpath == 'compile' && requested.contains('processor-path')
     def needsSources = requested.contains('source-path') || requested.contains('module-source-path')
@@ -182,8 +186,6 @@ gradle.settingsEvaluated { settings ->
         throw new GradleException('Unknown project path in this build: ' + selectedPath)
     }
     def projectPath = selected[0].path
-    def taskPath = (projectPath == ':' ? ':' : projectPath + ':') + captureTaskName
-    gradle.startParameter.setTaskNames([taskPath])
     def projectPaths = descriptors.collect { it.path }.unique().sort()
     gradle.beforeProject { project ->
         if (project.path != projectPath) {
@@ -195,7 +197,6 @@ gradle.settingsEvaluated { settings ->
             def configure = { task ->
                 task.description = 'Capture the Java argument view requested by jig'
                 task.projectPaths = projectPaths
-                task.resultFile = resultFile
                 task.sourceRoots = project.files()
                 task.binaryPath = project.files()
                 task.processorPath = project.files()
@@ -223,9 +224,8 @@ gradle.settingsEvaluated { settings ->
                     // would execute. Replace predicates/disabled state and discard
                     // finalizers so querying cannot run compiler-adjacent actions.
                     compile.enabled = true
-                    compile.setOnlyIf(new JigCompilerCapture(resultFile: resultFile))
+                    compile.setOnlyIf(new JigCompilerCapture())
                     compile.setFinalizedBy([])
-                    task.compilerRequest = true
                     task.dependsOn(compile)
                     return
                 }
