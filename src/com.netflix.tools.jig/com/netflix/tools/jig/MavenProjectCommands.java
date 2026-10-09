@@ -34,7 +34,7 @@ import com.netflix.tools.jig.CommandLine.ToolOption;
 final class MavenProjectCommands {
     private static final String CAPTURE_PREFIX = "jig-maven:";
     private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Maven project base directory");
-    private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId, :artifactId, or relative path");
+    private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId or :artifactId");
     private static final ToolOption LIST = ToolOption.flag("--list-projects", "List groupId:artifactId project selectors from the selected Maven build");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
@@ -141,8 +141,8 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--project may only be specified once");
         }
         String project = selections.isEmpty() ? null : selections.getFirst();
-        if (project != null && project.isBlank()) {
-            throw new IllegalArgumentException("--project requires a Maven project selector");
+        if (project != null && !project.matches("[A-Za-z0-9_.-]*:[A-Za-z0-9_.-]+")) {
+            throw new IllegalArgumentException("--project requires a selector in the form groupId:artifactId or :artifactId");
         }
         Path base = Path.of(bases.getFirst()).toAbsolutePath().normalize();
         if (!Files.isDirectory(base)) {

@@ -115,11 +115,11 @@ class MavenIntegrationTest {
     }
 
     @Test
-    void nativeProjectSelectionAcceptsIdentifiersAndRelativePaths() throws Exception {
+    void nativeProjectSelectionAcceptsQualifiedAndAbbreviatedIdentifiers() throws Exception {
         Path root = fixture();
         Path pom = root.resolve("app/pom.xml");
         Files.writeString(pom, Files.readString(pom).replace("<artifactId>app</artifactId>", "<artifactId>application</artifactId>"));
-        for (String selector : List.of("fixture:application", ":application", "app")) {
+        for (String selector : List.of("fixture:application", ":application")) {
             var result = discover(root, "--project", selector);
             assertEquals(0, result.status(), selector + ": " + result.error());
             assertEquals(List.of("fixture:application"), result.output().lines().toList());

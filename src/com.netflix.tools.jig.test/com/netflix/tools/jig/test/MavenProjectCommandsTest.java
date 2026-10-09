@@ -55,6 +55,7 @@ class MavenProjectCommandsTest {
         assertTrue(run("__complete", "maven", "--list-project").output().contains("--list-projects\t"));
         assertTrue(run("__complete", "maven", "--proj").output().contains("--project\t"));
         assertFalse(help.output().contains("--list-project-dirs"));
+        assertFalse(help.output().contains("relative path"));
         assertTrue(run("__complete", "maven", "ins").output().contains("install\t"));
     }
 
@@ -95,12 +96,22 @@ class MavenProjectCommandsTest {
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void passesProjectSelectorsToMavenWithoutReinterpretingThem() throws Exception {
         var fixture = fixture(false);
-        for (String selector : List.of("example:app", ":app", "app")) {
+        for (String selector : List.of("example:app", ":app")) {
             var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", selector, "--list-projects");
             assertEquals(0, result.status(), result.error());
             String invocation = Files.readString(fixture.project().resolve("invocation.txt"));
             assertTrue(invocation.contains("--projects\n" + selector + "\n"), invocation);
         }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void rejectsPathAndMalformedProjectSelectorsBeforeLaunchingMaven() throws Exception {
+        var fixture = fixture(false);
+        for (String selector : List.of("app", "./app", "../app", fixture.project().toString(), ":", "example:", "example:app:1", "example:app,example:other")) {
+            assertInvalid("groupId:artifactId", "maven", "--project-base-dir", fixture.project().toString(), "--project", selector, "--list-projects");
+        }
+        assertFalse(Files.exists(fixture.project().resolve("invocation.txt")));
     }
 
     @Test
