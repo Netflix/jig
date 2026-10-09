@@ -107,14 +107,27 @@ class JigCaptureTask extends DefaultTask {
         metadata.each { name, value -> values.setProperty(name, value) }
         putList(values, 'project-paths', projectPaths)
         putList(values, 'source-sets', sourceSetNames)
-        def sourceDirectories = sourceRoots.files.collect { it.canonicalPath }
-        putList(values, 'sources', sourceDirectories)
-        putList(values, 'classpath', binaryPath.files.collect { it.canonicalPath })
+        def roots = sourceRoots.files
+        putList(values, 'sources', roots.collect { it.canonicalPath })
+        def modular = false
+        def classpath = binaryPath.files
+        def modulepath = []
+        if (inferModules) {
+            // The detector is absent in older Gradle versions, which also lack
+            // module-path inference. Use the build's own service when enabled,
+            // after producers have run; do not reclassify binaries inside jig.
+            def detectorType = Class.forName('org.gradle.internal.jvm.JavaModuleDetector')
+            def detector = services.get(detectorType)
+            modular = !detectSourceModule || detectorType.isModuleSource(true, roots)
+            classpath = detector.inferClasspath(modular, binaryPath).files
+            modulepath = detector.inferModulePath(modular, binaryPath).files
+        }
+        putList(values, 'classpath', classpath.collect { it.canonicalPath })
+        putList(values, 'module-path', modulepath.collect { it.canonicalPath })
         putList(values, 'processors', processorPath.files.collect { it.canonicalPath })
         def arguments = new ArrayList(additionalArguments)
         argumentProviders.each { arguments.addAll(it.asArguments()) }
         putList(values, 'additional', arguments)
-        def modular = inferModules && (!detectSourceModule || sourceDirectories.any { new File(it, 'module-info.java').isFile() })
         values.setProperty('modular', modular.toString())
         // Deliberately no task output: each query refreshes the interchange file,
         // while Gradle independently reuses configuration and dependency outputs.

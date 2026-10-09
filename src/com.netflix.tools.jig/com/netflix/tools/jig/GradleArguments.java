@@ -22,8 +22,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Properties;
-import java.util.jar.Attributes.Name;
-import java.util.jar.JarFile;
 
 import com.netflix.tools.jig.GradleCommandLine.Request;
 import com.netflix.tools.jig.Jig.Options.ModuleForm;
@@ -49,17 +47,8 @@ final class GradleArguments {
         List<String> additional = list(values, "additional");
         boolean release = values.getProperty("release") != null || additional.stream().anyMatch(argument -> argument.equals("--release") || argument.startsWith("--release="));
         boolean modular = Boolean.parseBoolean(values.getProperty("modular", "false"));
-        var classpath = new ArrayList<String>();
-        var modulepath = new ArrayList<String>();
-        for (String path : list(values, "classpath")) {
-            if (modular && isModule(Path.of(path))) {
-                modulepath.add(path);
-            } else {
-                classpath.add(path);
-            }
-        }
-        path(arguments, options.contains("class-path"), "--class-path", classpath);
-        path(arguments, options.contains("module-path"), "--module-path", modulepath);
+        path(arguments, options.contains("class-path"), "--class-path", list(values, "classpath"));
+        path(arguments, options.contains("module-path"), "--module-path", list(values, "module-path"));
         path(arguments, options.contains("source-path"), "--source-path", sources);
         path(arguments, options.contains("processor-path"), "--processor-path", list(values, "processors"));
         for (String name : List.of("release", "source", "target", "encoding", "module-version", "main-class")) {
@@ -149,29 +138,6 @@ final class GradleArguments {
         if (requested && value != null && !value.isEmpty()) {
             arguments.add(option);
             arguments.add(value);
-        }
-    }
-
-    private static boolean isModule(Path path) throws IOException {
-        if (Files.isDirectory(path)) {
-            return Files.isRegularFile(path.resolve("module-info.class"));
-        }
-        if (!Files.isRegularFile(path) || !path.getFileName()
-                .toString()
-                .endsWith(".jar")) {
-            return false;
-        }
-        try (var jar = new JarFile(path.toFile())) {
-            var manifest = jar.getManifest();
-            if (manifest != null && manifest.getMainAttributes().getValue("Automatic-Module-Name") != null) {
-                return true;
-            }
-            if (jar.getJarEntry("module-info.class") != null) {
-                return true;
-            }
-            boolean multiRelease = manifest != null && Boolean.parseBoolean(manifest.getMainAttributes()
-                    .getValue(Name.MULTI_RELEASE));
-            return multiRelease && jar.stream().anyMatch(entry -> entry.getName().matches("META-INF/versions/[0-9]+/module-info\\.class"));
         }
     }
 

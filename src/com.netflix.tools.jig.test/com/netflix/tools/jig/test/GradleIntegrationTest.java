@@ -138,6 +138,52 @@ class GradleIntegrationTest {
 
     @Test
     @EnabledIf("supportsModules")
+    void generalResolutionDelegatesModuleDetectionForCompileAndRuntimeAcrossCacheReplay() throws Exception {
+        var fixture = fixture(true);
+        Path explicit = fixture.root().resolve("explicit.jar");
+        Path multiRelease = fixture.root().resolve("multi-release.jar");
+        Path notMultiRelease = fixture.root().resolve("not-multi-release.jar");
+        Path exploded = moduleClasses("exploded.mod");
+        moduleJar(explicit, Files.readAllBytes(moduleClasses("explicit.mod").resolve("module-info.class")), false, false);
+        moduleJar(multiRelease, Files.readAllBytes(moduleClasses("multirelease.mod").resolve("module-info.class")), true, true);
+        moduleJar(notMultiRelease, Files.readAllBytes(moduleClasses("unmarked.mod").resolve("module-info.class")), true, false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.root().resolve("build.gradle"), "\nrootProject.file('evaluations.txt') << 'evaluated\\n'\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                dependencies {
+                    implementation files(rootProject.file('explicit.jar'), rootProject.file('multi-release.jar'),
+                        rootProject.file('not-multi-release.jar'), rootProject.file('missing.jar'), '%s')
+                }
+                """.formatted(exploded), StandardOpenOption.APPEND);
+        for (String classpath : List.of("compile", "runtime")) {
+            String captured = resolve(fixture, classpath, "class-path,module-path");
+            assertEquals(captured, resolve(fixture, classpath, "class-path,module-path"));
+            List<String> lines = captured.lines().toList();
+            String plain = lines.get(lines.indexOf("\"--class-path\"") + 1);
+            String modular = lines.get(lines.indexOf("\"--module-path\"") + 1);
+            assertEquals("\"" + fixture.root().resolve("plain.jar") + System.getProperty("path.separator") + notMultiRelease + "\"", plain);
+            for (Path module : List.of(explicit, multiRelease, exploded, fixture.root().resolve("shared.jar"))) {
+                assertTrue(modular.contains(module.toString()), captured);
+            }
+            assertFalse(modular.contains(notMultiRelease.toString()), captured);
+            assertFalse(captured.contains("missing.jar"), captured);
+        }
+        assertEquals(2, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
+        for (String classpath : List.of("compile", "runtime")) {
+            // Runtime resolution builds the selected output, so leave compilation
+            // modular while disabling inference on the run task itself.
+            Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = "
+                    + classpath.equals("runtime") + "\ntasks.run.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
+            String captured = resolve(fixture, classpath, "class-path,module-path");
+            assertFalse(captured.contains("\"--module-path\""), captured);
+            for (Path binary : List.of(explicit, multiRelease, notMultiRelease, exploded)) {
+                assertTrue(captured.contains(binary.toString()), captured);
+            }
+        }
+    }
+
+    @Test
+    @EnabledIf("supportsModules")
     void respectsDisabledModulePathInference() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
@@ -679,6 +725,27 @@ class GradleIntegrationTest {
         assertTrue(captured.contains("plain.jar"), captured);
         assertFalse(captured.contains("shared.jar"), captured);
         assertFalse(captured.contains("Alternative.java"), captured);
+    }
+
+    private Path moduleClasses(String name) throws Exception {
+        Path source = Files.createDirectories(temporaryDirectory.resolve(name)).resolve("module-info.java");
+        Files.writeString(source, "module " + name + " {}\n");
+        Path classes = source.getParent().resolve("classes");
+        execute(gradle.javaHome().resolve("bin/javac"), "-d", classes.toString(), source.toString());
+        return classes;
+    }
+
+    private static void moduleJar(Path path, byte[] descriptor, boolean versioned, boolean multiRelease) throws Exception {
+        var manifest = new Manifest();
+        manifest.getMainAttributes().put(Name.MANIFEST_VERSION, "1.0");
+        if (multiRelease) {
+            manifest.getMainAttributes().put(Name.MULTI_RELEASE, "true");
+        }
+        try (var output = new JarOutputStream(Files.newOutputStream(path), manifest)) {
+            output.putNextEntry(new JarEntry(versioned ? "META-INF/versions/9/module-info.class" : "module-info.class"));
+            output.write(descriptor);
+            output.closeEntry();
+        }
     }
 
     private Path processorJar() throws Exception {

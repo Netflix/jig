@@ -23,10 +23,6 @@ import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
-import java.util.jar.Attributes.Name;
-import java.util.jar.JarEntry;
-import java.util.jar.JarOutputStream;
-import java.util.jar.Manifest;
 import java.util.spi.ToolProvider;
 
 import com.netflix.tools.jig.Jig;
@@ -229,41 +225,20 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void modulePathUsesGradlesModuleDetectionPolicy() throws Exception {
+    void preservesGradlesCapturedPathsWithoutReclassifyingBinaries() throws Exception {
         var fixture = fixture();
-        Path plain = jar("plain.jar", null, false, false);
-        Path automatic = jar("automatic.jar", "automatic.mod", false, false);
-        Path explicit = jar("explicit.jar", null, true, false);
-        Path multiRelease = jar("multi-release.jar", null, true, true);
-        Path notMultiRelease = jar("not-multi-release.jar", null, true, null);
-        Path exploded = Files.createDirectories(temporaryDirectory.resolve("exploded"));
-        Files.write(exploded.resolve("module-info.class"), new byte[0]);
+        Path classpath = temporaryDirectory.resolve("classpath.jar");
+        // Rendering must not open the binary or repeat module detection locally.
+        Files.writeString(classpath, "opaque captured binary");
+        Path modulepath = temporaryDirectory.resolve("modulepath.jar");
         Properties values = capture(fixture);
         values.setProperty("modular", "true");
-        putList(
-                values,
-                "classpath",
-                List.of(
-                        plain.toString(),
-                        automatic.toString(),
-                        explicit.toString(),
-                        multiRelease.toString(),
-                        notMultiRelease.toString(),
-                        exploded.toString()));
+        putList(values, "classpath", List.of(classpath.toString()));
+        putList(values, "module-path", List.of(modulepath.toString()));
         storeCapture(fixture, values);
         var result = resolve(fixture, "compile", "class-path,module-path");
         assertEquals(0, result.exitCode(), result.error());
-        String separator = System.getProperty("path.separator");
-        assertEquals(
-                List.of(
-                        "--class-path",
-                        plain + separator + notMultiRelease,
-                        "--module-path",
-                        String.join(
-                                separator,
-                                List.of(automatic.toString(), explicit.toString(), multiRelease.toString(),
-                                        exploded.toString()))),
-                arguments(result));
+        assertEquals(List.of("--class-path", classpath.toString(), "--module-path", modulepath.toString()), arguments(result));
     }
 
     @Test
@@ -334,27 +309,6 @@ class GradleCommandsTest {
         assertTrue(result.error().contains("Missing Gradle capture entry: classpath.1"),
                 result.error());
         assertEquals("", result.output());
-    }
-
-    private Path jar(String name, String module, boolean descriptor,
-                     Boolean multiRelease)
-            throws Exception {
-        Path path = temporaryDirectory.resolve(name);
-        var manifest = new Manifest();
-        manifest.getMainAttributes().put(Name.MANIFEST_VERSION, "1.0");
-        if (module != null) {
-            manifest.getMainAttributes().putValue("Automatic-Module-Name", module);
-        }
-        if (Boolean.TRUE.equals(multiRelease)) {
-            manifest.getMainAttributes().put(Name.MULTI_RELEASE, "true");
-        }
-        try (var output = new JarOutputStream(Files.newOutputStream(path), manifest)) {
-            if (descriptor) {
-                output.putNextEntry(new JarEntry(Boolean.FALSE.equals(multiRelease) ? "module-info.class" : "META-INF/versions/9/module-info.class"));
-                output.closeEntry();
-            }
-        }
-        return path;
     }
 
     private static Properties capture(Fixture fixture) throws Exception {
