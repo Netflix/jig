@@ -330,6 +330,7 @@ class JigToolProviderTest {
                     out.toString());
             assertTrue(out.toString().contains("-r, --resolve-options"),
                     out.toString());
+            assertTrue(out.toString().contains("--resolve-compiler-options"), out.toString());
             assertTrue(out.toString().contains("-w, --write-argfile"),
                     out.toString());
             assertTrue(out.toString().contains("--compile-time"),

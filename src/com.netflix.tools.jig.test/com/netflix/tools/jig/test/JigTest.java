@@ -1213,6 +1213,39 @@ public class JigTest {
     }
 
     @Test
+    void compilerOptionsAreASeparateResolutionOperation() {
+        Options options = Options.parse(new String[] {"--resolve-compiler-options", "-w", "compile.args", "-m", "app"});
+        assertEquals(Path.of("compile.args"), options.argumentFile);
+        for (String[] arguments : List.of(
+                new String[] {"--resolve-compiler-options", "-r", "module-path"},
+                new String[] {"-r", "release", "--resolve-compiler-options"})) {
+            var exception = assertThrows(IllegalArgumentException.class, () -> Options.parse(arguments));
+            assertTrue(exception.getMessage().contains("mutually exclusive"), exception.getMessage());
+        }
+        assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[] {"-r", "javac"}));
+        assertThrows(IllegalArgumentException.class, () -> Options.parse(new String[] {"-r", "Xlint"}));
+    }
+
+    @Test
+    void nativeCompilerOptionsComposeWithJavacWithoutCompilingTheSelectedModule(@TempDir Path directory) throws Exception {
+        Path sources = Files.createDirectories(directory.resolve("source trees/com.example.application"));
+        Files.writeString(sources.resolve("module-info.java"), "module com.example.application {}\n");
+        Files.writeString(sources.resolve("Example.java"), "package app; public class Example {}\n");
+        String expected = runJig("--module-source-path", sources.getParent().toString(), "-m", "com.example.application", "-r", COMPILE_OPTIONS);
+        String captured = runJig("--module-source-path", sources.getParent().toString(), "-m", "com.example.application", "--resolve-compiler-options");
+        assertEquals(expected, captured);
+        Path options = directory.resolve("compile.args");
+        runJig("--module-source-path", sources.getParent().toString(), "-m", "com.example.application", "--resolve-compiler-options", "-w", options.toString());
+        assertEquals(captured, Files.readString(options));
+        assertFalse(Files.exists(sources.resolve("module-info.class")));
+        Path output = directory.resolve("classes");
+        var diagnostics = new StringWriter();
+        assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
+                "@" + options, "-d", output.toString()), diagnostics.toString());
+        assertTrue(Files.isRegularFile(output.resolve("com.example.application/app/Example.class")));
+    }
+
+    @Test
     void shortProjectionOptionsAreAccepted() {
         Options opts = Options.parse(new String[] {"-r", "module-path,module=main", "-w", "run.args", "-m", "app"});
 

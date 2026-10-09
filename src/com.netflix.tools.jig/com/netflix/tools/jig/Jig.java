@@ -98,6 +98,8 @@ public class Jig implements ToolProvider, OptionChecker {
     private static final Set<String> GRAPH_INDEPENDENT_RESOLVE_OPTIONS = Set.of("module-version", "release", "multi-release");
     private static final Set<String> ACCESS_RESOLUTION_OPTIONS = Set.of("release", "multi-release", "enable-preview", "enable-native-access", "enable-final-field-mutation", "add-opens",
             "add-exports");
+    private static final Set<String> COMPILER_OPTIONS = Set.of("module-path", "processor-module-path", "upgrade-module-path",
+            "module-source-path", "module", "module-version", "patch-module", "release", "enable-preview", "add-exports");
     private static final Set<String> RESOLVE_OPTIONS = Set.of(
             "module-path",
             "processor-module-path",
@@ -156,6 +158,9 @@ public class Jig implements ToolProvider, OptionChecker {
 
     int runWithSessions(PrintWriter out, PrintWriter err, Supplier<ModuleRepositorySession> sessions,
                         String... args) {
+        if (args.length > 0 && args[0].equals("gradle")) {
+            return GradleCommands.run(out, err, Arrays.copyOfRange(args, 1, args.length));
+        }
         if (args.length > 0 && args[0].equals("maven")) {
             if (args.length > 1 && args[1].equals("serve")) {
                 return serve(out, err, Arrays.copyOfRange(args, 2, args.length));
@@ -257,10 +262,10 @@ public class Jig implements ToolProvider, OptionChecker {
             sourceModules.bind();
             var sourcePaths = options.hasResolveOption("source-path") ? resolution.sources() : Map.<String, Path>of();
 
-            boolean generatesArguments = options.resolveOptions != null;
+            boolean generatesArguments = options.resolveOptions != null || options.resolveCompilerOptions;
             String generatedArguments = !generatesArguments && !options.validateRuntimeAccess
                     ? null
-                    : renderArguments(generatesArguments ? options.resolveOptions : Set.of(), options, resolution,
+                    : renderArguments(generatesArguments ? options.optionSelection() : Set.of(), options, resolution,
                             staticOnly, repositoryPaths, sourceModules, sourcePaths);
 
             if (options.modulePomRoot != null) {
@@ -1271,6 +1276,7 @@ public class Jig implements ToolProvider, OptionChecker {
 
     private static void printHelp(PrintWriter out) {
         out.println("Usage: jig [options]");
+        out.println("       jig gradle [options]");
         out.println("       jig maven <operation> [options]");
         out.println("       jig maven serve [--listen <host:port>]");
         out.println();
@@ -1310,9 +1316,12 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("                  Verify module-info.hash for each selected source module.");
         out.println("  -r, --resolve-options <option-spec>[,<option-spec>...]");
         out.println("                  Resolve the requested standard options to stdout.");
+        out.println("  --resolve-compiler-options");
+        out.println("                  Resolve effective compiler options, without source filenames.");
+        out.println("                  Mutually exclusive with --resolve-options.");
         out.println("  -w, --write-argfile <path>");
         out.println("                  Write generated options as a Java argument file.");
-        out.println("                  Requires --resolve-options.");
+        out.println("                  Requires --resolve-options or --resolve-compiler-options.");
         out.println("  --compile-time  Include dependencies needed to compile against the selected modules.");
         out.println("  --recompile     Compile source modules without reusing prior output.");
         out.println("  --no-compile-diagnostics");
@@ -1365,6 +1374,7 @@ public class Jig implements ToolProvider, OptionChecker {
         public Path consumerPomDirectory;
         IntegrityMode integrityMode = IntegrityMode.NONE;
         public Set<String> resolveOptions;
+        public boolean resolveCompilerOptions;
         public ModuleForm moduleForm = ModuleForm.SINGLE;
         public Path argumentFile;
         public boolean compileTime;
@@ -1396,12 +1406,17 @@ public class Jig implements ToolProvider, OptionChecker {
             return List.copyOf(names);
         }
 
+        Set<String> optionSelection() {
+            return resolveCompilerOptions ? COMPILER_OPTIONS : resolveOptions;
+        }
+
         boolean hasResolveOption(String option) {
-            return resolveOptions != null && resolveOptions.contains(option);
+            var selection = optionSelection();
+            return selection != null && selection.contains(option);
         }
 
         boolean requiresModuleGraph() {
-            if (resolveOptions == null || !GRAPH_INDEPENDENT_RESOLVE_OPTIONS.containsAll(resolveOptions)) {
+            if (resolveCompilerOptions || resolveOptions == null || !GRAPH_INDEPENDENT_RESOLVE_OPTIONS.containsAll(resolveOptions)) {
                 return true;
             }
             return modulePath.length > 0
@@ -1428,6 +1443,7 @@ public class Jig implements ToolProvider, OptionChecker {
                     || consumerPomDirectory != null
                     || integrityMode != IntegrityMode.NONE
                     || resolveOptions != null
+                    || resolveCompilerOptions
                     || compileTime
                     || recompile
                     || !emitCompileDiagnostics

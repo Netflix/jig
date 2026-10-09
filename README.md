@@ -3,7 +3,9 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
 ![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
 
-`jig` provides module version resolution, compilation and assembly for the Java Module System. It resolves source modules, local binaries and artifacts published to Maven repositories together, then produces the standard module system arguments accepted by `javac`, `java`, `javadoc`, `jlink` and other tools. The same module graph and compilation work can be reused across tools.
+`jig` provides module resolution and tool interoperability for Java development. It produces the standard arguments accepted by `javac`, `java`, `javadoc`, `jlink` and other tools, whether dependencies are declared as Java modules or managed by an existing Gradle build.
+
+For the Java Module System, `jig` also provides module version resolution, compilation and assembly. It resolves source modules, local binaries and artifacts published to Maven repositories together, allowing the same module graph and compilation work to be reused across tools.
 
 The same module model extends to Maven repositories. Existing artifacts can be located by Java module name, while modules can be installed or published with consumer POMs generated from their descriptors. A repository proxy makes the module namespace available to ordinary Maven clients.
 
@@ -83,6 +85,44 @@ Usage: junit [OPTIONS] COMMAND
 Launches the JUnit Platform for test discovery and execution.
 ```
 
+## Interoperability
+
+For Gradle builds, `jig gradle` obtains tool arguments from an explicitly selected project and source set. Gradle owns the build model and dependency resolution; `jig` makes its paths and compiler options composable with standalone JDK tools, without requiring module-system adoption first.
+
+### Gradle
+
+Discover projects and source sets from the build root:
+
+```sh
+jig gradle --root-project-dir . --list-project-paths
+
+jig gradle --root-project-dir . \
+  --project-path :app --list-source-sets
+```
+
+For a project `:app` with a source set `main`, resolve runtime arguments and launch your main class:
+
+```sh
+jig gradle --root-project-dir . \
+  --project-path :app --source-set main --classpath runtime \
+  --resolve-options class-path,module-path,add-modules \
+  --write-argfile runtime.args
+
+java @runtime.args com.example.Main
+```
+
+For compilation, resolve compiler options separately:
+
+```sh
+jig gradle --root-project-dir . \
+  --project-path :app --source-set main \
+  --resolve-compiler-options --write-argfile compile.args
+
+javac @compile.args @sources.args
+```
+
+Replace the project, source set and main class with those of your application. Prepare `sources.args` with the source filenames to compile, including generated sources and `module-info.java` where applicable, and use a `javac` matching the build's configured toolchain.
+
 ## Documentation
 
 The [wiki](https://github.com/Netflix/jig/wiki) covers:
@@ -94,4 +134,4 @@ The [wiki](https://github.com/Netflix/jig/wiki) covers:
 - [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules)
 - [Command Reference](https://github.com/Netflix/jig/wiki/Command-Reference)
 
-Use `jig --help` for the complete option reference.
+Use `jig --help` for the native option reference and `jig gradle --help` for the Gradle contract.
