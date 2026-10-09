@@ -20,6 +20,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import java.util.spi.ToolProvider;
 
 import com.netflix.tools.jig.Jig;
 import org.junit.jupiter.api.Test;
@@ -149,6 +152,148 @@ class MavenIntegrationTest {
         assertNoBuildOutputs();
     }
 
+    @Test
+    void resolvesMavensNativeCompileRuntimeAndTestClasspaths() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Path repository = root.resolve("repository");
+        for (String artifact : List.of("compile", "provided", "runtime", "test", "transitive")) {
+            artifact(repository, artifact, artifact.equals("compile") ? dependency("transitive", "compile") : "");
+        }
+        String dependencies = dependency("compile", "compile") + dependency("provided", "provided")
+                + dependency("runtime", "runtime") + dependency("test", "test");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependencies + "</dependencies>" + customLayout()));
+        for (String scope : List.of("compile", "runtime", "test")) {
+            var result = discover(root, "--project", "fixture:app", "--scope", scope, "-r", "class-path");
+            assertEquals(0, result.status(), result.error());
+            assertTrue(result.output().startsWith("\"--class-path\"\n"), result.output());
+            for (String included : List.of("compile", "transitive")) {
+                assertTrue(result.output().contains(repository.resolve("fixture/dependencies/" + included + "/1/" + included + "-1.jar").toString()), result.output());
+            }
+            assertEquals(!scope.equals("runtime"), result.output().contains("provided-1.jar"), result.output());
+            assertEquals(!scope.equals("compile"), result.output().contains("runtime-1.jar"), result.output());
+            assertEquals(scope.equals("test"), result.output().contains("test-1.jar"), result.output());
+            assertTrue(result.output().contains(app.resolve("out/main").toString()), result.output());
+            assertEquals(scope.equals("test"), result.output().contains(app.resolve("out/test").toString()), result.output());
+        }
+        assertFalse(Files.exists(app.resolve("out")));
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    void sourceOnlyResolutionUsesConfiguredRootsWithoutResolvingDependencies() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("missing", "compile") + "</dependencies>" + customLayout()));
+        for (String scope : List.of("compile", "runtime", "test")) {
+            var result = discover(root, "--project", ":app", "--scope", scope, "-r", "source-path");
+            assertEquals(0, result.status(), result.error());
+            Path source = app.resolve(scope.equals("test") ? "checks/java" : "sources/java");
+            assertEquals("\"--source-path\"\n\"" + source + "\"\n", result.output());
+        }
+        assertFalse(Files.exists(app.resolve("out")));
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    void failedDependencyResolutionDoesNotPublishPartialArguments() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("missing", "compile") + "</dependencies>" + customLayout()));
+        Path argumentFile = root.resolve("tool.args");
+        Files.writeString(argumentFile, "original\n");
+        var result = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "class-path,source-path", "-w", argumentFile.toString());
+        assertNotEquals(0, result.status(), result.error());
+        assertTrue(result.error().contains("missing"), result.error());
+        assertEquals("", result.output());
+        assertEquals("original\n", Files.readString(argumentFile));
+    }
+
+    @Test
+    void selectedAggregatorSourceRootsDoNotIncludeItsChildren() throws Exception {
+        Path root = fixture();
+        Path pom = root.resolve("pom.xml");
+        Files.writeString(pom, Files.readString(pom).replace("<build>", "<build><sourceDirectory>root-sources</sourceDirectory>"));
+        var result = discover(root, "--project", "fixture:root", "--scope", "compile", "-r", "source-path");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("\"--source-path\"\n\"" + root.resolve("root-sources") + "\"\n", result.output());
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    void resolvedOptionsComposeWithStandaloneJavacAndJava() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Path repository = root.resolve("repository");
+        artifact(repository, "compile", "");
+        Path dependencySource = temporaryDirectory.resolve("Dependency.java");
+        Files.writeString(dependencySource, "package fixture.dependencies; public class Dependency { public static String message() { return \"hello\"; } }\n");
+        Path dependencyClasses = temporaryDirectory.resolve("dependency classes");
+        javac("--release", "8", "-Xlint:-options", "-d", dependencyClasses.toString(), dependencySource.toString());
+        try (var jar = new JarOutputStream(Files.newOutputStream(repository.resolve("fixture/dependencies/compile/1/compile-1.jar")))) {
+            jar.putNextEntry(new JarEntry("fixture/dependencies/Dependency.class"));
+            Files.copy(dependencyClasses.resolve("fixture/dependencies/Dependency.class"), jar);
+            jar.closeEntry();
+        }
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("compile", "compile") + "</dependencies>" + customLayout()));
+        Path sources = Files.createDirectories(app.resolve("sources/java/app"));
+        Path main = sources.resolve("Main.java");
+        Files.writeString(main, "package app; public class Main { public static void main(String[] args) { System.out.println(Helper.message()); } }\n");
+        Files.writeString(sources.resolve("Helper.java"), "package app; class Helper { static String message() { return fixture.dependencies.Dependency.message(); } }\n");
+        Path compileArguments = root.resolve("compile.args");
+        var compile = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "class-path,source-path", "-w", compileArguments.toString());
+        assertEquals(0, compile.status(), compile.error());
+        assertEquals("", compile.output());
+        assertFalse(Files.exists(app.resolve("out")));
+        javac("@" + compileArguments, "-d", app.resolve("out/main").toString(), main.toString());
+        Path runtimeArguments = root.resolve("runtime.args");
+        var runtime = discover(root, "--project", ":app", "--scope", "runtime", "-r", "class-path", "-w", runtimeArguments.toString());
+        assertEquals(0, runtime.status(), runtime.error());
+        var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "@" + runtimeArguments, "app.Main")
+                .redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), output);
+        assertEquals("hello", output.strip());
+    }
+
+    private static void javac(String... arguments) {
+        var diagnostics = new StringWriter();
+        assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics), arguments), diagnostics.toString());
+    }
+
+    private static String customLayout() {
+        return """
+                <build>
+                  <sourceDirectory>sources/java</sourceDirectory>
+                  <testSourceDirectory>checks/java</testSourceDirectory>
+                  <outputDirectory>out/main</outputDirectory>
+                  <testOutputDirectory>out/test</testOutputDirectory>
+                </build>
+                """;
+    }
+
+    private static String dependency(String artifact, String scope) {
+        return """
+                <dependency>
+                  <groupId>fixture.dependencies</groupId><artifactId>%s</artifactId><version>1</version><scope>%s</scope>
+                </dependency>
+                """.formatted(artifact, scope);
+    }
+
+    private static void artifact(Path repository, String artifact, String dependencies) throws Exception {
+        Path directory = Files.createDirectories(repository.resolve("fixture/dependencies/" + artifact + "/1"));
+        Files.writeString(directory.resolve(artifact + "-1.pom"), """
+                <project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <modelVersion>4.0.0</modelVersion>
+                  <groupId>fixture.dependencies</groupId><artifactId>%s</artifactId><version>1</version>
+                  <dependencies>%s</dependencies>
+                </project>
+                """.formatted(artifact, dependencies));
+        try (var jar = new JarOutputStream(Files.newOutputStream(directory.resolve(artifact + "-1.jar")))) {
+            jar.finish();
+        }
+    }
+
     private Path fixture() throws Exception {
         Path parent = Files.createDirectories(temporaryDirectory.resolve("parent"));
         Files.writeString(parent.resolve("pom.xml"), pom("parent", "", "<packaging>pom</packaging>"));
@@ -187,8 +332,8 @@ class MavenIntegrationTest {
         Files.writeString(project.resolve("mvnw"), """
                 #!/bin/sh
                 export JAVA_HOME=%s
-                exec sh %s --offline "$@"
-                """.formatted(shellQuote(maven.javaHome().toString()), shellQuote(maven.executable().toString())));
+                exec sh %s --offline %s "$@"
+                """.formatted(shellQuote(maven.javaHome().toString()), shellQuote(maven.executable().toString()), shellQuote("-Dmaven.repo.local=" + project.resolve("repository"))));
     }
 
     private void assertNoBuildOutputs() throws Exception {
@@ -211,8 +356,11 @@ class MavenIntegrationTest {
     private static Result discover(Path project, String... options) {
         var output = new StringWriter();
         var error = new StringWriter();
-        var arguments = new ArrayList<>(List.of("maven", "--project-base-dir", project.toString(), "--list-projects"));
+        var arguments = new ArrayList<>(List.of("maven", "--project-base-dir", project.toString()));
         arguments.addAll(List.of(options));
+        if (!arguments.contains("-r")) {
+            arguments.add("--list-projects");
+        }
         int status = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true), arguments.toArray(String[]::new));
         return new Result(status, output.toString(), error.toString());
     }

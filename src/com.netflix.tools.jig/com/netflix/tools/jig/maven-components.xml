@@ -19,6 +19,12 @@
       <role-hint>default</role-hint>
       <implementation>com.netflix.tools.jig.maven.capture.Capture</implementation>
       <instantiation-strategy>singleton</instantiation-strategy>
+      <requirements>
+        <requirement>
+          <role>org.apache.maven.lifecycle.internal.LifecycleDependencyResolver</role>
+          <field-name>dependencyResolver</field-name>
+        </requirement>
+      </requirements>
     </component>
   </components>
 </component-set>

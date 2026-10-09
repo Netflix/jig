@@ -24,10 +24,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
+import java.util.Set;
 
+import com.netflix.tools.jig.CommandLine.ParsedArguments;
 import com.netflix.tools.jig.CommandLine.ToolOption;
 
 /** On-demand queries hosted by the explicitly selected Maven build. */
@@ -36,11 +39,15 @@ final class MavenProjectCommands {
     private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Maven project base directory");
     private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId or :artifactId");
     private static final ToolOption LIST = ToolOption.flag("--list-projects", "List groupId:artifactId project selectors from the selected Maven build");
+    private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
+    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
+    private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
+    private static final Set<String> RESOLVE_OPTIONS = Set.of("class-path", "source-path");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
-            .description("Discover Maven projects using their own build runtime")
-            .options(BASE, PROJECT, LIST, VERBOSE, HELP)
+            .description("Resolve standard Java arguments using the Maven build runtime")
+            .options(BASE, PROJECT, LIST, SCOPE, RESOLVE, WRITE, VERBOSE, HELP)
             .build();
 
     private MavenProjectCommands() {}
@@ -52,7 +59,9 @@ final class MavenProjectCommands {
     static String help() {
         return COMMAND_LINE.help("jig maven")
                 + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
-                + "Discovery includes active modules and does not execute build goals.\n";
+                + "Discovery includes active modules and does not execute build goals.\n"
+                + "Argument resolution requires --project and --scope. Resolve options: class-path, source-path.\n"
+                + "Paths come from Maven's project model and native dependency resolution; build goals are not executed.\n";
     }
 
     static int run(PrintWriter out, PrintWriter err, String[] arguments) {
@@ -89,6 +98,10 @@ final class MavenProjectCommands {
             if (request.project() != null) {
                 captureArguments.addAll(List.of("--projects", request.project()));
             }
+            if (!request.listProjects()) {
+                captureArguments.addAll(List.of("-Djig.maven.project=" + request.project(), "-Djig.maven.scope=" + request.scope(),
+                        "-Djig.maven.options=" + String.join(",", request.options().stream().sorted().toList())));
+            }
             captureArguments.add("validate");
             var capture = invoke(request, captureArguments, err);
             var values = new Properties();
@@ -112,7 +125,16 @@ final class MavenProjectCommands {
             if (!"1".equals(values.getProperty("version"))) {
                 throw new IOException("Unsupported Maven capture version: " + values.getProperty("version"));
             }
-            projects(values).stream().distinct().sorted().forEach(out::println);
+            if (request.listProjects()) {
+                list(values, "projects").stream().distinct().sorted().forEach(out::println);
+            } else {
+                String generated = argumentFile(list(values, "arguments"));
+                if (request.argumentFile() == null) {
+                    out.print(generated);
+                } else {
+                    Files.writeString(request.argumentFile(), generated);
+                }
+            }
             return 0;
         } catch (IOException failure) {
             err.println("jig maven: " + failure.getMessage());
@@ -133,16 +155,47 @@ final class MavenProjectCommands {
         if (bases.size() != 1) {
             throw new IllegalArgumentException("--project-base-dir may only be specified once");
         }
-        if (!parsed.contains(LIST)) {
-            throw new IllegalArgumentException("--list-projects is required");
+        boolean listProjects = parsed.contains(LIST);
+        String project = single(parsed, PROJECT);
+        String scope = single(parsed, SCOPE);
+        String resolve = single(parsed, RESOLVE);
+        String write = single(parsed, WRITE);
+        if (listProjects && resolve != null) {
+            throw new IllegalArgumentException("--list-projects and --resolve-options are mutually exclusive");
         }
-        var selections = parsed.values(PROJECT);
-        if (selections.size() > 1) {
-            throw new IllegalArgumentException("--project may only be specified once");
+        if (!listProjects && resolve == null) {
+            throw new IllegalArgumentException("--list-projects or --resolve-options is required");
         }
-        String project = selections.isEmpty() ? null : selections.getFirst();
+        if (write != null && resolve == null) {
+            throw new IllegalArgumentException("--write-argfile requires --resolve-options");
+        }
+        if (resolve == null && scope != null) {
+            throw new IllegalArgumentException("--scope applies only to argument resolution");
+        }
+        if (resolve != null && project == null) {
+            throw new IllegalArgumentException("--project is required for argument resolution");
+        }
         if (project != null && !project.matches("[A-Za-z0-9_.-]*:[A-Za-z0-9_.-]+")) {
             throw new IllegalArgumentException("--project requires a selector in the form groupId:artifactId or :artifactId");
+        }
+        if (resolve != null && scope == null) {
+            throw new IllegalArgumentException("--scope is required for argument resolution");
+        }
+        if (scope != null && !Set.of("compile", "runtime", "test").contains(scope)) {
+            throw new IllegalArgumentException("--scope must be compile, runtime or test");
+        }
+        var options = new LinkedHashSet<String>();
+        if (resolve != null) {
+            for (String option : resolve.split(",", -1)) {
+                option = option.trim();
+                if (option.isEmpty()) {
+                    throw new IllegalArgumentException("resolve options must not be empty");
+                }
+                if (!RESOLVE_OPTIONS.contains(option)) {
+                    throw new IllegalArgumentException("unknown resolve options: " + option);
+                }
+                options.add(option);
+            }
         }
         Path base = Path.of(bases.getFirst()).toAbsolutePath().normalize();
         if (!Files.isDirectory(base)) {
@@ -152,32 +205,49 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), write == null ? null : Path.of(write), listProjects, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
     }
 
-    private static List<String> projects(Properties values) throws IOException {
-        String count = values.getProperty("projects.count");
+    private static String single(ParsedArguments parsed, ToolOption option) {
+        var values = parsed.values(option);
+        if (values.size() > 1) {
+            throw new IllegalArgumentException(option.names().getFirst() + " may only be specified once");
+        }
+        return values.isEmpty() ? null : values.getFirst();
+    }
+
+    private static List<String> list(Properties values, String name) throws IOException {
+        String count = values.getProperty(name + ".count");
         int size;
         try {
             size = Integer.parseInt(count);
         } catch (NumberFormatException failure) {
-            throw new IOException("Invalid Maven capture count for projects: " + count, failure);
+            throw new IOException("Invalid Maven capture count for " + name + ": " + count, failure);
         }
         if (size < 0 || size > 100_000) {
-            throw new IOException("Invalid Maven capture count for projects: " + count);
+            throw new IOException("Invalid Maven capture count for " + name + ": " + count);
         }
         var projects = new ArrayList<String>();
         for (int index = 0; index < size; index++) {
-            String project = values.getProperty("projects." + index);
+            String project = values.getProperty(name + "." + index);
             if (project == null) {
-                throw new IOException("Missing Maven capture entry: projects." + index);
+                throw new IOException("Missing Maven capture entry: " + name + "." + index);
             }
             projects.add(project);
         }
         return List.copyOf(projects);
+    }
+
+    private static String argumentFile(List<String> arguments) {
+        var output = new StringBuilder();
+        for (String argument : arguments) {
+            output.append('"').append(argument.replace("\\", "\\\\").replace("\"", "\\\"")
+                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t").replace("\f", "\\f")).append('"').append('\n');
+        }
+        return output.toString();
     }
 
     private static ProcessResult invoke(Request request, List<String> arguments, PrintWriter err) throws IOException, InterruptedException {
@@ -215,6 +285,6 @@ final class MavenProjectCommands {
         return Files.isRegularFile(wrapper) ? List.of("sh", wrapper.toString()) : List.of("mvn");
     }
 
-    private record Request(Path base, String project, boolean verbose) {}
+    private record Request(Path base, String project, String scope, Set<String> options, Path argumentFile, boolean listProjects, boolean verbose) {}
     private record ProcessResult(int status, List<String> lines) {}
 }

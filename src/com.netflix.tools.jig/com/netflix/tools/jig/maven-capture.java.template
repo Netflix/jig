@@ -15,20 +15,28 @@
 package com.netflix.tools.jig.maven.capture;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
 import java.util.Properties;
 
+import org.apache.maven.artifact.resolver.filter.CumulativeScopeArtifactFilter;
 import org.apache.maven.execution.MavenSession;
+import org.apache.maven.lifecycle.internal.LifecycleDependencyResolver;
 import org.apache.maven.lifecycle.internal.LifecycleStarter;
 import org.apache.maven.project.MavenProject;
 
 // Compiled against the selected Maven installation, not jig's relocated libraries.
 // Maven 3's starter is a class; Maven 4's starter is an interface.
 public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
+    private LifecycleDependencyResolver dependencyResolver;
+
     @Override
     public void execute(MavenSession session) {
         try {
@@ -39,15 +47,62 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 values.setProperty("projects." + index++, project.getGroupId() + ":" + project.getArtifactId());
             }
             values.setProperty("projects.count", Integer.toString(index));
+            if (session.getUserProperties().getProperty("jig.maven.scope") != null) {
+                resolve(session, values);
+            }
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             values.store(bytes, null);
             // Maven 4 decorates System.out through its logger. The protocol uses
             // the process stream directly; do not close Maven's output descriptor.
             PrintStream output = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
             output.println("\njig-maven:" + Base64.getEncoder().encodeToString(bytes.toByteArray()));
-        } catch (IOException failure) {
-            throw new IllegalStateException("Cannot capture Maven projects", failure);
+        } catch (Exception failure) {
+            throw new IllegalStateException("Cannot capture Maven arguments", failure);
         }
-        // Do not execute the requested lifecycle: this invocation is discovery.
+        // This invocation queries the model; do not execute the requested lifecycle.
+    }
+
+    private void resolve(MavenSession session, Properties values) throws Exception {
+        Properties request = session.getUserProperties();
+        String selector = request.getProperty("jig.maven.project");
+        String scope = request.getProperty("jig.maven.scope");
+        List<String> options = Arrays.asList(request.getProperty("jig.maven.options").split(","));
+        MavenProject selected = null;
+        for (MavenProject project : session.getProjects()) {
+            String id = project.getGroupId() + ":" + project.getArtifactId();
+            if (id.equals(selector) || (":" + project.getArtifactId()).equals(selector)) {
+                if (selected != null) {
+                    throw new IllegalArgumentException("Project selector matches multiple Maven projects: " + selector);
+                }
+                selected = project;
+            }
+        }
+        if (selected == null) {
+            throw new IllegalArgumentException("Project selector did not select a Maven project: " + selector);
+        }
+        session.setCurrentProject(selected);
+        List<String> arguments = new ArrayList<String>();
+        if (options.contains("class-path")) {
+            dependencyResolver.resolveProjectDependencies(selected, Collections.singleton(scope), Collections.singleton(scope), session, false, Collections.emptySet());
+            // Use the same native artifact view that Maven exposes to a mojo.
+            selected.setArtifactFilter(new CumulativeScopeArtifactFilter(Collections.singleton(scope)));
+            List<String> paths = "test".equals(scope) ? selected.getTestClasspathElements()
+                    : "runtime".equals(scope) ? selected.getRuntimeClasspathElements() : selected.getCompileClasspathElements();
+            path(arguments, "--class-path", paths);
+        }
+        if (options.contains("source-path")) {
+            path(arguments, "--source-path", "test".equals(scope) ? selected.getTestCompileSourceRoots() : selected.getCompileSourceRoots());
+        }
+        values.setProperty("arguments.count", Integer.toString(arguments.size()));
+        for (int index = 0; index < arguments.size(); index++) {
+            values.setProperty("arguments." + index, arguments.get(index));
+        }
+    }
+
+    private static void path(List<String> arguments, String option, List<String> paths) {
+        if (!paths.isEmpty()) {
+            arguments.add(option);
+            arguments.add(String.join(File.pathSeparator, paths));
+        }
     }
 }

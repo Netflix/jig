@@ -48,7 +48,7 @@ class MavenProjectCommandsTest {
     void helpAndCompletionIncludeDiscoveryAndPreserveRepositoryOperations() {
         var help = run("maven", "--help");
         assertEquals(0, help.status(), help.error());
-        for (String option : List.of("--project-base-dir", "--project", "--list-projects", "--verbose", "maven install", "maven deploy", "maven deploy-central")) {
+        for (String option : List.of("--project-base-dir", "--project", "--list-projects", "--scope", "--resolve-options", "--write-argfile", "--verbose", "maven install", "maven deploy", "maven deploy-central")) {
             assertTrue(help.output().contains(option), help.output());
         }
         assertTrue(run("__complete", "maven", "--project-b").output().contains("--project-base-dir\t"));
@@ -57,6 +57,7 @@ class MavenProjectCommandsTest {
         assertFalse(help.output().contains("--list-project-dirs"));
         assertFalse(help.output().contains("relative path"));
         assertTrue(run("__complete", "maven", "ins").output().contains("install\t"));
+        assertTrue(run("__complete", "maven", "--sc").output().contains("--scope\t"));
     }
 
     @Test
@@ -73,6 +74,76 @@ class MavenProjectCommandsTest {
         assertInvalid("selector", "maven", "--project-base-dir", project.toString(), "--list-projects", "--project", " ");
         assertInvalid("unknown", "maven", "--project-base-dir", project.toString(), "--list-projects", "--unknown");
         assertInvalid("Unknown option", "maven", "--project-base-dir", project.toString(), "--list-project-dirs");
+    }
+
+    @Test
+    void validatesArgumentResolutionBeforeLaunchingMaven() throws Exception {
+        Path project = Files.createDirectories(temporaryDirectory.resolve("project"));
+        Files.writeString(project.resolve("pom.xml"), "<project/>\n");
+        assertInvalid("--project", "maven", "--project-base-dir", project.toString(), "--scope", "compile", "-r", "class-path");
+        assertInvalid("--scope", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "-r", "class-path");
+        assertInvalid("compile, runtime or test", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "provided", "-r", "class-path");
+        assertInvalid("mutually exclusive", "maven", "--project-base-dir", project.toString(), "--list-projects", "-r", "class-path");
+        assertInvalid("argument resolution", "maven", "--project-base-dir", project.toString(), "--list-projects", "--scope", "compile");
+        assertInvalid("requires --resolve-options", "maven", "--project-base-dir", project.toString(), "--list-projects", "-w", project.resolve("args").toString());
+        assertInvalid("unknown resolve options", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "imaginary");
+        assertInvalid("must not be empty", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,");
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolvesRequestedArgumentsToStdoutOrAnArgumentFile() throws Exception {
+        var fixture = fixture(false);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path");
+        assertEquals(0, result.status(), result.error());
+        String expected = "\"--class-path\"\n\"" + fixture.project().resolve("dependency.jar") + "\"\n\"--source-path\"\n\"" + fixture.project().resolve("sources") + "\"\n";
+        assertEquals(expected, result.output());
+        String invocation = Files.readString(fixture.project().resolve("invocation.txt"));
+        assertTrue(invocation.contains("--projects\nexample:app\n"), invocation);
+        assertTrue(invocation.contains("-Djig.maven.project=example:app\n"), invocation);
+        assertTrue(invocation.contains("-Djig.maven.scope=compile\n"), invocation);
+        assertTrue(invocation.contains("-Djig.maven.options=class-path,source-path\n"), invocation);
+        Path file = fixture.project().resolve("tool args");
+        var written = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile", "-r", "class-path,source-path", "-w", file.toString());
+        assertEquals(0, written.status(), written.error());
+        assertEquals("", written.output());
+        assertEquals(expected, Files.readString(file));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void aFailedResolutionDoesNotOverwriteAnExistingArgumentFile() throws Exception {
+        var fixture = fixture(false);
+        Path wrapper = fixture.project().resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
+        Path file = fixture.project().resolve("tool.args");
+        Files.writeString(file, "original\n");
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "class-path", "-w", file.toString());
+        assertEquals(7, result.status(), result.error());
+        assertEquals("", result.output());
+        assertEquals("original\n", Files.readString(file));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void incompleteArgumentsAreRejectedBeforeOverwritingAnArgumentFile() throws Exception {
+        var fixture = fixture(false);
+        Path capture = fixture.project().resolve("capture.properties");
+        var values = new Properties();
+        try (var input = Files.newInputStream(capture)) {
+            values.load(input);
+        }
+        values.remove("arguments.3");
+        try (var output = Files.newOutputStream(capture)) {
+            values.store(output, null);
+        }
+        Path file = fixture.project().resolve("tool.args");
+        Files.writeString(file, "original\n");
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path", "-w", file.toString());
+        assertEquals(1, result.status(), result.error());
+        assertTrue(result.error().contains("Missing Maven capture entry: arguments.3"), result.error());
+        assertEquals("", result.output());
+        assertEquals("original\n", Files.readString(file));
     }
 
     @Test
@@ -213,6 +284,11 @@ class MavenProjectCommandsTest {
         values.setProperty("projects.0", "example:app");
         values.setProperty("projects.1", "example:root");
         values.setProperty("projects.2", "example:app");
+        values.setProperty("arguments.count", "4");
+        values.setProperty("arguments.0", "--class-path");
+        values.setProperty("arguments.1", project.resolve("dependency.jar").toString());
+        values.setProperty("arguments.2", "--source-path");
+        values.setProperty("arguments.3", project.resolve("sources").toString());
         try (var output = Files.newOutputStream(project.resolve("capture.properties"))) {
             values.store(output, "fixture");
         }
@@ -239,15 +315,33 @@ class MavenProjectCommandsTest {
         Path session = sources.resolve("MavenSession.java");
         Path project = sources.resolve("MavenProject.java");
         Path lifecycle = sources.resolve("LifecycleStarter.java");
-        Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } }\n");
-        Files.writeString(project, "package org.apache.maven.project; public class MavenProject { public String getGroupId() { return null; } public String getArtifactId() { return null; } }\n");
+        Path resolver = sources.resolve("LifecycleDependencyResolver.java");
+        Path filter = sources.resolve("ArtifactFilter.java");
+        Path cumulative = sources.resolve("CumulativeScopeArtifactFilter.java");
+        Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } public java.util.Properties getUserProperties() { return new java.util.Properties(); } public void setCurrentProject(org.apache.maven.project.MavenProject project) {} }\n");
+        Files.writeString(project, """
+                package org.apache.maven.project;
+                public class MavenProject {
+                    public String getGroupId() { return null; }
+                    public String getArtifactId() { return null; }
+                    public java.util.List<String> getCompileSourceRoots() { return java.util.Collections.emptyList(); }
+                    public java.util.List<String> getTestCompileSourceRoots() { return java.util.Collections.emptyList(); }
+                    public java.util.List<String> getCompileClasspathElements() { return java.util.Collections.emptyList(); }
+                    public java.util.List<String> getRuntimeClasspathElements() { return java.util.Collections.emptyList(); }
+                    public java.util.List<String> getTestClasspathElements() { return java.util.Collections.emptyList(); }
+                    public void setArtifactFilter(org.apache.maven.artifact.resolver.filter.ArtifactFilter filter) {}
+                }
+                """);
+        Files.writeString(resolver, "package org.apache.maven.lifecycle.internal; public class LifecycleDependencyResolver { public void resolveProjectDependencies(org.apache.maven.project.MavenProject project, java.util.Collection<String> collect, java.util.Collection<String> resolve, org.apache.maven.execution.MavenSession session, boolean aggregating, java.util.Set<?> artifacts) {} }\n");
+        Files.writeString(filter, "package org.apache.maven.artifact.resolver.filter; public interface ArtifactFilter {}\n");
+        Files.writeString(cumulative, "package org.apache.maven.artifact.resolver.filter; public class CumulativeScopeArtifactFilter implements ArtifactFilter { public CumulativeScopeArtifactFilter(java.util.Collection<String> scopes) {} }\n");
         Files.writeString(lifecycle, lifecycleInterface
                 ? "package org.apache.maven.lifecycle.internal; public interface LifecycleStarter { void execute(org.apache.maven.execution.MavenSession session); }\n"
                 : "package org.apache.maven.lifecycle.internal; public class LifecycleStarter { public void execute(org.apache.maven.execution.MavenSession session) {} }\n");
         Path classes = home.resolve("classes");
         var diagnostics = new StringWriter();
         assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
-                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), project.toString(), lifecycle.toString()), diagnostics.toString());
+                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString()), diagnostics.toString());
         Path library = Files.createDirectories(home.resolve("lib")).resolve("maven-core-fixture.jar");
         try (var output = new JarOutputStream(Files.newOutputStream(library)); var paths = Files.walk(classes)) {
             for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {
