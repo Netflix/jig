@@ -18,6 +18,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import com.netflix.tools.jig.Jig;
@@ -52,7 +53,7 @@ class MavenIntegrationTest {
         Path root = fixture();
         var result = discover(root);
         assertEquals(0, result.status(), result.error());
-        assertEquals(List.of(root.toString(), root.resolve("app").toString(), root.resolve("extra").toString()), result.output().lines().toList());
+        assertEquals(List.of("fixture:app", "fixture:extra", "fixture:root"), result.output().lines().toList());
         assertFalse(result.output().contains("[INFO]"), result.output());
         assertFalse(result.output().contains("jig-maven:"), result.output());
         assertNoBuildOutputs();
@@ -65,7 +66,7 @@ class MavenIntegrationTest {
         launcher(app, "--offline\n");
         var independent = discover(app);
         assertEquals(0, independent.status(), independent.error());
-        assertEquals(List.of(app.toString()), independent.output().lines().toList());
+        assertEquals(List.of("fixture:app"), independent.output().lines().toList());
         // Parent inheritance does not make the parent a member of this build.
         Files.writeString(app.resolve("pom.xml"), pom("app", """
                 <parent>
@@ -84,16 +85,16 @@ class MavenIntegrationTest {
         Path root = fixture();
         var initial = discover(root);
         assertEquals(0, initial.status(), initial.error());
-        assertTrue(initial.output().contains(root.resolve("extra").toString()), initial.output());
+        assertTrue(initial.output().contains("fixture:extra"), initial.output());
         Files.delete(root.resolve("extra.enabled"));
         var profileDisabled = discover(root);
         assertEquals(0, profileDisabled.status(), profileDisabled.error());
-        assertEquals(List.of(root.toString(), root.resolve("app").toString()), profileDisabled.output().lines().toList());
+        assertEquals(List.of("fixture:app", "fixture:root"), profileDisabled.output().lines().toList());
         Path pom = root.resolve("pom.xml");
         Files.writeString(pom, Files.readString(pom).replace("<module>app</module>", "<module>extra</module>"));
         var changedModel = discover(root);
         assertEquals(0, changedModel.status(), changedModel.error());
-        assertEquals(List.of(root.toString(), root.resolve("extra").toString()), changedModel.output().lines().toList());
+        assertEquals(List.of("fixture:extra", "fixture:root"), changedModel.output().lines().toList());
         assertNoBuildOutputs();
     }
 
@@ -105,16 +106,39 @@ class MavenIntegrationTest {
         Files.writeString(root.resolve(".mvn/maven.config"), "--offline\n-Pextra\n");
         var enabled = discover(root);
         assertEquals(0, enabled.status(), enabled.error());
-        assertEquals(List.of(root.toString(), root.resolve("app").toString(), root.resolve("extra").toString()), enabled.output().lines().toList());
+        assertEquals(List.of("fixture:app", "fixture:extra", "fixture:root"), enabled.output().lines().toList());
         Files.writeString(root.resolve(".mvn/maven.config"), "--offline\n");
         var disabled = discover(root);
         assertEquals(0, disabled.status(), disabled.error());
-        assertEquals(List.of(root.toString(), root.resolve("app").toString()), disabled.output().lines().toList());
+        assertEquals(List.of("fixture:app", "fixture:root"), disabled.output().lines().toList());
         assertNoBuildOutputs();
     }
 
     @Test
-    void nativeModelFailuresDoNotPublishPartialProjectDirectories() throws Exception {
+    void nativeProjectSelectionAcceptsIdentifiersAndRelativePaths() throws Exception {
+        Path root = fixture();
+        Path pom = root.resolve("app/pom.xml");
+        Files.writeString(pom, Files.readString(pom).replace("<artifactId>app</artifactId>", "<artifactId>application</artifactId>"));
+        for (String selector : List.of("fixture:application", ":application", "app")) {
+            var result = discover(root, "--project", selector);
+            assertEquals(0, result.status(), selector + ": " + result.error());
+            assertEquals(List.of("fixture:application"), result.output().lines().toList());
+        }
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    void unknownProjectSelectorsFailWithoutPartialOutput() throws Exception {
+        Path root = fixture();
+        var result = discover(root, "--project", "fixture:missing");
+        assertNotEquals(0, result.status(), result.error());
+        assertEquals("", result.output());
+        assertTrue(result.error().contains("missing"), result.error());
+        assertNoBuildOutputs();
+    }
+
+    @Test
+    void nativeModelFailuresDoNotPublishPartialProjectIdentifiers() throws Exception {
         Path root = fixture();
         Path pom = root.resolve("pom.xml");
         Files.writeString(pom, Files.readString(pom).replace("<module>app</module>", "<module>missing</module>"));
@@ -184,11 +208,12 @@ class MavenIntegrationTest {
                 """.formatted(parent, artifact, content);
     }
 
-    private static Result discover(Path project) {
+    private static Result discover(Path project, String... options) {
         var output = new StringWriter();
         var error = new StringWriter();
-        int status = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true),
-                "maven", "--project-base-dir", project.toString(), "--list-project-dirs");
+        var arguments = new ArrayList<>(List.of("maven", "--project-base-dir", project.toString(), "--list-projects"));
+        arguments.addAll(List.of(options));
+        int status = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true), arguments.toArray(String[]::new));
         return new Result(status, output.toString(), error.toString());
     }
 

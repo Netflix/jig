@@ -36,9 +36,9 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             values.setProperty("version", "1");
             int index = 0;
             for (MavenProject project : session.getProjects()) {
-                values.setProperty("project-dirs." + index++, project.getBasedir().getCanonicalPath());
+                values.setProperty("projects." + index++, project.getGroupId() + ":" + project.getArtifactId());
             }
-            values.setProperty("project-dirs.count", Integer.toString(index));
+            values.setProperty("projects.count", Integer.toString(index));
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             values.store(bytes, null);
             // Maven 4 decorates System.out through its logger. The protocol uses
@@ -46,7 +46,7 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             PrintStream output = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
             output.println("\njig-maven:" + Base64.getEncoder().encodeToString(bytes.toByteArray()));
         } catch (IOException failure) {
-            throw new IllegalStateException("Cannot capture Maven project directories", failure);
+            throw new IllegalStateException("Cannot capture Maven projects", failure);
         }
         // Do not execute the requested lifecycle: this invocation is discovery.
     }

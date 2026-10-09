@@ -48,33 +48,39 @@ class MavenProjectCommandsTest {
     void helpAndCompletionIncludeDiscoveryAndPreserveRepositoryOperations() {
         var help = run("maven", "--help");
         assertEquals(0, help.status(), help.error());
-        for (String option : List.of("--project-base-dir", "--list-project-dirs", "--verbose", "maven install", "maven deploy", "maven deploy-central")) {
+        for (String option : List.of("--project-base-dir", "--project", "--list-projects", "--verbose", "maven install", "maven deploy", "maven deploy-central")) {
             assertTrue(help.output().contains(option), help.output());
         }
         assertTrue(run("__complete", "maven", "--project-b").output().contains("--project-base-dir\t"));
-        assertTrue(run("__complete", "maven", "--list-project").output().contains("--list-project-dirs\t"));
+        assertTrue(run("__complete", "maven", "--list-project").output().contains("--list-projects\t"));
+        assertTrue(run("__complete", "maven", "--proj").output().contains("--project\t"));
+        assertFalse(help.output().contains("--list-project-dirs"));
         assertTrue(run("__complete", "maven", "ins").output().contains("install\t"));
     }
 
     @Test
     void validatesExplicitLocationsAndOperationBeforeLaunchingMaven() throws Exception {
         Path project = Files.createDirectories(temporaryDirectory.resolve("project"));
-        assertInvalid("--project-base-dir", "maven", "--list-project-dirs");
-        assertInvalid("does not exist", "maven", "--project-base-dir", project.resolve("missing").toString(), "--list-project-dirs");
-        assertInvalid("pom.xml", "maven", "--project-base-dir", project.toString(), "--list-project-dirs");
+        assertInvalid("--project-base-dir", "maven", "--list-projects");
+        assertInvalid("does not exist", "maven", "--project-base-dir", project.resolve("missing").toString(), "--list-projects");
+        assertInvalid("pom.xml", "maven", "--project-base-dir", project.toString(), "--list-projects");
         Files.writeString(project.resolve("pom.xml"), "<project/>\n");
-        assertInvalid("--list-project-dirs", "maven", "--project-base-dir", project.toString());
-        assertInvalid("only be specified once", "maven", "--project-base-dir", project.toString(), "--project-base-dir", project.toString(), "--list-project-dirs");
-        assertInvalid("unknown", "maven", "--project-base-dir", project.toString(), "--list-project-dirs", "--unknown");
+        assertInvalid("--list-projects", "maven", "--project-base-dir", project.toString());
+        assertInvalid("only be specified once", "maven", "--project-base-dir", project.toString(), "--project-base-dir", project.toString(), "--list-projects");
+        assertInvalid("only be specified once", "maven", "--project-base-dir", project.toString(), "--list-projects", "--project", "example:app", "--project", "example:other");
+        assertInvalid("SELECTOR", "maven", "--project-base-dir", project.toString(), "--list-projects", "--project", "");
+        assertInvalid("selector", "maven", "--project-base-dir", project.toString(), "--list-projects", "--project", " ");
+        assertInvalid("unknown", "maven", "--project-base-dir", project.toString(), "--list-projects", "--unknown");
+        assertInvalid("Unknown option", "maven", "--project-base-dir", project.toString(), "--list-project-dirs");
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void wrapperDiscoveryPrintsOnlyCanonicalProjectDirectories() throws Exception {
+    void wrapperDiscoveryPrintsOnlyQualifiedProjectIdentifiers() throws Exception {
         var fixture = fixture(false);
         var result = discover(fixture);
         assertEquals(0, result.status(), result.error());
-        assertEquals(List.of(fixture.project().toString(), fixture.project().resolve("app").toString()), result.output().lines().toList());
+        assertEquals(List.of("example:app", "example:root"), result.output().lines().toList());
         assertTrue(result.error().contains("Maven build output"), result.error());
         assertFalse(result.output().contains("Maven build output"));
         String invocation = Files.readString(fixture.project().resolve("invocation.txt"));
@@ -83,6 +89,18 @@ class MavenProjectCommandsTest {
         assertTrue(invocation.endsWith("validate\n"), invocation);
         assertFalse(Files.exists(fixture.project().resolve(".gradle/jig")));
         assertFalse(Files.exists(fixture.project().resolve("target")));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void passesProjectSelectorsToMavenWithoutReinterpretingThem() throws Exception {
+        var fixture = fixture(false);
+        for (String selector : List.of("example:app", ":app", "app")) {
+            var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", selector, "--list-projects");
+            assertEquals(0, result.status(), result.error());
+            String invocation = Files.readString(fixture.project().resolve("invocation.txt"));
+            assertTrue(invocation.contains("--projects\n" + selector + "\n"), invocation);
+        }
     }
 
     @Test
@@ -117,7 +135,7 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void failedOrMissingCaptureNeverPublishesDirectories() throws Exception {
+    void failedOrMissingCaptureNeverPublishesProjects() throws Exception {
         var fixture = fixture(false);
         Path wrapper = fixture.project().resolve("mvnw");
         Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
@@ -180,10 +198,10 @@ class MavenProjectCommandsTest {
         Path home = mavenHome(lifecycleInterface);
         var values = new Properties();
         values.setProperty("version", "1");
-        values.setProperty("project-dirs.count", "3");
-        values.setProperty("project-dirs.0", project.resolve("app").toString());
-        values.setProperty("project-dirs.1", project.toString());
-        values.setProperty("project-dirs.2", project.resolve("app").toString());
+        values.setProperty("projects.count", "3");
+        values.setProperty("projects.0", "example:app");
+        values.setProperty("projects.1", "example:root");
+        values.setProperty("projects.2", "example:app");
         try (var output = Files.newOutputStream(project.resolve("capture.properties"))) {
             values.store(output, "fixture");
         }
@@ -211,7 +229,7 @@ class MavenProjectCommandsTest {
         Path project = sources.resolve("MavenProject.java");
         Path lifecycle = sources.resolve("LifecycleStarter.java");
         Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } }\n");
-        Files.writeString(project, "package org.apache.maven.project; public class MavenProject { public java.io.File getBasedir() { return null; } }\n");
+        Files.writeString(project, "package org.apache.maven.project; public class MavenProject { public String getGroupId() { return null; } public String getArtifactId() { return null; } }\n");
         Files.writeString(lifecycle, lifecycleInterface
                 ? "package org.apache.maven.lifecycle.internal; public interface LifecycleStarter { void execute(org.apache.maven.execution.MavenSession session); }\n"
                 : "package org.apache.maven.lifecycle.internal; public class LifecycleStarter { public void execute(org.apache.maven.execution.MavenSession session) {} }\n");
@@ -239,7 +257,7 @@ class MavenProjectCommandsTest {
     }
 
     private static Result discover(Fixture fixture) {
-        return run("maven", "--project-base-dir", fixture.project().toString(), "--list-project-dirs");
+        return run("maven", "--project-base-dir", fixture.project().toString(), "--list-projects");
     }
 
     private static String shellQuote(String value) {

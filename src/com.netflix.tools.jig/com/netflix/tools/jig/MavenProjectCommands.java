@@ -34,12 +34,13 @@ import com.netflix.tools.jig.CommandLine.ToolOption;
 final class MavenProjectCommands {
     private static final String CAPTURE_PREFIX = "jig-maven:";
     private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Maven project base directory");
-    private static final ToolOption LIST = ToolOption.flag("--list-project-dirs", "List project directories from the selected Maven build");
+    private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId, :artifactId, or relative path");
+    private static final ToolOption LIST = ToolOption.flag("--list-projects", "List groupId:artifactId project selectors from the selected Maven build");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Discover Maven projects using their own build runtime")
-            .options(BASE, LIST, VERBOSE, HELP)
+            .options(BASE, PROJECT, LIST, VERBOSE, HELP)
             .build();
 
     private MavenProjectCommands() {}
@@ -84,7 +85,11 @@ final class MavenProjectCommands {
             Path extension = MavenCaptureExtension.create(home.toRealPath());
             var captureArguments = new ArrayList<>(launcher);
             captureArguments.addAll(List.of("--batch-mode", "--quiet", "-Dstyle.color=never", "--file", request.base().resolve("pom.xml").toString(),
-                    "-Dmaven.ext.class.path=" + extension, "validate"));
+                    "-Dmaven.ext.class.path=" + extension));
+            if (request.project() != null) {
+                captureArguments.addAll(List.of("--projects", request.project()));
+            }
+            captureArguments.add("validate");
             var capture = invoke(request, captureArguments, err);
             var values = new Properties();
             for (String line : capture.lines()) {
@@ -129,7 +134,15 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--project-base-dir may only be specified once");
         }
         if (!parsed.contains(LIST)) {
-            throw new IllegalArgumentException("--list-project-dirs is required");
+            throw new IllegalArgumentException("--list-projects is required");
+        }
+        var selections = parsed.values(PROJECT);
+        if (selections.size() > 1) {
+            throw new IllegalArgumentException("--project may only be specified once");
+        }
+        String project = selections.isEmpty() ? null : selections.getFirst();
+        if (project != null && project.isBlank()) {
+            throw new IllegalArgumentException("--project requires a Maven project selector");
         }
         Path base = Path.of(bases.getFirst()).toAbsolutePath().normalize();
         if (!Files.isDirectory(base)) {
@@ -139,30 +152,30 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
     }
 
     private static List<String> projects(Properties values) throws IOException {
-        String count = values.getProperty("project-dirs.count");
+        String count = values.getProperty("projects.count");
         int size;
         try {
             size = Integer.parseInt(count);
         } catch (NumberFormatException failure) {
-            throw new IOException("Invalid Maven capture count for project-dirs: " + count, failure);
+            throw new IOException("Invalid Maven capture count for projects: " + count, failure);
         }
         if (size < 0 || size > 100_000) {
-            throw new IOException("Invalid Maven capture count for project-dirs: " + count);
+            throw new IOException("Invalid Maven capture count for projects: " + count);
         }
         var projects = new ArrayList<String>();
         for (int index = 0; index < size; index++) {
-            String directory = values.getProperty("project-dirs." + index);
-            if (directory == null) {
-                throw new IOException("Missing Maven capture entry: project-dirs." + index);
+            String project = values.getProperty("projects." + index);
+            if (project == null) {
+                throw new IOException("Missing Maven capture entry: projects." + index);
             }
-            projects.add(directory);
+            projects.add(project);
         }
         return List.copyOf(projects);
     }
@@ -202,6 +215,6 @@ final class MavenProjectCommands {
         return Files.isRegularFile(wrapper) ? List.of("sh", wrapper.toString()) : List.of("mvn");
     }
 
-    private record Request(Path base, boolean verbose) {}
+    private record Request(Path base, String project, boolean verbose) {}
     private record ProcessResult(int status, List<String> lines) {}
 }
