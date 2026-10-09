@@ -1,0 +1,53 @@
+/*
+ * Copyright 2026 Netflix, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ * in compliance with the License. You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License
+ * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
+ * or implied. See the License for the specific language governing permissions and limitations under
+ * the License.
+ */
+
+package com.netflix.tools.jig.maven.capture;
+
+import java.io.ByteArrayOutputStream;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.util.Base64;
+import java.util.Properties;
+
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.lifecycle.internal.LifecycleStarter;
+import org.apache.maven.project.MavenProject;
+
+// Compiled against the selected Maven installation, not jig's relocated libraries.
+// Maven 3's starter is a class; Maven 4's starter is an interface.
+public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
+    @Override
+    public void execute(MavenSession session) {
+        try {
+            Properties values = new Properties();
+            values.setProperty("version", "1");
+            int index = 0;
+            for (MavenProject project : session.getProjects()) {
+                values.setProperty("project-dirs." + index++, project.getBasedir().getCanonicalPath());
+            }
+            values.setProperty("project-dirs.count", Integer.toString(index));
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            values.store(bytes, null);
+            // Maven 4 decorates System.out through its logger. The protocol uses
+            // the process stream directly; do not close Maven's output descriptor.
+            PrintStream output = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
+            output.println("\njig-maven:" + Base64.getEncoder().encodeToString(bytes.toByteArray()));
+        } catch (IOException failure) {
+            throw new IllegalStateException("Cannot capture Maven project directories", failure);
+        }
+        // Do not execute the requested lifecycle: this invocation is discovery.
+    }
+}
