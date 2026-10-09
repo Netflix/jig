@@ -28,29 +28,33 @@ import com.netflix.tools.jig.CommandLine.ToolOption;
 import com.netflix.tools.jig.Jig.Options;
 import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
-/** Explicit project locations and standard argument projections for Gradle. */
+/** Explicit build locations, project paths, and source-set argument projections for Gradle. */
 final class GradleCommandLine {
     private static final Set<String> EXTRA_OPTIONS = Set.of("class-path", "processor-path", "source", "target", "encoding", "system",
             "add-reads");
     private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Gradle root project directory");
-    private static final ToolOption PROJECT = ToolOption.option("--project-dir", "DIRECTORY", "A project directory from --list-project-dirs");
-    private static final ToolOption LIST = ToolOption.flag("--list-project-dirs", "List configured project directories");
-    private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime", "Java argument scope");
+    private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "An absolute Gradle project path, such as : or :app");
+    private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List configured Gradle project paths");
+    private static final ToolOption LIST_SOURCE_SETS = ToolOption.flag("--list-source-sets", "List source sets in the selected project");
+    private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "A source set from --list-source-sets");
+    private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show the Gradle invocation and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
-            .description("Resolve standard Java arguments from a Gradle project")
-            .options(ROOT, PROJECT, LIST, SCOPE, RESOLVE, WRITE,
+            .description("Resolve standard Java arguments from a Gradle source set")
+            .options(ROOT, PROJECT, LIST_PROJECTS, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, WRITE,
                     VERBOSE, HELP)
             .build();
 
     record Request(
             Path root,
-            Path project,
-            String scope,
+            String projectPath,
+            String sourceSet,
+            String classpath,
             boolean listProjects,
+            boolean listSourceSets,
             Set<String> options,
             ModuleForm moduleForm,
             Path argumentFile,
@@ -65,9 +69,10 @@ final class GradleCommandLine {
     static String help() {
         return COMMAND_LINE.help("jig gradle")
                 + "\nUses the root project's wrapper, or gradle on PATH.\n"
-                + "Source roots are obtained from the build, not supplied by the caller.\n"
-                + "Compile and runtime select the project's main Java source configuration.\n"
-                + "A project without Java scope content produces no arguments.\n"
+                + "Project paths and source-set names are obtained from the build.\n"
+                + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
+                + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
+                + "Unknown projects or source sets are errors; empty source sets produce only configured arguments.\n"
                 + "\nResolve options include native jig options and class-path, processor-path,\n"
                 + "source, target, encoding, system and add-reads. Unconfigured options are omitted.\n";
     }
@@ -82,33 +87,48 @@ final class GradleCommandLine {
         }
         String root = single(parsed, ROOT);
         String project = single(parsed, PROJECT);
-        String scope = single(parsed, SCOPE);
+        String sourceSet = single(parsed, SOURCE_SET);
+        String classpath = single(parsed, CLASSPATH);
         String resolve = single(parsed, RESOLVE);
         String write = single(parsed, WRITE);
-        boolean list = parsed.contains(LIST);
+        boolean listProjects = parsed.contains(LIST_PROJECTS);
+        boolean listSourceSets = parsed.contains(LIST_SOURCE_SETS);
         if (root == null) {
             throw new IllegalArgumentException("--root-project-dir is required");
         }
         if (write != null && resolve == null) {
             throw new IllegalArgumentException("--write-argfile requires --resolve-options");
         }
-        if (list && resolve != null) {
-            throw new IllegalArgumentException("--list-project-dirs and --resolve-options are mutually exclusive");
+        int operations = (listProjects ? 1 : 0) + (listSourceSets ? 1 : 0) + (resolve != null ? 1 : 0);
+        if (operations > 1) {
+            throw new IllegalArgumentException("--list-project-paths, --list-source-sets and --resolve-options are mutually exclusive");
         }
-        if (!list && resolve == null) {
-            throw new IllegalArgumentException("--list-project-dirs or --resolve-options is required");
+        if (operations == 0) {
+            throw new IllegalArgumentException("--list-project-paths, --list-source-sets or --resolve-options is required");
         }
-        if (list && (project != null || scope != null)) {
-            throw new IllegalArgumentException("--project-dir and --scope apply only to argument resolution");
+        if (listProjects && project != null) {
+            throw new IllegalArgumentException("--project-path applies only to source-set discovery or argument resolution");
         }
-        if (!list && project == null) {
-            throw new IllegalArgumentException("--project-dir is required for argument resolution");
+        if (resolve == null && (sourceSet != null || classpath != null)) {
+            throw new IllegalArgumentException("--source-set and --classpath apply only to argument resolution");
         }
-        if (!list && scope == null) {
-            throw new IllegalArgumentException("--scope is required for argument resolution");
+        if (!listProjects && project == null) {
+            throw new IllegalArgumentException("--project-path is required");
         }
-        if (scope != null && !scope.equals("compile") && !scope.equals("runtime")) {
-            throw new IllegalArgumentException("--scope must be compile or runtime");
+        if (project != null && (!project.startsWith(":") || project.contains("::") || (project.length() > 1 && project.endsWith(":")))) {
+            throw new IllegalArgumentException("--project-path must be an absolute Gradle project path, such as : or :app");
+        }
+        if (resolve != null && sourceSet == null) {
+            throw new IllegalArgumentException("--source-set is required for argument resolution");
+        }
+        if (sourceSet != null && sourceSet.isBlank()) {
+            throw new IllegalArgumentException("--source-set must not be empty");
+        }
+        if (resolve != null && classpath == null) {
+            throw new IllegalArgumentException("--classpath is required for argument resolution");
+        }
+        if (classpath != null && !classpath.equals("compile") && !classpath.equals("runtime")) {
+            throw new IllegalArgumentException("--classpath must be compile or runtime");
         }
         var options = new LinkedHashSet<String>();
         var nativeOptions = new Options();
@@ -129,9 +149,11 @@ final class GradleCommandLine {
         }
         return new Request(
                 directory(root),
-                project == null ? null : directory(project),
-                scope,
-                list,
+                project,
+                sourceSet,
+                classpath,
+                listProjects,
+                listSourceSets,
                 Set.copyOf(options),
                 nativeOptions.moduleForm,
                 write == null ? null : Path.of(write),

@@ -37,6 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GradleCommandsTest {
@@ -47,43 +48,46 @@ class GradleCommandsTest {
     void helpDescribesTheStandaloneContract() {
         var result = run("gradle", "--help");
         assertEquals(0, result.exitCode(), result.error());
-        for (String option : List.of("--root-project-dir", "--list-project-dirs", "--project-dir",
-                "--scope", "--resolve-options", "--write-argfile")) {
-            assertTrue(result.output()
-                             .contains(option),
-                    option);
+        for (String option : List.of("--root-project-dir", "--list-project-paths", "--project-path", "--list-source-sets",
+                "--source-set", "--classpath", "--resolve-options", "--write-argfile")) {
+            assertTrue(result.output().contains(option), option);
         }
-        assertFalse(result.output()
-                          .contains("--source-set"));
+        assertFalse(result.output().contains("--scope"));
         assertEquals("", result.error());
     }
 
     @Test
-    void requiresExplicitLocationsAndAResolutionScope() throws Exception {
+    void requiresExplicitLocationsSourceSetAndClasspath() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root"));
         Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'fixture'\n");
-        assertInvalid("--root-project-dir", "gradle", "--list-project-dirs");
-        assertInvalid("--project-dir", "gradle", "--root-project-dir", root.toString(), "--scope",
-                "compile", "--resolve-options", "source-path");
-        assertInvalid("--scope", "gradle", "--root-project-dir", root.toString(), "--project-dir",
-                root.toString(), "--resolve-options", "source-path");
-        assertInvalid(
-                "compile or runtime",
-                "gradle",
-                "--root-project-dir",
-                root.toString(),
-                "--project-dir",
-                root.toString(),
-                "--scope",
-                "something",
-                "--resolve-options",
-                "source-path");
+        assertInvalid("--root-project-dir", "gradle", "--list-project-paths");
+        assertInvalid("--project-path", "gradle", "--root-project-dir", root.toString(), "--source-set", "main",
+                "--classpath", "compile", "--resolve-options", "source-path");
+        assertInvalid("--source-set", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--classpath", "compile", "--resolve-options", "source-path");
+        assertInvalid("--classpath", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--source-set", "main", "--resolve-options", "source-path");
+        assertInvalid("compile or runtime", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--source-set", "main", "--classpath", "something", "--resolve-options", "source-path");
         assertInvalid("unknown option", "gradle", "-C", root.toString());
-        assertInvalid("unknown option", "gradle", "--source-set", "main");
-        assertInvalid("mutually exclusive", "gradle", "--root-project-dir", root.toString(), "--list-project-dirs",
-                "--resolve-options", "source-path");
+        assertInvalid("unknown option", "gradle", "--scope", "compile");
+        assertInvalid("requires NAME", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--source-set", "", "--classpath", "compile", "-r", "source-path");
+        assertInvalid("must not be empty", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--source-set", " ", "--classpath", "compile", "-r", "source-path");
+        for (String path : List.of("app", "::app", ":app:")) {
+            assertInvalid("absolute Gradle project path", "gradle", "--root-project-dir", root.toString(),
+                    "--project-path", path, "--list-source-sets");
+        }
+        assertInvalid("only to source-set discovery or argument resolution", "gradle", "--root-project-dir",
+                root.toString(), "--list-project-paths", "--project-path", ":app");
+        assertInvalid("mutually exclusive", "gradle", "--root-project-dir", root.toString(), "--list-project-paths", "--list-source-sets");
+        assertInvalid("mutually exclusive", "gradle", "--root-project-dir", root.toString(), "--list-source-sets", "-r", "source-path");
+        assertInvalid("--project-path", "gradle", "--root-project-dir", root.toString(), "--list-source-sets");
+        assertInvalid("only to argument resolution", "gradle", "--root-project-dir", root.toString(), "--project-path", ":",
+                "--list-source-sets", "--source-set", "test");
         assertInvalid("--write-argfile requires --resolve-options", "gradle", "--root-project-dir",
-                root.toString(), "--list-project-dirs", "--write-argfile", "out.args");
+                root.toString(), "--list-project-paths", "--write-argfile", "out.args");
     }
 
     @Test
@@ -94,25 +98,26 @@ class GradleCommandsTest {
                 command.output());
         var option = run("__complete", "gradle", "--root");
         assertEquals(0, option.exitCode(), option.error());
-        assertTrue(option.output().contains("--root-project-dir\t"),
-                option.output());
+        assertTrue(option.output().contains("--root-project-dir\t"), option.output());
+        assertTrue(run("__complete", "gradle", "--source-s").output().contains("--source-set\t"));
+        assertTrue(run("__complete", "gradle", "--classpath").output().contains("--classpath\t"));
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void discoveryListsActualProjectDirectoriesWithoutBuildOutputOnStdout() throws Exception {
+    void discoveryListsProjectPathsWithoutBuildOutputOnStdout() throws Exception {
         var fixture = fixture();
         var result = run("gradle", "--root-project-dir",
-                fixture.root().toString(), "--list-project-dirs");
+                fixture.root().toString(), "--list-project-paths");
         assertEquals(0, result.exitCode(), result.error());
-        assertEquals(fixture.root() + "\n" + fixture.project() + "\n", result.output());
+        assertEquals(":\n:app\n", result.output());
         assertTrue(result.error().contains("Gradle build output"),
                 result.error());
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void resolutionUsesDirectoriesFromDiscoveryAndProjectsRequestedOptions() throws Exception {
+    void resolutionUsesProjectPathsFromDiscoveryAndProjectsRequestedOptions() throws Exception {
         var fixture = fixture();
         var result = resolve(fixture, "compile", "source-path,class-path,release");
         assertEquals(0, result.exitCode(), result.error());
@@ -132,15 +137,16 @@ class GradleCommandsTest {
         String invocation = Files.readString(fixture.root()
                 .resolve("invocation.txt"));
         assertTrue(invocation.contains("--project-dir\n" + fixture.root()), invocation);
-        assertTrue(invocation.contains("-Pjig.gradle.project-dir=" + fixture.project()), invocation);
-        assertTrue(invocation.contains("-Pjig.gradle.scope=compile"), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.project-path=:app"), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.source-set=main"), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.classpath=compile"), invocation);
         assertFalse(result.output()
                           .contains("Gradle build output"));
     }
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void compileAndRuntimeScopesAreDifferentViews() throws Exception {
+    void compileAndRuntimeClasspathsAreDifferentViews() throws Exception {
         var fixture = fixture();
         var compile = resolve(fixture, "compile", "class-path");
         var runtime = resolve(fixture, "runtime", "class-path");
@@ -162,7 +168,7 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void absentScopeContentProducesNoArguments() throws Exception {
+    void emptySourceSetContentProducesNoArguments() throws Exception {
         var fixture = fixture();
         writeCapture(fixture.root().resolve("compile.properties"),
                 fixture.root(), fixture.project(), false, false);
@@ -181,9 +187,9 @@ class GradleCommandsTest {
                 "gradle",
                 "--root-project-dir",
                 fixture.root().toString(),
-                "--project-dir",
-                fixture.project().toString(),
-                "--scope",
+                "--project-path",
+                ":app",
+                "--source-set", "main", "--classpath",
                 "compile",
                 "-r",
                 "source-path,release",
@@ -293,9 +299,9 @@ class GradleCommandsTest {
                 "gradle",
                 "--root-project-dir",
                 fixture.root().toString(),
-                "--project-dir",
-                fixture.project().toString(),
-                "--scope",
+                "--project-path",
+                ":app",
+                "--source-set", "main", "--classpath",
                 "compile",
                 "-r",
                 "source-path",
@@ -374,8 +380,8 @@ class GradleCommandsTest {
         assertEquals(0, first.exitCode(), first.error());
         Path invocationFile = fixture.root().resolve("invocation.txt");
         String invocation = Files.readString(invocationFile);
-        var second = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-dir", fixture.project().toString(),
-                "--scope", "compile", "-r", "release,source-path", "-w", temporaryDirectory.resolve("equivalent.args").toString());
+        var second = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "release,source-path", "-w", temporaryDirectory.resolve("equivalent.args").toString());
         assertEquals(0, second.exitCode(), second.error());
         assertEquals(invocation, Files.readString(invocationFile));
         assertFalse(invocation.contains("configuration-cache=false"), invocation);
@@ -399,14 +405,14 @@ class GradleCommandsTest {
     void concurrentQueriesSerializeAccessToTheirInterchangeFile() throws Exception {
         var fixture = fixture();
         Path wrapper = fixture.root().resolve("gradlew");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("scope=compile", """
+        Files.writeString(wrapper, Files.readString(wrapper).replace("classpath=compile", """
                 if ! mkdir active-query; then
                     echo 'concurrent query' >&2
                     exit 11
                 fi
                 trap 'rmdir active-query' EXIT
                 sleep 0.1
-                scope=compile
+                classpath=compile
                 """));
         var start = new CountDownLatch(1);
         try (var executor = Executors.newFixedThreadPool(2)) {
@@ -426,6 +432,35 @@ class GradleCommandsTest {
         }
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryListsSourceSetsForTheSelectedProject() throws Exception {
+        var fixture = fixture();
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--list-source-sets");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals("integrationTest\nmain\ntest\n", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void sourceSetSelectionHasItsOwnConfigurationCacheIdentity() throws Exception {
+        var fixture = fixture();
+        var main = resolve(fixture, "compile", "source-path");
+        String first = Files.readString(fixture.root().resolve("invocation.txt"));
+        var test = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "test", "--classpath", "compile", "-r", "source-path");
+        assertEquals(0, main.exitCode(), main.error());
+        assertEquals(0, test.exitCode(), test.error());
+        String second = Files.readString(fixture.root().resolve("invocation.txt"));
+        assertNotEquals(first, second);
+        assertTrue(second.contains("-Pjig.gradle.source-set=test"), second);
+        var unknown = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "missing", "--classpath", "compile", "-r", "source-path");
+        assertEquals(2, unknown.exitCode(), unknown.error());
+        assertEquals("", unknown.output());
+    }
+
     private Fixture fixture() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root with spaces")).toRealPath();
         Path project = Files.createDirectories(root.resolve("custom project")).toRealPath();
@@ -437,14 +472,14 @@ class GradleCommandsTest {
                 #!/bin/sh
                 printf '%s\\n' "$@" > invocation.txt
                 echo 'Gradle build output'
-                scope=compile
+                classpath=compile
                 for argument do
                     case "$argument" in
                         -Pjig.gradle.output=*) output=${argument#*=} ;;
-                        -Pjig.gradle.scope=*) scope=${argument#*=} ;;
+                        -Pjig.gradle.classpath=*) classpath=${argument#*=} ;;
                     esac
                 done
-                cp "$scope.properties" "$output"
+                cp "$classpath.properties" "$output"
                 """);
         return new Fixture(root, project);
     }
@@ -454,8 +489,8 @@ class GradleCommandsTest {
             throws Exception {
         var values = new Properties();
         values.setProperty("version", "1");
-        putList(values, "projects",
-                List.of(root.toString(), project.toString()));
+        putList(values, "project-paths", List.of(":", ":app"));
+        putList(values, "source-sets", List.of("main", "test", "integrationTest"));
         putList(values, "sources",
                 present ? List.of(project.resolve("custom sources").toString()) : List.of());
         putList(values, "classpath",
@@ -478,15 +513,15 @@ class GradleCommandsTest {
         }
     }
 
-    private Result resolve(Fixture fixture, String scope, String options) {
+    private Result resolve(Fixture fixture, String classpath, String options) {
         return run(
                 "gradle",
                 "--root-project-dir",
                 fixture.root().toString(),
-                "--project-dir",
-                fixture.project().toString(),
-                "--scope",
-                scope,
+                "--project-path",
+                ":app",
+                "--source-set", "main", "--classpath",
+                classpath,
                 "--resolve-options",
                 options);
     }

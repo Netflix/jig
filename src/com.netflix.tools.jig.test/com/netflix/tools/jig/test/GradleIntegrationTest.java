@@ -59,21 +59,8 @@ class GradleIntegrationTest {
                 .resolve("prevent-resolution"),
                 "");
         String projects = run("gradle", "--root-project-dir",
-                fixture.root().toString(), "--list-project-dirs");
-        assertEquals(
-                List.of(
-                                fixture.root().toString(),
-                                fixture.app().toString(),
-                                fixture.root()
-                                       .resolve("library")
-                                       .toString(),
-                                fixture.root()
-                                       .resolve("plain")
-                                       .toString())
-                        .stream()
-                        .sorted()
-                        .toList(),
-                projects.lines().toList());
+                fixture.root().toString(), "--list-project-paths");
+        assertEquals(List.of(":", ":app", ":library", ":plain"), projects.lines().toList());
         String source = resolve(fixture, "compile", "source-path,release");
         assertTrue(source.contains(fixture.app()
                 .resolve("sources/java")
@@ -84,24 +71,11 @@ class GradleIntegrationTest {
         }
         assertFalse(Files.exists(fixture.app()
                 .resolve("build")));
-        assertEquals(
-                "",
-                run(
-                        "gradle",
-                        "--root-project-dir",
-                        fixture.root().toString(),
-                        "--project-dir",
-                        fixture.root()
-                               .resolve("plain")
-                               .toString(),
-                        "--scope",
-                        "compile",
-                        "-r",
-                        "source-path,class-path,release"));
+        assertEquals("", run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":plain", "--list-source-sets"));
     }
 
     @Test
-    void resolvesScopeSpecificPathsAndMaterializesDependencyOutputs() throws Exception {
+    void resolvesClasspathSpecificPathsAndMaterializesDependencyOutputs() throws Exception {
         var fixture = fixture(false);
         String compile = resolve(fixture, "compile", "class-path");
         assertTrue(compile.contains("compile only.jar"), compile);
@@ -126,9 +100,9 @@ class GradleIntegrationTest {
                 "gradle",
                 "--root-project-dir",
                 fixture.root().toString(),
-                "--project-dir",
-                fixture.app().toString(),
-                "--scope",
+                "--project-path",
+                ":app",
+                "--source-set", "main", "--classpath",
                 "compile",
                 "-r",
                 "module-path,class-path,module-source-path,module,release",
@@ -147,9 +121,9 @@ class GradleIntegrationTest {
                 "gradle",
                 "--root-project-dir",
                 fixture.root().toString(),
-                "--project-dir",
-                fixture.app().toString(),
-                "--scope",
+                "--project-path",
+                ":app",
+                "--source-set", "main", "--classpath",
                 "runtime",
                 "-r",
                 "module-path,class-path,module=main",
@@ -243,7 +217,7 @@ class GradleIntegrationTest {
 
     @Test
     @EnabledIf("supportsConfigurationCache")
-    void reusesConfigurationCacheForDiscoveryCompileAndRuntimeAndInvalidatesChangedConfiguration() throws Exception {
+    void reusesConfigurationCacheForDiscoveryAndSourceSetClasspathsAndInvalidatesChangedConfiguration() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
         Files.writeString(fixture.root().resolve("build.gradle"), """
@@ -251,26 +225,30 @@ class GradleIntegrationTest {
                 """, StandardOpenOption.APPEND);
         // Each request has its own cache entry. Replay must execute capture again,
         // but must not evaluate the build, even when dependencies have changed.
-        for (String scope : List.of("discovery", "compile", "runtime")) {
-            String first = scope.equals("discovery")
-                    ? run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs")
-                    : resolve(fixture, scope, "class-path,source-path,release,main-class");
-            String second = scope.equals("discovery")
-                    ? run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs")
-                    : resolve(fixture, scope, "main-class,release,source-path,class-path");
-            assertEquals(first, second);
+        for (String[] discovery : List.of(
+                new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths"},
+                new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets"})) {
+            assertEquals(run(discovery), run(discovery));
+        }
+        for (String sourceSet : List.of("main", "test")) {
+            for (String classpath : List.of("compile", "runtime")) {
+                String first = resolve(fixture, sourceSet, classpath, "class-path,source-path,release,main-class");
+                String second = resolve(fixture, sourceSet, classpath, "main-class,release,source-path,class-path");
+                assertEquals(first, second);
+                assertEquals(sourceSet.equals("main"), first.contains("--main-class"), first);
+            }
         }
         Path evaluations = fixture.root().resolve("evaluations.txt");
-        assertEquals(3, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
+        assertEquals(6, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
         Files.delete(compiled);
         resolve(fixture, "runtime", "class-path,source-path,release,main-class");
         assertTrue(Files.isRegularFile(compiled));
-        assertEquals(3, Files.readAllLines(evaluations).size());
+        assertEquals(6, Files.readAllLines(evaluations).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs += ['changed/sources']\n", StandardOpenOption.APPEND);
         String changed = resolve(fixture, "compile", "class-path,source-path,release,main-class");
         assertTrue(changed.contains(fixture.app().resolve("changed/sources").toString()), changed);
-        assertEquals(4, Files.readAllLines(evaluations).size());
+        assertEquals(7, Files.readAllLines(evaluations).size());
     }
 
     @Test
@@ -280,8 +258,8 @@ class GradleIntegrationTest {
         Files.writeString(fixture.root().resolve("plain/build.gradle"), "throw new GradleException('unrelated project was evaluated')\n");
         String capture = resolve(fixture, "compile", "class-path");
         assertTrue(capture.contains("library/" + classesDirectory()), capture);
-        String projects = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-dirs");
-        assertTrue(projects.contains(fixture.root().resolve("plain").toString()), projects);
+        String projects = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
+        assertTrue(projects.contains(":plain"), projects);
     }
 
     @Test
@@ -317,6 +295,131 @@ class GradleIntegrationTest {
         Files.delete(generated);
         assertEquals(first, resolve(fixture, "compile", "add-exports"));
         assertTrue(Files.isRegularFile(generated));
+    }
+
+    @Test
+    @EnabledIf("supportsLazyTasks")
+    void discoversSourceSetsWithoutRealizingCompilationTasks() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                sourceSets { integrationTest {} }
+                tasks.named('compileJava').configure { throw new GradleException('main compilation realized') }
+                tasks.named('compileTestJava').configure { throw new GradleException('test compilation realized') }
+                tasks.named('compileIntegrationTestJava').configure { throw new GradleException('custom compilation realized') }
+                """, StandardOpenOption.APPEND);
+        String sourceSets = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets");
+        assertEquals("integrationTest\nmain\ntest\n", sourceSets);
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+    }
+
+    @Test
+    void resolvesTestAndCustomSourceSetsWithoutLeakingMainApplicationMetadata() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                sourceSets {
+                    test.java.srcDirs = ['tests/java']
+                    integrationTest {
+                        java.srcDirs = ['integration/java']
+                        compileClasspath += sourceSets.main.output + configurations.testCompileClasspath
+                        runtimeClasspath += sourceSets.main.output + configurations.testRuntimeClasspath
+                    }
+                }
+                dependencies {
+                    testCompileOnly files(rootProject.file('test compile only.jar'))
+                    testRuntimeOnly files(rootProject.file('test runtime only.jar'))
+                }
+                tasks.compileIntegrationTestJava { options.encoding = 'ISO-8859-1' }
+                tasks.run.jvmArgs = ['--add-opens', 'java.base/java.lang=ALL-UNNAMED']
+                """, StandardOpenOption.APPEND);
+        jar(fixture.root().resolve("test compile only.jar"), null);
+        jar(fixture.root().resolve("test runtime only.jar"), null);
+        for (String root : List.of("tests/java", "integration/java")) {
+            Files.createDirectories(fixture.app().resolve(root));
+            Files.writeString(fixture.app().resolve(root).resolve("Case.java"), "public class Case { app.Main main; }\n");
+        }
+        for (String name : List.of("test", "integrationTest")) {
+            String compile = resolve(fixture, name, "compile", "class-path,source-path,encoding");
+            String source = name.equals("test") ? "tests/java" : "integration/java";
+            String output = name.equals("test") ? "test" : "integrationTest";
+            assertTrue(compile.contains(fixture.app().resolve(source).toString()), compile);
+            assertTrue(compile.contains("test compile only.jar"), compile);
+            assertFalse(compile.contains("test runtime only.jar"), compile);
+            assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+            Path selectedOutput = fixture.app().resolve(classesDirectory().replace("main", output) + "/Case.class");
+            assertFalse(Files.exists(selectedOutput));
+            if (name.equals("integrationTest")) {
+                assertTrue(compile.contains("ISO-8859-1"), compile);
+            }
+            String runtime = resolve(fixture, name, "runtime", "class-path,main-class,add-opens");
+            assertTrue(runtime.contains("test runtime only.jar"), runtime);
+            assertFalse(runtime.contains("test compile only.jar"), runtime);
+            assertFalse(runtime.contains("--main-class"), runtime);
+            assertFalse(runtime.contains("--add-opens"), runtime);
+            assertTrue(Files.isRegularFile(selectedOutput));
+        }
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void generatedSourceProducersRemainLazyAndRunOnConfigurationCacheReplay() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                abstract class GenerateSources extends DefaultTask {
+                    @OutputDirectory abstract org.gradle.api.file.DirectoryProperty getDestination()
+                    @TaskAction void generate() {
+                        def file = new File(destination.get().asFile, 'Generated.java')
+                        file.parentFile.mkdirs()
+                        file.text = 'public class Generated {}'
+                    }
+                }
+                def generator = tasks.register('generateSources', GenerateSources) {
+                    destination = layout.buildDirectory.dir('generated/custom')
+                }
+                sourceSets.test.java.srcDir(generator.flatMap { it.destination })
+                tasks.named('compileTestJava').configure { throw new GradleException('test compiler was realized') }
+                """, StandardOpenOption.APPEND);
+        run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets");
+        Path generated = fixture.app().resolve("build/generated/custom/Generated.java");
+        assertFalse(Files.exists(generated));
+        String first = resolve(fixture, "test", "compile", "source-path");
+        assertTrue(first.contains(generated.getParent().toString()), first);
+        assertTrue(Files.isRegularFile(generated));
+        Files.delete(generated);
+        assertEquals(first, resolve(fixture, "test", "compile", "source-path"));
+        assertTrue(Files.isRegularFile(generated));
+        assertFalse(Files.exists(fixture.app().resolve("build/classes/java/test")));
+    }
+
+    @Test
+    void classpathResolutionUsesTheSourceSetRatherThanTheCompilationTaskOverride() throws Exception {
+        var fixture = fixture(false);
+        jar(fixture.root().resolve("source set.jar"), null);
+        jar(fixture.root().resolve("compile task.jar"), null);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                sourceSets.main.compileClasspath = files(rootProject.file('source set.jar'))
+                tasks.compileJava.classpath = files(rootProject.file('compile task.jar'))
+                """, StandardOpenOption.APPEND);
+        String capture = resolve(fixture, "compile", "class-path");
+        assertTrue(capture.contains("source set.jar"), capture);
+        assertFalse(capture.contains("compile task.jar"), capture);
+    }
+
+    @Test
+    void rejectsUnknownProjectPathsAndSourceSetsWithoutReturningArguments() throws Exception {
+        var fixture = fixture(false);
+        for (String[] selection : List.of(
+                new String[] {"--project-path", ":missing", "--list-source-sets"},
+                new String[] {"--project-path", ":app", "--source-set", "missing", "--classpath", "compile", "-r", "source-path"})) {
+            var arguments = new ArrayList<>(List.of("gradle", "--root-project-dir", fixture.root().toString()));
+            arguments.addAll(List.of(selection));
+            var output = new StringWriter();
+            var error = new StringWriter();
+            int code = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true), arguments.toArray(String[]::new));
+            assertEquals(1, code, error.toString());
+            assertEquals("", output.toString());
+            assertTrue(error.toString().contains(selection.length == 3 ? "Unknown project path" : "Unknown source set"), error.toString());
+        }
     }
 
     private Fixture fixture(boolean modular) throws Exception {
@@ -455,17 +558,13 @@ class GradleIntegrationTest {
         return output;
     }
 
-    private static String resolve(Fixture fixture, String scope, String options) {
-        return run(
-                "gradle",
-                "--root-project-dir",
-                fixture.root().toString(),
-                "--project-dir",
-                fixture.app().toString(),
-                "--scope",
-                scope,
-                "-r",
-                options);
+    private static String resolve(Fixture fixture, String classpath, String options) {
+        return resolve(fixture, "main", classpath, options);
+    }
+
+    private static String resolve(Fixture fixture, String sourceSet, String classpath, String options) {
+        return run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", sourceSet, "--classpath", classpath, "-r", options);
     }
 
     private static String run(String... arguments) {

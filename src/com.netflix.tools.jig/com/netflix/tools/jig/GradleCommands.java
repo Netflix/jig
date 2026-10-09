@@ -82,18 +82,26 @@ final class GradleCommands {
                 if (!"1".equals(values.getProperty("version"))) {
                     throw new IOException("Unsupported Gradle capture version: " + values.getProperty("version"));
                 }
-                List<String> projects = GradleArguments.list(values, "projects");
+                List<String> projects = GradleArguments.list(values, "project-paths");
                 if (request.listProjects()) {
                     projects.stream().distinct().sorted().forEach(out::println);
                 } else {
-                    if (!projects.contains(request.project().toString())) {
-                        throw new IllegalArgumentException("Project directory is not part of the selected Gradle build: " + request.project());
+                    if (!projects.contains(request.projectPath())) {
+                        throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());
                     }
-                    String generated = GradleArguments.render(request, values);
-                    if (request.argumentFile() == null) {
-                        out.print(generated);
+                    List<String> sourceSets = GradleArguments.list(values, "source-sets");
+                    if (request.listSourceSets()) {
+                        sourceSets.stream().distinct().sorted().forEach(out::println);
                     } else {
-                        Files.writeString(request.argumentFile(), generated);
+                        if (!sourceSets.contains(request.sourceSet())) {
+                            throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
+                        }
+                        String generated = GradleArguments.render(request, values);
+                        if (request.argumentFile() == null) {
+                            out.print(generated);
+                        } else {
+                            Files.writeString(request.argumentFile(), generated);
+                        }
                     }
                 }
                 return 0;
@@ -116,8 +124,10 @@ final class GradleCommands {
             var digest = MessageDigest.getInstance("SHA-256");
             digest.update(script);
             digest.update(String.join("\u0000", request.root().toString(),
-                    request.project() == null ? "" : request.project().toString(),
-                    request.scope() == null ? "" : request.scope(), Boolean.toString(request.listProjects()),
+                    request.projectPath() == null ? "" : request.projectPath(),
+                    request.sourceSet() == null ? "" : request.sourceSet(),
+                    request.classpath() == null ? "" : request.classpath(),
+                    Boolean.toString(request.listProjects()), Boolean.toString(request.listSourceSets()),
                     String.join(",", request.options().stream().sorted().toList())).getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException e) {
@@ -156,10 +166,14 @@ final class GradleCommands {
                         "-Pjig.gradle.root=" + request.root(),
                         "-Pjig.gradle.output=" + output,
                         "-Pjig.gradle.task=" + task,
-                        "-Pjig.gradle.list=" + request.listProjects()));
+                        "-Pjig.gradle.list=" + request.listProjects(),
+                        "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
         if (!request.listProjects()) {
-            arguments.add("-Pjig.gradle.project-dir=" + request.project());
-            arguments.add("-Pjig.gradle.scope=" + request.scope());
+            arguments.add("-Pjig.gradle.project-path=" + request.projectPath());
+        }
+        if (!request.listProjects() && !request.listSourceSets()) {
+            arguments.add("-Pjig.gradle.source-set=" + request.sourceSet());
+            arguments.add("-Pjig.gradle.classpath=" + request.classpath());
             arguments.add("-Pjig.gradle.options=" + String.join(",",
                     request.options().stream()
                             .sorted()

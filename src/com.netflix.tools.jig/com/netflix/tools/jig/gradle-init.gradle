@@ -26,8 +26,9 @@ import org.gradle.util.GradleVersion
 // never Project, SourceSet, JavaCompile, JavaExec, or init-script closures. Gradle
 // can restore it without evaluating the build on a configuration-cache hit.
 class JigCaptureTask extends DefaultTask {
-    @Input List<String> projectDirectories = []
-    @Input List<String> sourceDirectories = []
+    @Input List<String> projectPaths = []
+    @Input List<String> sourceSetNames = []
+    @Internal FileCollection sourceRoots
     @Input Map<String, String> metadata = [:]
     @Input List<String> additionalArguments = []
     @Nested List argumentProviders = []
@@ -42,7 +43,9 @@ class JigCaptureTask extends DefaultTask {
         def values = new Properties()
         values.setProperty('version', '1')
         metadata.each { name, value -> values.setProperty(name, value) }
-        putList(values, 'projects', projectDirectories)
+        putList(values, 'project-paths', projectPaths)
+        putList(values, 'source-sets', sourceSetNames)
+        def sourceDirectories = sourceRoots.files.collect { it.canonicalPath }
         putList(values, 'sources', sourceDirectories)
         putList(values, 'classpath', binaryPath.files.collect { it.canonicalPath })
         putList(values, 'processors', processorPath.files.collect { it.canonicalPath })
@@ -73,14 +76,17 @@ gradle.settingsEvaluated { settings ->
     // the first configuration-cache releases, without newer settings APIs.
     def parameters = gradle.startParameter.projectProperties
     def rootDirectory = new File(parameters['jig.gradle.root']).canonicalFile
-    def selectedDirectory = parameters['jig.gradle.project-dir']
+    def selectedPath = parameters['jig.gradle.project-path']
     def listProjects = Boolean.parseBoolean(parameters['jig.gradle.list'])
-    def scope = parameters['jig.gradle.scope']
+    def listSourceSets = Boolean.parseBoolean(parameters['jig.gradle.list-source-sets'])
+    def sourceSetName = parameters['jig.gradle.source-set']
+    def classpath = parameters['jig.gradle.classpath']
     def requested = ((parameters['jig.gradle.options'] ?: '').split(',') as List).toSet()
     def captureTaskName = parameters['jig.gradle.task']
     def resultFile = new File(parameters['jig.gradle.output'])
     def needsClasspath = requested.contains('class-path') || requested.contains('module-path')
-    def needsProcessors = scope == 'compile' && requested.contains('processor-path')
+    def needsProcessors = classpath == 'compile' && requested.contains('processor-path')
+    def needsSources = requested.contains('source-path') || requested.contains('module-source-path')
     def needsModularity = !requested.intersect(['class-path', 'module-path', 'module-source-path', 'module', 'add-modules', 'describe-module']).empty
     def needsLanguage = !requested.intersect(['release', 'source', 'target', 'encoding', 'system']).empty
     def argumentOptions = requested - ['source-path', 'module-source-path', 'module', 'add-modules', 'describe-module', 'main-class', 'module-version', 'system']
@@ -95,14 +101,14 @@ gradle.settingsEvaluated { settings ->
     if (settings.rootProject.projectDir.canonicalFile != rootDirectory) {
         throw new GradleException('The supplied root project directory is not this build root: ' + rootDirectory)
     }
-    def selected = listProjects ? [settings.rootProject] : descriptors.findAll { it.projectDir.canonicalPath == selectedDirectory }
+    def selected = listProjects ? [settings.rootProject] : descriptors.findAll { it.path == selectedPath }
     if (selected.size() != 1) {
-        throw new GradleException('Expected one project at the selected directory, found ' + selected.size() + ': ' + selectedDirectory)
+        throw new GradleException('Unknown project path in this build: ' + selectedPath)
     }
     def projectPath = selected[0].path
     def taskPath = (projectPath == ':' ? ':' : projectPath + ':') + captureTaskName
     gradle.startParameter.setTaskNames([taskPath])
-    def directories = descriptors.collect { it.projectDir.canonicalPath }.unique().sort()
+    def projectPaths = descriptors.collect { it.path }.unique().sort()
     gradle.beforeProject { project ->
         if (project.path != projectPath) {
             return
@@ -112,8 +118,9 @@ gradle.settingsEvaluated { settings ->
         project.afterEvaluate {
             def configure = { task ->
                 task.description = 'Capture the Java argument view requested by jig'
-                task.projectDirectories = directories
+                task.projectPaths = projectPaths
                 task.resultFile = resultFile
+                task.sourceRoots = project.files()
                 task.binaryPath = project.files()
                 task.processorPath = project.files()
                 if (listProjects) {
@@ -123,23 +130,27 @@ gradle.settingsEvaluated { settings ->
                 if (sourceSets == null && project.hasProperty('sourceSets')) {
                     sourceSets = project.property('sourceSets')
                 }
-                def main = sourceSets == null ? null : sourceSets.findByName('main')
-                if (main == null) {
+                task.sourceSetNames = sourceSets == null ? [] : sourceSets.names.toList().sort()
+                if (listSourceSets) {
                     return
                 }
-                task.sourceDirectories = main.allJava.srcDirs.collect { it.canonicalPath }
-                def needsRun = requested.contains('main-class') || requested.contains('module') || (scope == 'runtime' && (needsModularity || needsArguments))
+                def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)
+                if (sourceSet == null) {
+                    throw new GradleException('Unknown source set in project ' + projectPath + ': ' + sourceSetName)
+                }
+                task.sourceRoots = sourceSet.allJava.sourceDirectories
+                def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
                 def run = needsRun ? project.tasks.findByName('run') : null
-                def needsCompile = needsLanguage || needsProcessors || (scope == 'compile' && (needsClasspath || needsArguments)) || (needsModularity && (scope == 'compile' || run == null))
-                def compile = needsCompile ? project.tasks.getByName(main.compileJavaTaskName) : null
+                def needsCompile = needsLanguage || needsProcessors || (classpath == 'compile' && needsArguments) || (needsModularity && (classpath == 'compile' || run == null))
+                def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
                 if (needsClasspath) {
-                    task.binaryPath = scope == 'runtime' ? main.runtimeClasspath : compile.classpath
+                    task.binaryPath = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
                 }
                 if (needsProcessors && compile.options.hasProperty('annotationProcessorPath') && compile.options.annotationProcessorPath != null) {
                     task.processorPath = compile.options.annotationProcessorPath
                 }
                 if (needsModularity) {
-                    if (scope == 'runtime' && run != null) {
+                    if (classpath == 'runtime' && run != null) {
                         task.detectSourceModule = false
                         task.inferModules = (run.hasProperty('modularity') && run.modularity.inferModulePath.get()
                                 && run.hasProperty('mainModule') && run.mainModule.present)
@@ -149,6 +160,12 @@ gradle.settingsEvaluated { settings ->
                     } else {
                         task.inferModules = compile.hasProperty('modularity') && compile.modularity.inferModulePath.get()
                     }
+                }
+                // Keep generator dependencies on source directory collections instead
+                // of flattening them during configuration. Do not depend on the whole
+                // source-set output, which would run compilation for source-only queries.
+                if (needsSources || (needsModularity && task.inferModules && task.detectSourceModule)) {
+                    task.dependsOn(task.sourceRoots)
                 }
                 if (run != null) {
                     if (run.hasProperty('mainClass') && run.mainClass.present) {
@@ -176,12 +193,12 @@ gradle.settingsEvaluated { settings ->
                 if (requested.contains('module-version') && project.version.toString() != 'unspecified') {
                     task.metadata['module-version'] = project.version.toString()
                 }
-                if (scope == 'compile' && needsArguments) {
+                if (classpath == 'compile' && needsArguments) {
                     task.additionalArguments = compile.options.compilerArgs.collect { it.toString() }
                     if (compile.options.hasProperty('compilerArgumentProviders')) {
                         task.argumentProviders = new ArrayList(compile.options.compilerArgumentProviders)
                     }
-                } else if (scope == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
+                } else if (classpath == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
                     task.additionalArguments = (run.jvmArgs == null ? [] : run.jvmArgs).collect { it.toString() }
                     if (run.hasProperty('jvmArgumentProviders')) {
                         task.argumentProviders = new ArrayList(run.jvmArgumentProviders)
