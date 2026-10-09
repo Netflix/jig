@@ -479,6 +479,78 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("supportsModules")
+    void compilerResolutionUsesGradlesOwnModuleSourcePathDefaults() throws Exception {
+        var fixture = fixture(true);
+        Path configured = Files.createDirectories(fixture.app().resolve("configured source path"));
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.options.sourcepath = files('configured source path')\n",
+                StandardOpenOption.APPEND);
+        String captured = compilerOptions(fixture, "main");
+        // Gradle 6.x replaces an explicit source path for modular compilation;
+        // the tested 7.x+ versions retain it. Use the build's own behavior.
+        Path expected = atLeast(7, 0) ? configured : fixture.app().resolve("sources/java");
+        assertTrue(captured.contains("\"-sourcepath\"\n\"" + expected + "\""), captured);
+    }
+
+    @Test
+    void compilerResolutionRunsExplicitProducerDependenciesBeforeCapturingOptions() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                task generateCompilerArguments {
+                    def destination = file('build/compiler-arguments.txt')
+                    outputs.file(destination)
+                    doLast {
+                        destination.parentFile.mkdirs()
+                        destination.text = 'generated argument'
+                    }
+                }
+                tasks.compileJava.dependsOn(generateCompilerArguments)
+                """ + (atLeast(5, 0) ? """
+                class CompilerArgumentsFromFile implements CommandLineArgumentProvider {
+                    @InputFile File input
+                    Iterable<String> asArguments() { return ['-Akey=' + input.text] }
+                }
+                tasks.compileJava.options.compilerArgumentProviders.add(new CompilerArgumentsFromFile(input: file('build/compiler-arguments.txt')))
+                """ : ""), StandardOpenOption.APPEND);
+        // Gradle 4.x itself evaluates compiler providers while discovering task
+        // dependencies. Still check explicit producer execution on older versions.
+        String captured = compilerOptions(fixture, "main");
+        assertEquals("generated argument", Files.readString(fixture.app().resolve("build/compiler-arguments.txt")));
+        if (atLeast(5, 0)) {
+            assertTrue(captured.contains("\"-Akey=generated argument\""), captured);
+        }
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+    }
+
+    @Test
+    void compilerResolutionPreservesOutputsAndHistoryWithoutRunningActionsOrFinalizers() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                if (project.hasProperty('jig.gradle.compiler')) {
+                    task compilerFinalizer {
+                        doLast { throw new GradleException('compiler finalizer ran') }
+                    }
+                    tasks.compileJava {
+                        enabled = false
+                        onlyIf { throw new GradleException('original compiler predicate ran') }
+                        doFirst { throw new GradleException('compiler action ran') }
+                        doLast { throw new GradleException('compiler action ran') }
+                        finalizedBy(compilerFinalizer)
+                    }
+                }
+                """, StandardOpenOption.APPEND);
+        execute(Path.of("sh"), fixture.root().resolve("gradlew").toString(), "--project-dir", fixture.root().toString(), "--quiet", ":app:compileJava");
+        Path compiled = fixture.app().resolve(classesDirectory() + "/app/Main.class");
+        byte[] original = Files.readAllBytes(compiled);
+        var modified = Files.getLastModifiedTime(compiled);
+        assertTrue(compilerOptions(fixture, "main").contains("\"-d\""));
+        assertArrayEquals(original, Files.readAllBytes(compiled));
+        assertEquals(modified, Files.getLastModifiedTime(compiled));
+        String rebuild = execute(Path.of("sh"), fixture.root().resolve("gradlew").toString(), "--project-dir", fixture.root().toString(), "--console", "plain", ":app:compileJava");
+        assertTrue(rebuild.contains(":app:compileJava UP-TO-DATE"), rebuild);
+    }
+
+    @Test
     @EnabledIf("supportsConfigurationCache")
     void compilerResolutionKeepsGeneratorsAndArgumentProvidersLazyAcrossCacheReplay() throws Exception {
         var fixture = fixture(false);
@@ -491,7 +563,14 @@ class GradleIntegrationTest {
                         def dir = destination.get().asFile
                         dir.mkdirs()
                         new File(dir, 'Generated.java').text = 'public class Generated {}'
-                        new File(dir, 'arguments.txt').text = 'value with spaces'
+                    }
+                }
+                abstract class GenerateCompilerArguments extends DefaultTask {
+                    @OutputFile abstract org.gradle.api.file.RegularFileProperty getDestination()
+                    @TaskAction void generate() {
+                        def file = destination.get().asFile
+                        file.parentFile.mkdirs()
+                        file.text = 'value with spaces'
                     }
                 }
                 class CompilerArgumentsFromFile implements CommandLineArgumentProvider {
@@ -506,21 +585,26 @@ class GradleIntegrationTest {
                 def generator = tasks.register('generateCompilerInput', GenerateCompilerInput) {
                     destination = layout.buildDirectory.dir('compiler-input')
                 }
+                def arguments = tasks.register('generateCompilerArguments', GenerateCompilerArguments) {
+                    destination = layout.buildDirectory.file('compiler-arguments.txt')
+                }
                 sourceSets.test.java.srcDir(generator.flatMap { it.destination })
                 tasks.named('compileTestJava').configure {
-                    options.compilerArgumentProviders.add(new CompilerArgumentsFromFile(input: generator.flatMap { it.destination.file('arguments.txt') }))
+                    options.compilerArgumentProviders.add(new CompilerArgumentsFromFile(input: arguments.flatMap { it.destination }))
                 }
                 """, StandardOpenOption.APPEND);
         Path generated = fixture.app().resolve("build/compiler-input");
+        Path arguments = fixture.app().resolve("build/compiler-arguments.txt");
         assertFalse(Files.exists(generated));
+        assertFalse(Files.exists(arguments));
         String first = compilerOptions(fixture, "test");
         assertTrue(first.contains("\"-Akey=value with spaces\""), first);
         assertFalse(Files.exists(fixture.app().resolve("build/classes/java/test")));
         Files.delete(generated.resolve("Generated.java"));
-        Files.delete(generated.resolve("arguments.txt"));
+        Files.delete(arguments);
         assertEquals(first, compilerOptions(fixture, "test"));
         assertTrue(Files.isRegularFile(generated.resolve("Generated.java")));
-        assertTrue(Files.isRegularFile(generated.resolve("arguments.txt")));
+        assertTrue(Files.isRegularFile(arguments));
         assertEquals(1, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileTestJava.options.debug = false\n", StandardOpenOption.APPEND);
         assertTrue(compilerOptions(fixture, "test").contains("\"-g:none\""));
@@ -533,7 +617,9 @@ class GradleIntegrationTest {
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { empty {} }\ntasks.compileEmptyJava.options.debug = false\n", StandardOpenOption.APPEND);
         String captured = compilerOptions(fixture, "empty");
         assertTrue(captured.contains("\"-g:none\""), captured);
-        assertFalse(Files.exists(fixture.app().resolve("build")));
+        // Gradle's spec preparation may create its temporary directory, but must
+        // not produce compilation outputs, even when there are no source files.
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory())));
     }
 
     @Test

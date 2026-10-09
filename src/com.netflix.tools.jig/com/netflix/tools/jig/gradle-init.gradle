@@ -12,24 +12,70 @@
  * the License.
  */
 
-import java.beans.Introspector
+import java.lang.reflect.InvocationTargetException
 
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
+import org.gradle.api.Task
 import org.gradle.api.file.FileCollection
+import org.gradle.api.specs.Spec
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.TaskAction
-import org.gradle.api.tasks.compile.CompileOptions
-import org.gradle.api.internal.tasks.compile.DefaultJavaCompileSpec
+import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.internal.tasks.compile.JavaCompilerArgumentsBuilder
 import org.gradle.util.GradleVersion
 
-// The execution state contains values, file collections, argument providers, and
-// detached compiler options, never Project, SourceSet, JavaCompile, JavaExec, or
-// init-script closures. Gradle
+// This predicate receives its own task at execution, after Gradle has run that
+// task's producers. Only the interchange file crosses the configuration-cache
+// boundary: no other task holds a reference to JavaCompile or its managed options.
+class JigCompilerCapture implements Spec<Task> {
+    File resultFile
+
+    @Override
+    boolean isSatisfiedBy(Task task) {
+        def method
+        try {
+            method = JavaCompile.getDeclaredMethod('createSpec')
+            method.accessible = true
+        } catch (NoSuchMethodException failure) {
+            throw unsupported(failure)
+        } catch (SecurityException failure) {
+            throw unsupported(failure)
+        }
+        def spec
+        try {
+            spec = method.invoke(task)
+        } catch (IllegalAccessException failure) {
+            throw unsupported(failure)
+        } catch (InvocationTargetException failure) {
+            throw new GradleException('Cannot prepare compiler options for ' + task.path, failure.targetException)
+        }
+        def arguments
+        try {
+            arguments = new JavaCompilerArgumentsBuilder(spec)
+                    .includeLauncherOptions(false)
+                    .includeSourceFiles(false)
+                    .build()
+        } catch (MissingMethodException failure) {
+            throw unsupported(failure)
+        }
+        def values = new Properties()
+        JigCaptureTask.putList(values, 'compiler-options', arguments)
+        resultFile.withOutputStream { values.store(it, 'jig Gradle compiler option capture') }
+        // Skip before compiler actions, incremental processing, or output cleanup.
+        return false
+    }
+
+    private static GradleException unsupported(Throwable failure) {
+        return new GradleException('Compiler option capture is unsupported by Gradle ' + GradleVersion.current().version, failure)
+    }
+}
+
+// The execution state contains values, file collections, and argument providers,
+// never Project, SourceSet, JavaCompile, JavaExec, or init-script closures. Gradle
 // can restore it without evaluating the build on a configuration-cache hit.
 class JigCaptureTask extends DefaultTask {
     @Input List<String> projectPaths = []
@@ -43,12 +89,20 @@ class JigCaptureTask extends DefaultTask {
     @Classpath FileCollection binaryPath
     @Classpath FileCollection processorPath
     @Internal File resultFile
-    @Internal CompileOptions compilerOptions
-    @Internal FileCollection compilerSources
+    @Input boolean compilerRequest = false
 
     @TaskAction
     void capture() {
         def values = new Properties()
+        if (compilerRequest) {
+            if (!resultFile.isFile()) {
+                throw new GradleException('The selected JavaCompile task did not capture compiler options')
+            }
+            resultFile.withInputStream { values.load(it) }
+            if (values.getProperty('compiler-options.count') == null) {
+                throw new GradleException('The selected JavaCompile task did not capture compiler options')
+            }
+        }
         values.setProperty('version', '1')
         metadata.each { name, value -> values.setProperty(name, value) }
         putList(values, 'project-paths', projectPaths)
@@ -58,13 +112,8 @@ class JigCaptureTask extends DefaultTask {
         putList(values, 'classpath', binaryPath.files.collect { it.canonicalPath })
         putList(values, 'processors', processorPath.files.collect { it.canonicalPath })
         def arguments = new ArrayList(additionalArguments)
-        if (compilerOptions == null) {
-            argumentProviders.each { arguments.addAll(it.asArguments()) }
-        }
+        argumentProviders.each { arguments.addAll(it.asArguments()) }
         putList(values, 'additional', arguments)
-        if (compilerOptions != null) {
-            putList(values, 'compiler-options', compilerArguments())
-        }
         def modular = inferModules && (!detectSourceModule || sourceDirectories.any { new File(it, 'module-info.java').isFile() })
         values.setProperty('modular', modular.toString())
         // Deliberately no task output: each query refreshes the interchange file,
@@ -72,70 +121,7 @@ class JigCaptureTask extends DefaultTask {
         resultFile.withOutputStream { values.store(it, 'jig Gradle argument capture') }
     }
 
-    private List<String> compilerArguments() {
-        def spec = new DefaultJavaCompileSpec()
-        spec.sourceCompatibility = metadata['source']
-        spec.targetCompatibility = metadata['target']
-        if (spec.hasProperty('release')) {
-            spec.release = metadata['release'] == null ? null : Integer.valueOf(metadata['release'])
-        }
-        spec.destinationDir = new File(metadata['destination'])
-        spec.compileClasspath = binaryPath.files.toList()
-        spec.annotationProcessorPath = processorPath.files.toList()
-        // Keep CompileOptions detached from JavaCompile. Its original managed
-        // properties retain their owning task, which cannot cross the cache boundary.
-        // Gradle evaluates providers here, after their producers have executed.
-        spec.setCompileOptions(compilerOptions)
-        if (metadata['module-inference'] != null) {
-            def rootsType = Class.forName('org.gradle.api.internal.tasks.compile.CompilationSourceDirs')
-            def roots = rootsType.inferSourceRoots(compilerSources.asFileTree)
-            def detectorType = Class.forName('org.gradle.internal.jvm.JavaModuleDetector')
-            def detector = services.get(detectorType)
-            def modular = detectorType.isModuleSource(Boolean.parseBoolean(metadata['module-inference']), roots)
-            spec.compileClasspath = detector.inferClasspath(modular, binaryPath).files.toList()
-            spec.modulePath = detector.inferModulePath(modular, binaryPath).files.toList()
-            if (modular && (spec.compileOptions.sourcepath == null || spec.compileOptions.sourcepath.empty)) {
-                spec.compileOptions.sourcepath = roots
-            }
-        }
-        if (metadata['compiler-release'] != null && Integer.parseInt(metadata['compiler-release']) < 8 && spec.compileOptions.hasProperty('headerOutputDirectory')) {
-            spec.compileOptions.headerOutputDirectory = null
-        }
-        return new JavaCompilerArgumentsBuilder(spec)
-                .includeLauncherOptions(false)
-                .includeSourceFiles(false)
-                .build()
-    }
-
-    static CompileOptions detachedOptions(project, CompileOptions source) {
-        def target = GradleVersion.current().baseVersion >= GradleVersion.version('4.0')
-                ? project.objects.newInstance(CompileOptions) : CompileOptions.getDeclaredConstructor().newInstance()
-        copyOptions(CompileOptions, source, target)
-        return target
-    }
-
-    private static void copyOptions(Class type, Object source, Object target) {
-        Introspector.getBeanInfo(type).propertyDescriptors.each { descriptor ->
-            def read = descriptor.readMethod
-            def write = descriptor.writeMethod
-            if (read == null) {
-                return
-            }
-            if (write != null) {
-                write.invoke(target, [read.invoke(source)] as Object[])
-            } else if (GradleVersion.current().baseVersion >= GradleVersion.version('4.3')
-                    && org.gradle.api.provider.Property.isAssignableFrom(descriptor.propertyType)) {
-                def property = read.invoke(source)
-                read.invoke(target).set(property.present ? property.get() : null)
-            } else if (descriptor.name == 'debugOptions' || descriptor.name == 'forkOptions') {
-                copyOptions(descriptor.propertyType, read.invoke(source), read.invoke(target))
-            } else if (descriptor.name == 'compilerArgumentProviders') {
-                read.invoke(target).addAll(read.invoke(source))
-            }
-        }
-    }
-
-    private static void putList(Properties values, String name, List entries) {
+    static void putList(Properties values, String name, List entries) {
         values.setProperty(name + '.count', entries.size().toString())
         entries.eachWithIndex { entry, index -> values.setProperty(name + '.' + index, entry.toString()) }
     }
@@ -217,35 +203,17 @@ gradle.settingsEvaluated { settings ->
                 }
                 if (compilerRequest) {
                     def compile = project.tasks.getByName(sourceSet.compileJavaTaskName)
-                    task.compilerOptions = JigCaptureTask.detachedOptions(project, compile.options)
-                    task.compilerSources = compile.source
-                    task.binaryPath = compile.classpath
-                    def processors = compile.hasProperty('effectiveAnnotationProcessorPath')
-                            ? compile.effectiveAnnotationProcessorPath : compile.options.annotationProcessorPath
-                    task.processorPath = processors == null ? project.files() : processors
-                    task.argumentProviders = compile.options.hasProperty('compilerArgumentProviders')
-                            ? new ArrayList(compile.options.compilerArgumentProviders) : []
-                    task.metadata['source'] = compile.sourceCompatibility.toString()
-                    task.metadata['target'] = compile.targetCompatibility.toString()
-                    task.metadata['destination'] = (compile.hasProperty('destinationDirectory')
-                            ? compile.destinationDirectory.get().asFile : compile.destinationDir).canonicalPath
-                    if (compile.options.hasProperty('release') && compile.options.release.present) {
-                        task.metadata['release'] = compile.options.release.get().toString()
+                    if (!(compile instanceof JavaCompile)) {
+                        throw new GradleException('Compiler option capture requires a JavaCompile task: ' + compile.path)
                     }
-                    if (compile.hasProperty('modularity')) {
-                        task.metadata['module-inference'] = compile.modularity.inferModulePath.get().toString()
-                    }
-                    if (compile.hasProperty('javaCompiler') && compile.javaCompiler.present) {
-                        task.metadata['compiler-release'] = compile.javaCompiler.get().metadata.languageVersion.asInt().toString()
-                    } else if (compile.hasProperty('toolChain')) {
-                        task.metadata['compiler-release'] = compile.toolChain.javaVersion.majorVersion
-                    }
-                    task.dependsOn(task.compilerSources)
-                    for (def name : ['sourcepath', 'bootstrapClasspath']) {
-                        if (compile.options.hasProperty(name) && compile.options[name] != null) {
-                            task.dependsOn(compile.options[name])
-                        }
-                    }
+                    // This invocation inspects configuration, not whether compilation
+                    // would execute. Replace predicates/disabled state and discard
+                    // finalizers so querying cannot run compiler-adjacent actions.
+                    compile.enabled = true
+                    compile.setOnlyIf(new JigCompilerCapture(resultFile: resultFile))
+                    compile.setFinalizedBy([])
+                    task.compilerRequest = true
+                    task.dependsOn(compile)
                     return
                 }
                 task.sourceRoots = sourceSet.allJava.sourceDirectories
