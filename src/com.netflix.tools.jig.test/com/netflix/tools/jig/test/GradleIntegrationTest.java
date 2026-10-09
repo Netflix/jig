@@ -23,6 +23,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.jar.Attributes.Name;
+import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
@@ -36,6 +37,7 @@ import org.junit.jupiter.params.Parameter;
 import org.junit.jupiter.params.ParameterizedClass;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -422,6 +424,222 @@ class GradleIntegrationTest {
         }
     }
 
+    @Test
+    void compilerOptionsMatchGradleCompilationWithoutEmittingSourceFilesOrLauncherOptions() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                tasks.compileJava {
+                    options.debug = false
+                    options.deprecation = true
+                    options.warnings = false
+                    options.encoding = 'UTF-8'
+                    options.compilerArgs += ['-parameters', '-Xlint:deprecation', '-Werror', '-g:lines,vars']
+                    options.forkOptions.jvmArgs = ['-Dcompiler.launcher.only=true']
+                }
+                """, StandardOpenOption.APPEND);
+        String captured = compilerOptions(fixture, "main");
+        for (String option : List.of("-deprecation", "-nowarn", "-encoding", "-g:none", "-parameters", "-Werror", "-Xlint:deprecation", "-g:lines,vars")) {
+            assertTrue(captured.contains('"' + option + '"'), captured);
+        }
+        assertFalse(captured.contains("Main.java"), captured);
+        assertFalse(captured.contains("compiler.launcher.only"), captured);
+        Path gradleClass = fixture.app().resolve(classesDirectory() + "/app/Main.class");
+        assertFalse(Files.exists(gradleClass));
+        Path options = temporaryDirectory.resolve("compiler.args");
+        run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "main",
+                "--resolve-compiler-options", "-w", options.toString());
+        assertEquals(captured, Files.readString(options));
+        Path classes = Files.createDirectories(temporaryDirectory.resolve("manual classes"));
+        execute(gradle.javaHome().resolve("bin/javac"), "@" + options, "-d", classes.toString(), fixture.app().resolve("sources/java/app/Main.java").toString());
+        execute(Path.of("sh"), fixture.root().resolve("gradlew").toString(), "--project-dir", fixture.root().toString(), "--quiet", ":app:compileJava");
+        assertArrayEquals(Files.readAllBytes(classes.resolve("app/Main.class")), Files.readAllBytes(gradleClass));
+    }
+
+    @Test
+    @EnabledIf("supportsModules")
+    void compilerResolutionDelegatesModuleInferenceAndUsesTheCompileTasksModuleVersion() throws Exception {
+        var fixture = fixture(true);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                version = 'project-version'
+                tasks.compileJava.options.javaModuleVersion = '2.0'
+                """, StandardOpenOption.APPEND);
+        String captured = compilerOptions(fixture, "main");
+        assertTrue(captured.contains("\"--module-version\"\n\"2.0\""), captured);
+        assertTrue(captured.contains("\"--module-path\""), captured);
+        assertTrue(captured.contains("plain.jar"), captured);
+        assertTrue(captured.contains("shared.jar"), captured);
+        Path options = temporaryDirectory.resolve("module.args");
+        Files.writeString(options, captured);
+        Path classes = temporaryDirectory.resolve("modules");
+        execute(gradle.javaHome().resolve("bin/javac"), "@" + options, "-d", classes.toString(),
+                fixture.app().resolve("sources/java/module-info.java").toString(), fixture.app().resolve("sources/java/app/Main.java").toString());
+        assertTrue(Files.isRegularFile(classes.resolve("module-info.class")));
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
+        assertFalse(compilerOptions(fixture, "main").contains("\"--module-path\""));
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void compilerResolutionKeepsGeneratorsAndArgumentProvidersLazyAcrossCacheReplay() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.root().resolve("build.gradle"), "\nrootProject.file('evaluations.txt') << 'evaluated\\n'\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                abstract class GenerateCompilerInput extends DefaultTask {
+                    @OutputDirectory abstract org.gradle.api.file.DirectoryProperty getDestination()
+                    @TaskAction void generate() {
+                        def dir = destination.get().asFile
+                        dir.mkdirs()
+                        new File(dir, 'Generated.java').text = 'public class Generated {}'
+                        new File(dir, 'arguments.txt').text = 'value with spaces'
+                    }
+                }
+                class CompilerArgumentsFromFile implements CommandLineArgumentProvider {
+                    @InputFile @PathSensitive(PathSensitivity.NONE)
+                    org.gradle.api.provider.Provider<org.gradle.api.file.RegularFile> input
+                    @Internal int evaluations
+                    Iterable<String> asArguments() {
+                        if (++evaluations != 1) { throw new GradleException('compiler provider evaluated more than once') }
+                        return ['-Akey=' + input.get().asFile.text]
+                    }
+                }
+                def generator = tasks.register('generateCompilerInput', GenerateCompilerInput) {
+                    destination = layout.buildDirectory.dir('compiler-input')
+                }
+                sourceSets.test.java.srcDir(generator.flatMap { it.destination })
+                tasks.named('compileTestJava').configure {
+                    options.compilerArgumentProviders.add(new CompilerArgumentsFromFile(input: generator.flatMap { it.destination.file('arguments.txt') }))
+                }
+                """, StandardOpenOption.APPEND);
+        Path generated = fixture.app().resolve("build/compiler-input");
+        assertFalse(Files.exists(generated));
+        String first = compilerOptions(fixture, "test");
+        assertTrue(first.contains("\"-Akey=value with spaces\""), first);
+        assertFalse(Files.exists(fixture.app().resolve("build/classes/java/test")));
+        Files.delete(generated.resolve("Generated.java"));
+        Files.delete(generated.resolve("arguments.txt"));
+        assertEquals(first, compilerOptions(fixture, "test"));
+        assertTrue(Files.isRegularFile(generated.resolve("Generated.java")));
+        assertTrue(Files.isRegularFile(generated.resolve("arguments.txt")));
+        assertEquals(1, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileTestJava.options.debug = false\n", StandardOpenOption.APPEND);
+        assertTrue(compilerOptions(fixture, "test").contains("\"-g:none\""));
+        assertEquals(2, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
+    }
+
+    @Test
+    void compilerResolutionHandlesEmptyCustomSourceSets() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { empty {} }\ntasks.compileEmptyJava.options.debug = false\n", StandardOpenOption.APPEND);
+        String captured = compilerOptions(fixture, "empty");
+        assertTrue(captured.contains("\"-g:none\""), captured);
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+    }
+
+    @Test
+    void compilerOptionsPreserveProcessingGeneratedSourcesAndNativeHeaders() throws Exception {
+        var fixture = fixture(false);
+        Path processor = processorJar();
+        Path generated = Files.createDirectories(temporaryDirectory.resolve("generated sources"));
+        Path headers = Files.createDirectories(temporaryDirectory.resolve("native headers"));
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                tasks.compileJava {
+                    options.annotationProcessorPath = files('%s')
+                    options.compilerArgs += ['-processor', 'processor.Generator', '-Akey=custom value', '-s', '%s', '-h', '%s']
+                }
+                """.formatted(processor, generated, headers), StandardOpenOption.APPEND);
+        Path main = fixture.app().resolve("sources/java/app/Main.java");
+        Files.writeString(main, "package app; public class Main { public static String value = generated.Generated.VALUE; public native int number(); }\n");
+        String captured = compilerOptions(fixture, "main");
+        assertTrue(captured.contains("\"-processor\"\n\"processor.Generator\""), captured);
+        assertTrue(captured.contains("\"-Akey=custom value\""), captured);
+        assertFalse(captured.contains("\"-proc:none\""), captured);
+        assertFalse(Files.exists(generated.resolve("generated/Generated.java")));
+        Path options = temporaryDirectory.resolve("processing.args");
+        Files.writeString(options, captured);
+        Path classes = Files.createDirectories(temporaryDirectory.resolve("processing classes"));
+        execute(gradle.javaHome().resolve("bin/javac"), "@" + options, "-d", classes.toString(), main.toString());
+        String generatedSource = Files.readString(generated.resolve("generated/Generated.java"));
+        String generatedHeader = Files.readString(headers.resolve("app_Main.h"));
+        execute(Path.of("sh"), fixture.root().resolve("gradlew").toString(), "--project-dir", fixture.root().toString(), "--quiet", ":app:compileJava");
+        assertEquals(generatedSource, Files.readString(generated.resolve("generated/Generated.java")));
+        assertEquals(generatedHeader, Files.readString(headers.resolve("app_Main.h")));
+        for (String name : List.of("app/Main.class", "generated/Generated.class")) {
+            assertArrayEquals(Files.readAllBytes(classes.resolve(name)),
+                    Files.readAllBytes(fixture.app().resolve(classesDirectory()).resolve(name)), name);
+        }
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void compilerResolutionUsesTaskOverridesWithoutRealizingUnusedSourceSetProducers() throws Exception {
+        var fixture = fixture(false);
+        Path alternative = Files.createDirectories(fixture.app().resolve("alternative"));
+        Files.writeString(alternative.resolve("Alternative.java"), "public class Alternative {}\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                abstract class UnusedSourceProducer extends DefaultTask {
+                    @OutputDirectory abstract org.gradle.api.file.DirectoryProperty getDestination()
+                }
+                def unused = tasks.register('unusedSourceProducer', UnusedSourceProducer) {
+                    throw new GradleException('unused source-set producer was realized')
+                }
+                sourceSets.main.java.srcDir(unused.flatMap { it.destination })
+                tasks.compileJava {
+                    setSource(fileTree('alternative'))
+                    classpath = files(rootProject.file('plain.jar'))
+                }
+                """, StandardOpenOption.APPEND);
+        String captured = compilerOptions(fixture, "main");
+        assertTrue(captured.contains("plain.jar"), captured);
+        assertFalse(captured.contains("shared.jar"), captured);
+        assertFalse(captured.contains("Alternative.java"), captured);
+    }
+
+    private Path processorJar() throws Exception {
+        Path sources = Files.createDirectories(temporaryDirectory.resolve("processor source"));
+        Path source = sources.resolve("Generator.java");
+        Files.writeString(source, """
+                package processor;
+                import java.io.IOException;
+                import java.util.Set;
+                import javax.annotation.processing.*;
+                import javax.lang.model.SourceVersion;
+                import javax.lang.model.element.TypeElement;
+                @SupportedAnnotationTypes("*")
+                @SupportedOptions("key")
+                public class Generator extends AbstractProcessor {
+                    private boolean generated;
+                    @Override public SourceVersion getSupportedSourceVersion() { return SourceVersion.latestSupported(); }
+                    @Override public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment round) {
+                        if (!generated && !round.processingOver()) {
+                            generated = true;
+                            try (java.io.Writer writer = processingEnv.getFiler().createSourceFile("generated.Generated").openWriter()) {
+                                writer.write("package generated; public class Generated { public static final String VALUE = \\\""
+                                    + processingEnv.getOptions().get("key") + "\\\"; }");
+                            } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+                        }
+                        return false;
+                    }
+                }
+                """);
+        Path classes = Files.createDirectories(temporaryDirectory.resolve("processor classes"));
+        execute(gradle.javaHome().resolve("bin/javac"), "-d", classes.toString(), source.toString());
+        Path jar = temporaryDirectory.resolve("processor.jar");
+        try (var output = new JarOutputStream(Files.newOutputStream(jar)); var paths = Files.walk(classes)) {
+            for (Path file : paths.filter(Files::isRegularFile).toList()) {
+                output.putNextEntry(new JarEntry(classes.relativize(file).toString().replace('\\', '/')));
+                Files.copy(file, output);
+                output.closeEntry();
+            }
+        }
+        return jar;
+    }
+
+    private static String compilerOptions(Fixture fixture, String sourceSet) {
+        return run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", sourceSet, "--resolve-compiler-options");
+    }
+
     private Fixture fixture(boolean modular) throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("build with spaces")).toRealPath();
         Path app = Files.createDirectories(root.resolve("layout/application"));
@@ -546,9 +764,12 @@ class GradleIntegrationTest {
     }
 
     private static String execute(String tool, String... arguments) throws Exception {
+        return execute(Path.of(System.getProperty("java.home"), "bin", tool), arguments);
+    }
+
+    private static String execute(Path tool, String... arguments) throws Exception {
         var command = new ArrayList<String>();
-        command.add(Path.of(System.getProperty("java.home"), "bin", tool)
-                .toString());
+        command.add(tool.toString());
         command.addAll(List.of(arguments));
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
         String output = new String(process.getInputStream()

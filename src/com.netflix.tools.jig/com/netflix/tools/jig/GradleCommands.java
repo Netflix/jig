@@ -127,7 +127,7 @@ final class GradleCommands {
                     request.projectPath() == null ? "" : request.projectPath(),
                     request.sourceSet() == null ? "" : request.sourceSet(),
                     request.classpath() == null ? "" : request.classpath(),
-                    Boolean.toString(request.listProjects()), Boolean.toString(request.listSourceSets()),
+                    Boolean.toString(request.listProjects()), Boolean.toString(request.listSourceSets()), Boolean.toString(request.compiler()),
                     String.join(",", request.options().stream().sorted().toList())).getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException e) {
@@ -172,6 +172,7 @@ final class GradleCommands {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());
         }
         if (!request.listProjects() && !request.listSourceSets()) {
+            arguments.add("-Pjig.gradle.compiler=" + request.compiler());
             arguments.add("-Pjig.gradle.source-set=" + request.sourceSet());
             arguments.add("-Pjig.gradle.classpath=" + request.classpath());
             arguments.add("-Pjig.gradle.options=" + String.join(",",

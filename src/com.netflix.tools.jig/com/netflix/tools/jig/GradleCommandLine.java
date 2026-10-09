@@ -39,12 +39,13 @@ final class GradleCommandLine {
     private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "A source set from --list-source-sets");
     private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
+    private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve the selected source set's effective compiler options");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show the Gradle invocation and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments from a Gradle source set")
-            .options(ROOT, PROJECT, LIST_PROJECTS, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, WRITE,
+            .options(ROOT, PROJECT, LIST_PROJECTS, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, COMPILER, WRITE,
                     VERBOSE, HELP)
             .build();
 
@@ -55,6 +56,7 @@ final class GradleCommandLine {
             String classpath,
             boolean listProjects,
             boolean listSourceSets,
+            boolean compiler,
             Set<String> options,
             ModuleForm moduleForm,
             Path argumentFile,
@@ -73,6 +75,8 @@ final class GradleCommandLine {
                 + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
                 + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
                 + "Unknown projects or source sets are errors; empty source sets produce only configured arguments.\n"
+                + "Compiler resolution implies compile and uses Gradle's compiler argument builder.\n"
+                + "It excludes source filenames and launcher options; the caller owns the invocation.\n"
                 + "\nResolve options include native jig options and class-path, processor-path,\n"
                 + "source, target, encoding, system and add-reads. Unconfigured options are omitted.\n";
     }
@@ -96,20 +100,22 @@ final class GradleCommandLine {
         if (root == null) {
             throw new IllegalArgumentException("--root-project-dir is required");
         }
-        if (write != null && resolve == null) {
-            throw new IllegalArgumentException("--write-argfile requires --resolve-options");
+        boolean compiler = parsed.contains(COMPILER);
+        boolean resolution = resolve != null || compiler;
+        if (write != null && !resolution) {
+            throw new IllegalArgumentException("--write-argfile requires --resolve-options or --resolve-compiler-options");
         }
-        int operations = (listProjects ? 1 : 0) + (listSourceSets ? 1 : 0) + (resolve != null ? 1 : 0);
+        int operations = (listProjects ? 1 : 0) + (listSourceSets ? 1 : 0) + (resolve != null ? 1 : 0) + (compiler ? 1 : 0);
         if (operations > 1) {
-            throw new IllegalArgumentException("--list-project-paths, --list-source-sets and --resolve-options are mutually exclusive");
+            throw new IllegalArgumentException("--list-project-paths, --list-source-sets, --resolve-options and --resolve-compiler-options are mutually exclusive");
         }
         if (operations == 0) {
-            throw new IllegalArgumentException("--list-project-paths, --list-source-sets or --resolve-options is required");
+            throw new IllegalArgumentException("--list-project-paths, --list-source-sets, --resolve-options or --resolve-compiler-options is required");
         }
         if (listProjects && project != null) {
             throw new IllegalArgumentException("--project-path applies only to source-set discovery or argument resolution");
         }
-        if (resolve == null && (sourceSet != null || classpath != null)) {
+        if (!resolution && (sourceSet != null || classpath != null)) {
             throw new IllegalArgumentException("--source-set and --classpath apply only to argument resolution");
         }
         if (!listProjects && project == null) {
@@ -118,13 +124,18 @@ final class GradleCommandLine {
         if (project != null && (!project.startsWith(":") || project.contains("::") || (project.length() > 1 && project.endsWith(":")))) {
             throw new IllegalArgumentException("--project-path must be an absolute Gradle project path, such as : or :app");
         }
-        if (resolve != null && sourceSet == null) {
+        if (resolution && sourceSet == null) {
             throw new IllegalArgumentException("--source-set is required for argument resolution");
         }
         if (sourceSet != null && sourceSet.isBlank()) {
             throw new IllegalArgumentException("--source-set must not be empty");
         }
-        if (resolve != null && classpath == null) {
+        if (compiler) {
+            if (classpath != null && !classpath.equals("compile")) {
+                throw new IllegalArgumentException("--resolve-compiler-options implies the compile classpath");
+            }
+            classpath = "compile";
+        } else if (resolve != null && classpath == null) {
             throw new IllegalArgumentException("--classpath is required for argument resolution");
         }
         if (classpath != null && !classpath.equals("compile") && !classpath.equals("runtime")) {
@@ -154,6 +165,7 @@ final class GradleCommandLine {
                 classpath,
                 listProjects,
                 listSourceSets,
+                compiler,
                 Set.copyOf(options),
                 nativeOptions.moduleForm,
                 write == null ? null : Path.of(write),

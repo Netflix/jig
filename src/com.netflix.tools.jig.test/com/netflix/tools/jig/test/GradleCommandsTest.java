@@ -49,7 +49,7 @@ class GradleCommandsTest {
         var result = run("gradle", "--help");
         assertEquals(0, result.exitCode(), result.error());
         for (String option : List.of("--root-project-dir", "--list-project-paths", "--project-path", "--list-source-sets",
-                "--source-set", "--classpath", "--resolve-options", "--write-argfile")) {
+                "--source-set", "--classpath", "--resolve-options", "--resolve-compiler-options", "--write-argfile")) {
             assertTrue(result.output().contains(option), option);
         }
         assertFalse(result.output().contains("--scope"));
@@ -101,6 +101,7 @@ class GradleCommandsTest {
         assertTrue(option.output().contains("--root-project-dir\t"), option.output());
         assertTrue(run("__complete", "gradle", "--source-s").output().contains("--source-set\t"));
         assertTrue(run("__complete", "gradle", "--classpath").output().contains("--classpath\t"));
+        assertTrue(run("__complete", "gradle", "--resolve-c").output().contains("--resolve-compiler-options\t"));
     }
 
     @Test
@@ -459,6 +460,45 @@ class GradleCommandsTest {
                 "--source-set", "missing", "--classpath", "compile", "-r", "source-path");
         assertEquals(2, unknown.exitCode(), unknown.error());
         assertEquals("", unknown.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void compilerOptionsAreOpaqueAndDoNotRequireClasspathSelection() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        List<String> options = List.of("-g:none", "-parameters", "-Werror", "-Xlint:deprecation", "-Akey=some value",
+                "-processor", "example.Processor", "-Xplugin:example plugin", "--release", "17");
+        putList(values, "compiler-options", options);
+        storeCapture(fixture, values);
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(options, arguments(result));
+        String invocation = Files.readString(fixture.root().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Pjig.gradle.compiler=true"), invocation);
+        assertTrue(invocation.contains("-Pjig.gradle.classpath=compile"), invocation);
+        Path file = temporaryDirectory.resolve("compiler.args");
+        var written = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options", "-w", file.toString());
+        assertEquals(0, written.exitCode(), written.error());
+        assertEquals("", written.output());
+        assertEquals(result.output(), Files.readString(file));
+        assertInvalid("mutually exclusive", "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options", "-r", "release");
+        assertInvalid("compile", "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "runtime", "--resolve-compiler-options");
+        assertInvalid("mutually exclusive", "gradle", "--root-project-dir", fixture.root().toString(),
+                "--list-project-paths", "--resolve-compiler-options");
+        assertInvalid("unknown resolve options", "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "javac");
+        values.remove("compiler-options.count");
+        storeCapture(fixture, values);
+        var missing = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(1, missing.exitCode(), missing.error());
+        assertTrue(missing.error().contains("Missing Gradle compiler options"), missing.error());
+        assertEquals("", missing.output());
     }
 
     private Fixture fixture() throws Exception {

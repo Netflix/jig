@@ -37,6 +37,12 @@ final class GradleArguments {
     private GradleArguments() {}
 
     static String render(Request request, Properties values) throws IOException {
+        if (request.compiler()) {
+            if (values.getProperty("compiler-options.count") == null) {
+                throw new IOException("Missing Gradle compiler options");
+            }
+            return argumentFile(list(values, "compiler-options"));
+        }
         var arguments = new ArrayList<String>();
         var options = request.options();
         List<String> sources = list(values, "sources");
@@ -88,6 +94,10 @@ final class GradleArguments {
             }
         }
         additional(arguments, request, additional);
+        return argumentFile(arguments);
+    }
+
+    private static String argumentFile(List<String> arguments) {
         var output = new StringBuilder();
         for (String argument : arguments) {
             output.append('"')

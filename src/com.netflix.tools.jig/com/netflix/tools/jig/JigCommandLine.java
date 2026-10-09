@@ -63,6 +63,7 @@ final class JigCommandLine {
     private final ToolOption updateModuleHashes = flag("--update-module-hashes", "Write module-content hashes");
     private final ToolOption verifyModuleHashes = flag("--verify-module-hashes", "Verify module-content hashes");
     private final ToolOption resolveOptions = option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
+    private final ToolOption resolveCompilerOptions = flag("--resolve-compiler-options", "Resolve effective compiler options to stdout");
     private final ToolOption writeArgfile = option("--write-argfile", "PATH", "Write generated options as a Java argument file", "-w");
     private final ToolOption compileTime = flag("--compile-time", "Include dependencies needed to compile against the selected modules");
     private final ToolOption recompile = flag("--recompile", "Compile source modules without reusing prior output");
@@ -88,6 +89,7 @@ final class JigCommandLine {
                     updateModuleHashes,
                     verifyModuleHashes,
                     resolveOptions,
+                    resolveCompilerOptions,
                     writeArgfile,
                     compileTime,
                     recompile,
@@ -220,6 +222,8 @@ final class JigCommandLine {
                 options.setIntegrityMode(IntegrityMode.VERIFY);
             } else if (occurrence == resolveOptions) {
                 options.setResolveOptions(value);
+            } else if (occurrence == resolveCompilerOptions) {
+                options.resolveCompilerOptions = true;
             } else if (occurrence == writeArgfile) {
                 options.setArgumentFile(value);
             } else if (occurrence == compileTime) {
@@ -244,8 +248,14 @@ final class JigCommandLine {
             options.suppliedArguments.addAll(Arrays.asList(arguments)
                     .subList(separator + 1, arguments.length));
         }
-        if (options.argumentFile != null && options.resolveOptions == null) {
-            throw new IllegalArgumentException("--write-argfile requires --resolve-options");
+        if (options.resolveCompilerOptions && options.resolveOptions != null) {
+            throw new IllegalArgumentException("--resolve-options and --resolve-compiler-options are mutually exclusive");
+        }
+        if (options.resolveCompilerOptions) {
+            options.moduleForm = Options.ModuleForm.LIST;
+        }
+        if (options.argumentFile != null && options.resolveOptions == null && !options.resolveCompilerOptions) {
+            throw new IllegalArgumentException("--write-argfile requires --resolve-options or --resolve-compiler-options");
         }
         return options;
     }
