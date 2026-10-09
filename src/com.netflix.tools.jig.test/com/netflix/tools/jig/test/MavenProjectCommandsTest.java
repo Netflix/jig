@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 import java.util.spi.ToolProvider;
 
 import com.netflix.tools.jig.Jig;
@@ -88,6 +89,8 @@ class MavenProjectCommandsTest {
         assertInvalid("requires --resolve-options", "maven", "--project-base-dir", project.toString(), "--list-projects", "-w", project.resolve("args").toString());
         assertInvalid("unknown resolve options", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "imaginary");
         assertInvalid("must not be empty", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,");
+        assertInvalid("unknown module form", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "module=unknown");
+        assertInvalid("requires add-modules", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "compile", "-r", "module=roots");
     }
 
     @Test
@@ -133,7 +136,7 @@ class MavenProjectCommandsTest {
         try (var input = Files.newInputStream(capture)) {
             values.load(input);
         }
-        values.remove("arguments.3");
+        values.remove("sources.0");
         try (var output = Files.newOutputStream(capture)) {
             values.store(output, null);
         }
@@ -141,9 +144,66 @@ class MavenProjectCommandsTest {
         Files.writeString(file, "original\n");
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path", "-w", file.toString());
         assertEquals(1, result.status(), result.error());
-        assertTrue(result.error().contains("Missing Maven capture entry: arguments.3"), result.error());
+        assertTrue(result.error().contains("Missing Maven capture entry: sources.0"), result.error());
         assertEquals("", result.output());
         assertEquals("original\n", Files.readString(file));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void projectsNamedModulesAndLeavesUnnamedArtifactsOnTheClasspath() throws Exception {
+        var fixture = fixture(false);
+        Path sources = Files.createDirectories(fixture.project().resolve("sources"));
+        Files.writeString(sources.resolve("module-info.java"), "/** @mainClass example.Main */ module example.app { requires example.dep; }\n");
+        Path main = Files.createDirectories(sources.resolve("example")).resolve("Main.java");
+        Files.writeString(main, "package example; public class Main { public static void main(String[] args) {} }\n");
+        var manifest = new Manifest();
+        manifest.getMainAttributes().putValue("Manifest-Version", "1.0");
+        manifest.getMainAttributes().putValue("Automatic-Module-Name", "example.dep");
+        try (var jar = new JarOutputStream(Files.newOutputStream(fixture.project().resolve("dependency.jar")), manifest)) {
+            jar.finish();
+        }
+        Path plain = fixture.project().resolve("plain.jar");
+        try (var jar = new JarOutputStream(Files.newOutputStream(plain))) {
+            // A default-package entry is valid on the classpath, not the module path.
+            jar.putNextEntry(new JarEntry("Plain.class"));
+            jar.write(new byte[] {0});
+            jar.closeEntry();
+        }
+        Path capture = fixture.project().resolve("capture.properties");
+        var values = new Properties();
+        try (var input = Files.newInputStream(capture)) {
+            values.load(input);
+        }
+        values.setProperty("classpath.count", "3");
+        values.setProperty("classpath.1", plain.toString());
+        values.setProperty("classpath.2", fixture.project().resolve("output").toString());
+        try (var output = Files.newOutputStream(capture)) {
+            values.store(output, null);
+        }
+        var compile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,module-path,module-source-path,module");
+        assertEquals(0, compile.status(), compile.error());
+        assertEquals("\"--class-path\"\n\"" + plain + "\"\n\"--module-path\"\n\"" + fixture.project().resolve("dependency.jar")
+                + "\"\n\"--module-source-path\"\n\"example.app=" + sources + "\"\n\"--module\"\n\"example.app\"\n", compile.output());
+        var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "module-path,module=main");
+        assertEquals(0, runtime.status(), runtime.error());
+        assertTrue(runtime.output().contains(fixture.project().resolve("output").toString()), runtime.output());
+        assertTrue(runtime.output().contains("\"--module\"\n\"example.app/example.Main\""), runtime.output());
+        assertFalse(runtime.output().contains(plain.toString()), runtime.output());
+        for (String form : List.of("module=single", "module=list", "module=roots,add-modules")) {
+            var selected = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", form);
+            assertEquals(0, selected.status(), selected.error());
+            assertEquals("\"--module\"\n\"example.app\"\n", selected.output());
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void nonmodularScopesDoNotInventModuleArguments() throws Exception {
+        var fixture = fixture(false);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "module-path,module-source-path,module,add-modules,describe-module");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("", result.output());
     }
 
     @Test
@@ -284,11 +344,11 @@ class MavenProjectCommandsTest {
         values.setProperty("projects.0", "example:app");
         values.setProperty("projects.1", "example:root");
         values.setProperty("projects.2", "example:app");
-        values.setProperty("arguments.count", "4");
-        values.setProperty("arguments.0", "--class-path");
-        values.setProperty("arguments.1", project.resolve("dependency.jar").toString());
-        values.setProperty("arguments.2", "--source-path");
-        values.setProperty("arguments.3", project.resolve("sources").toString());
+        values.setProperty("classpath.count", "1");
+        values.setProperty("classpath.0", project.resolve("dependency.jar").toString());
+        values.setProperty("sources.count", "1");
+        values.setProperty("sources.0", project.resolve("sources").toString());
+        values.setProperty("output-directory", project.resolve("output").toString());
         try (var output = Files.newOutputStream(project.resolve("capture.properties"))) {
             values.store(output, "fixture");
         }
@@ -318,6 +378,7 @@ class MavenProjectCommandsTest {
         Path resolver = sources.resolve("LifecycleDependencyResolver.java");
         Path filter = sources.resolve("ArtifactFilter.java");
         Path cumulative = sources.resolve("CumulativeScopeArtifactFilter.java");
+        Path build = sources.resolve("Build.java");
         Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } public java.util.Properties getUserProperties() { return new java.util.Properties(); } public void setCurrentProject(org.apache.maven.project.MavenProject project) {} }\n");
         Files.writeString(project, """
                 package org.apache.maven.project;
@@ -330,9 +391,11 @@ class MavenProjectCommandsTest {
                     public java.util.List<String> getRuntimeClasspathElements() { return java.util.Collections.emptyList(); }
                     public java.util.List<String> getTestClasspathElements() { return java.util.Collections.emptyList(); }
                     public void setArtifactFilter(org.apache.maven.artifact.resolver.filter.ArtifactFilter filter) {}
+                    public org.apache.maven.model.Build getBuild() { return new org.apache.maven.model.Build(); }
                 }
                 """);
         Files.writeString(resolver, "package org.apache.maven.lifecycle.internal; public class LifecycleDependencyResolver { public void resolveProjectDependencies(org.apache.maven.project.MavenProject project, java.util.Collection<String> collect, java.util.Collection<String> resolve, org.apache.maven.execution.MavenSession session, boolean aggregating, java.util.Set<?> artifacts) {} }\n");
+        Files.writeString(build, "package org.apache.maven.model; public class Build { public String getOutputDirectory() { return null; } public String getTestOutputDirectory() { return null; } }\n");
         Files.writeString(filter, "package org.apache.maven.artifact.resolver.filter; public interface ArtifactFilter {}\n");
         Files.writeString(cumulative, "package org.apache.maven.artifact.resolver.filter; public class CumulativeScopeArtifactFilter implements ArtifactFilter { public CumulativeScopeArtifactFilter(java.util.Collection<String> scopes) {} }\n");
         Files.writeString(lifecycle, lifecycleInterface
@@ -341,7 +404,7 @@ class MavenProjectCommandsTest {
         Path classes = home.resolve("classes");
         var diagnostics = new StringWriter();
         assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
-                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString()), diagnostics.toString());
+                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString(), build.toString()), diagnostics.toString());
         Path library = Files.createDirectories(home.resolve("lib")).resolve("maven-core-fixture.jar");
         try (var output = new JarOutputStream(Files.newOutputStream(library)); var paths = Files.walk(classes)) {
             for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {

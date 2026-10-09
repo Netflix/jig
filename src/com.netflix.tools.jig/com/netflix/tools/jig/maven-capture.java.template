@@ -15,11 +15,9 @@
 package com.netflix.tools.jig.maven.capture;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -81,28 +79,23 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             throw new IllegalArgumentException("Project selector did not select a Maven project: " + selector);
         }
         session.setCurrentProject(selected);
-        List<String> arguments = new ArrayList<String>();
-        if (options.contains("class-path")) {
+        List<String> paths = Collections.emptyList();
+        if (options.contains("class-path") || options.contains("module-path")) {
             dependencyResolver.resolveProjectDependencies(selected, Collections.singleton(scope), Collections.singleton(scope), session, false, Collections.emptySet());
             // Use the same native artifact view that Maven exposes to a mojo.
             selected.setArtifactFilter(new CumulativeScopeArtifactFilter(Collections.singleton(scope)));
-            List<String> paths = "test".equals(scope) ? selected.getTestClasspathElements()
+            paths = "test".equals(scope) ? selected.getTestClasspathElements()
                     : "runtime".equals(scope) ? selected.getRuntimeClasspathElements() : selected.getCompileClasspathElements();
-            path(arguments, "--class-path", paths);
         }
-        if (options.contains("source-path")) {
-            path(arguments, "--source-path", "test".equals(scope) ? selected.getTestCompileSourceRoots() : selected.getCompileSourceRoots());
-        }
-        values.setProperty("arguments.count", Integer.toString(arguments.size()));
-        for (int index = 0; index < arguments.size(); index++) {
-            values.setProperty("arguments." + index, arguments.get(index));
-        }
+        list(values, "classpath", paths);
+        list(values, "sources", "test".equals(scope) ? selected.getTestCompileSourceRoots() : selected.getCompileSourceRoots());
+        values.setProperty("output-directory", "test".equals(scope) ? selected.getBuild().getTestOutputDirectory() : selected.getBuild().getOutputDirectory());
     }
 
-    private static void path(List<String> arguments, String option, List<String> paths) {
-        if (!paths.isEmpty()) {
-            arguments.add(option);
-            arguments.add(String.join(File.pathSeparator, paths));
+    private static void list(Properties values, String name, List<String> entries) {
+        values.setProperty(name + ".count", Integer.toString(entries.size()));
+        for (int index = 0; index < entries.size(); index++) {
+            values.setProperty(name + "." + index, entries.get(index));
         }
     }
 }

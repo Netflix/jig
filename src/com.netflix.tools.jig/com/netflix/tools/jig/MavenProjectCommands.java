@@ -32,6 +32,8 @@ import java.util.Set;
 
 import com.netflix.tools.jig.CommandLine.ParsedArguments;
 import com.netflix.tools.jig.CommandLine.ToolOption;
+import com.netflix.tools.jig.Jig.Options;
+import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
 /** On-demand queries hosted by the explicitly selected Maven build. */
 final class MavenProjectCommands {
@@ -42,7 +44,7 @@ final class MavenProjectCommands {
     private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final Set<String> RESOLVE_OPTIONS = Set.of("class-path", "source-path");
+    private static final Set<String> RESOLVE_OPTIONS = Set.of("class-path", "source-path", "module-path", "module-source-path", "module", "add-modules", "describe-module");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
@@ -60,7 +62,9 @@ final class MavenProjectCommands {
         return COMMAND_LINE.help("jig maven")
                 + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
                 + "Discovery includes active modules and does not execute build goals.\n"
-                + "Argument resolution requires --project and --scope. Resolve options: class-path, source-path.\n"
+                + "Argument resolution requires --project and --scope.\n"
+                + "Resolve options: class-path, source-path, module-path, module-source-path, module, add-modules, describe-module.\n"
+                + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
                 + "Paths come from Maven's project model and native dependency resolution; build goals are not executed.\n";
     }
 
@@ -128,7 +132,7 @@ final class MavenProjectCommands {
             if (request.listProjects()) {
                 list(values, "projects").stream().distinct().sorted().forEach(out::println);
             } else {
-                String generated = argumentFile(list(values, "arguments"));
+                String generated = MavenArguments.render(request.options(), request.moduleForm(), request.scope(), values);
                 if (request.argumentFile() == null) {
                     out.print(generated);
                 } else {
@@ -142,6 +146,10 @@ final class MavenProjectCommands {
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
             err.println("jig maven: interrupted");
+            return 1;
+        } catch (RuntimeException failure) {
+            err.println("jig maven: " + failure.getMessage());
+            failure.printStackTrace(err);
             return 1;
         }
     }
@@ -185,16 +193,26 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--scope must be compile, runtime or test");
         }
         var options = new LinkedHashSet<String>();
+        var nativeOptions = new Options();
         if (resolve != null) {
+            var nativeSpecifications = new LinkedHashSet<String>();
             for (String option : resolve.split(",", -1)) {
                 option = option.trim();
                 if (option.isEmpty()) {
                     throw new IllegalArgumentException("resolve options must not be empty");
                 }
-                if (!RESOLVE_OPTIONS.contains(option)) {
+                if (!RESOLVE_OPTIONS.contains(option) && !option.startsWith("module=")) {
                     throw new IllegalArgumentException("unknown resolve options: " + option);
                 }
-                options.add(option);
+                if (option.equals("class-path")) {
+                    options.add(option);
+                } else {
+                    nativeSpecifications.add(option);
+                }
+            }
+            if (!nativeSpecifications.isEmpty()) {
+                nativeOptions.setResolveOptions(String.join(",", nativeSpecifications));
+                options.addAll(nativeOptions.resolveOptions);
             }
         }
         Path base = Path.of(bases.getFirst()).toAbsolutePath().normalize();
@@ -205,7 +223,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), write == null ? null : Path.of(write), listProjects, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
@@ -219,7 +237,7 @@ final class MavenProjectCommands {
         return values.isEmpty() ? null : values.getFirst();
     }
 
-    private static List<String> list(Properties values, String name) throws IOException {
+    static List<String> list(Properties values, String name) throws IOException {
         String count = values.getProperty(name + ".count");
         int size;
         try {
@@ -241,7 +259,7 @@ final class MavenProjectCommands {
         return List.copyOf(projects);
     }
 
-    private static String argumentFile(List<String> arguments) {
+    static String argumentFile(List<String> arguments) {
         var output = new StringBuilder();
         for (String argument : arguments) {
             output.append('"').append(argument.replace("\\", "\\\\").replace("\"", "\\\"")
@@ -285,6 +303,6 @@ final class MavenProjectCommands {
         return Files.isRegularFile(wrapper) ? List.of("sh", wrapper.toString()) : List.of("mvn");
     }
 
-    private record Request(Path base, String project, String scope, Set<String> options, Path argumentFile, boolean listProjects, boolean verbose) {}
+    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean verbose) {}
     private record ProcessResult(int status, List<String> lines) {}
 }

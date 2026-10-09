@@ -256,6 +256,69 @@ class MavenIntegrationTest {
         assertEquals("hello", output.strip());
     }
 
+    @Test
+    void moduleArgumentsComposeWithStandaloneJavacAndJava() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Path repository = root.resolve("repository");
+        artifact(repository, "compile", "");
+        artifact(repository, "plain", "");
+        Path dependencySource = Files.createDirectories(temporaryDirectory.resolve("module dependency"));
+        Files.writeString(dependencySource.resolve("module-info.java"), "module fixture.dependencies { exports fixture.dependencies; }\n");
+        Path dependencyClass = dependencySource.resolve("Dependency.java");
+        Files.writeString(dependencyClass, "package fixture.dependencies; public class Dependency { public static String message() { return \"modular\"; } }\n");
+        Path dependencyClasses = temporaryDirectory.resolve("module classes");
+        javac("--release", "9", "-Xlint:-options", "-d", dependencyClasses.toString(), dependencySource.resolve("module-info.java").toString(), dependencyClass.toString());
+        try (var jar = new JarOutputStream(Files.newOutputStream(repository.resolve("fixture/dependencies/compile/1/compile-1.jar")))) {
+            for (String name : List.of("module-info.class", "fixture/dependencies/Dependency.class")) {
+                jar.putNextEntry(new JarEntry(name));
+                Files.copy(dependencyClasses.resolve(name), jar);
+                jar.closeEntry();
+            }
+        }
+        String layout = customLayout().replace("<outputDirectory>out/main</outputDirectory>", "<outputDirectory>out/main/app.mod</outputDirectory>");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("compile", "compile") + dependency("plain", "compile") + "</dependencies>" + layout));
+        Path sources = Files.createDirectories(app.resolve("sources/java"));
+        Files.writeString(sources.resolve("module-info.java"), "/** @mainClass app.Main */ module app.mod { requires fixture.dependencies; }\n");
+        Path main = Files.createDirectories(sources.resolve("app")).resolve("Main.java");
+        Files.writeString(main, "package app; public class Main { public static void main(String[] args) { System.out.println(fixture.dependencies.Dependency.message()); } }\n");
+        Path compileArguments = root.resolve("module compile.args");
+        var compile = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "class-path,module-path,module-source-path,module", "-w", compileArguments.toString());
+        assertEquals(0, compile.status(), compile.error());
+        String captured = Files.readString(compileArguments);
+        assertTrue(captured.contains("\"--module-path\""), captured);
+        assertTrue(captured.contains("app.mod=" + sources), captured);
+        assertFalse(captured.contains(app.resolve("out/main/app.mod").toString()), captured);
+        javac("@" + compileArguments, "-d", app.resolve("out/main").toString());
+        Path runtimeArguments = root.resolve("module runtime.args");
+        var runtime = discover(root, "--project", ":app", "--scope", "runtime", "-r", "class-path,module-path,module=main", "-w", runtimeArguments.toString());
+        assertEquals(0, runtime.status(), runtime.error());
+        var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "@" + runtimeArguments)
+                .redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), output);
+        assertEquals("modular", output.strip());
+        // Once sources are unavailable, an existing binary module still supplies identity.
+        Files.delete(sources.resolve("module-info.java"));
+        var binary = discover(root, "--project", "fixture:app", "--scope", "runtime", "-r", "module-path,module,describe-module");
+        assertEquals(0, binary.status(), binary.error());
+        assertTrue(binary.output().contains("\"--module\"\n\"app.mod\""), binary.output());
+        assertTrue(binary.output().contains("\"--describe-module\"\n\"app.mod\""), binary.output());
+    }
+
+    @Test
+    void moduleSourceArgumentsDoNotRequireArtifactResolution() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("missing", "compile") + "</dependencies>" + customLayout()));
+        Path sources = Files.createDirectories(app.resolve("sources/java"));
+        Files.writeString(sources.resolve("module-info.java"), "module app.mod { requires missing.dep; }\n");
+        var result = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "module-source-path,module");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("\"--module-source-path\"\n\"app.mod=" + sources + "\"\n\"--module\"\n\"app.mod\"\n", result.output());
+        assertNoBuildOutputs();
+    }
+
     private static void javac(String... arguments) {
         var diagnostics = new StringWriter();
         assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics), arguments), diagnostics.toString());
