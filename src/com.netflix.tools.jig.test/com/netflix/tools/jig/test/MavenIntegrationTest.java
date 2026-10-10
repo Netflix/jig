@@ -163,6 +163,10 @@ class MavenIntegrationTest {
         String dependencies = dependency("compile", "compile") + dependency("provided", "provided")
                 + dependency("runtime", "runtime") + dependency("test", "test");
         Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependencies + "</dependencies>" + customLayout()));
+        Path main = Files.createDirectories(app.resolve("sources/java/app")).resolve("Main.java");
+        Files.writeString(main, "package app; public class Main {}\n");
+        Path test = Files.createDirectories(app.resolve("checks/java/app")).resolve("Check.java");
+        Files.writeString(test, "package app; public class Check { Main main; }\n");
         for (String scope : List.of("compile", "runtime", "test")) {
             var result = discover(root, "--project", "fixture:app", "--scope", scope, "-r", "class-path");
             assertEquals(0, result.status(), result.error());
@@ -175,9 +179,10 @@ class MavenIntegrationTest {
             assertEquals(scope.equals("test"), result.output().contains("test-1.jar"), result.output());
             assertTrue(result.output().contains(app.resolve("out/main").toString()), result.output());
             assertEquals(scope.equals("test"), result.output().contains(app.resolve("out/test").toString()), result.output());
+            assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")), scope);
+            assertEquals(scope.equals("test"), Files.isRegularFile(app.resolve("out/test/app/Check.class")), scope);
         }
-        assertFalse(Files.exists(app.resolve("out")));
-        assertNoBuildOutputs();
+        assertFalse(Files.exists(app.resolve("target/surefire-reports")));
     }
 
     @Test
