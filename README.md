@@ -140,6 +140,16 @@ jig maven --project-base-dir . \
 java @runtime.args com.example.Main
 ```
 
+### Module proxy
+
+Start the module proxy as a standalone command:
+
+```sh
+jig serve --listen 127.0.0.1:8080
+```
+
+Without `--listen`, it binds to `127.0.0.1` on a random available port. It prints the repository URL to standard output and traces proxy and backend activity to standard error.
+
 ## Documentation
 
 The [wiki](https://github.com/Netflix/jig/wiki) covers:

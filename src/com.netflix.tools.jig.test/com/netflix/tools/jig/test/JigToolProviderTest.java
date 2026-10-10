@@ -18,10 +18,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Properties;
 import java.util.spi.ToolProvider;
 import javax.tools.OptionChecker;
@@ -79,17 +82,48 @@ class JigToolProviderTest {
         var bytes = new ByteArrayOutputStream();
         values.store(bytes, null);
         Files.writeString(directory.resolve("gradlew"), "#!/bin/sh\nprintf '%s\\n' 'jig-gradle:" + Base64.getEncoder().encodeToString(bytes.toByteArray()) + "'\n");
-        Path implementation = Path.of(Jig.class.getProtectionDomain().getCodeSource().getLocation().toURI());
-        Path java = Path.of(System.getProperty("java.home"), "bin/java");
         Path diagnostics = directory.resolve("stderr.txt");
-        var process = new ProcessBuilder(java.toString(), "--module-path", implementation.toString(),
-                "--patch-module", "com.netflix.tools.jig=" + implementation,
-                "--module", "com.netflix.tools.jig/com.netflix.tools.jig.Jig", "gradle", "--root-project-dir", directory.toString(),
+        var process = standaloneJig("gradle", "--root-project-dir", directory.toString(),
                 "--project-path", ":", "--source-set", "main", "--classpath", "compile", "-r", "source-path")
                 .redirectError(diagnostics.toFile()).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, process.waitFor(), implementation + "\n" + output + Files.readString(diagnostics));
+        assertEquals(0, process.waitFor(), output + Files.readString(diagnostics));
         assertEquals("\"--source-path\"\n\"" + source + "\"\n", output);
+    }
+
+    @Test
+    void standaloneServePrintsHelp(@TempDir Path directory) throws Exception {
+        Path diagnostics = directory.resolve("stderr.txt");
+        var process = standaloneJig("serve", "--help")
+                .redirectError(diagnostics.toFile()).start();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertEquals(0, process.waitFor(), output + Files.readString(diagnostics));
+        assertTrue(output.startsWith("Usage: jig serve [--listen <host:port>]"), output);
+    }
+
+    private static ProcessBuilder standaloneJig(String... arguments) {
+        Module module = Jig.class.getModule();
+        var reference = module.getLayer().configuration().findModule(module.getName()).orElseThrow().reference();
+        Path implementation = Path.of(reference.location().orElseThrow());
+        Path java = Path.of(System.getProperty("java.home"), "bin/java");
+        // Upgrade any embedded jig with the resolved base module and retain its active incremental patches.
+        var command = new ArrayList<>(List.of(java.toString(), "--upgrade-module-path", implementation.toString()));
+        List<String> vmArguments = ManagementFactory.getRuntimeMXBean().getInputArguments();
+        for (int i = 0; i < vmArguments.size(); i++) {
+            String argument = vmArguments.get(i);
+            if (argument.equals("--patch-module")) {
+                String patch = vmArguments.get(++i);
+                if (patch.startsWith(module.getName() + "=")) {
+                    command.add("--patch-module=" + patch);
+                }
+            } else if (argument.startsWith("--patch-module=" + module.getName() + "=")) {
+                command.add(argument);
+            }
+        }
+        command.addAll(List.of("--module", module.getName() + "/" + Jig.class.getName()));
+        command.addAll(List.of(arguments));
+        return new ProcessBuilder(command);
     }
 
     @Test
@@ -113,26 +147,34 @@ class JigToolProviderTest {
     }
 
     @Test
-    void serveIsOnlyAMavenOperation() {
-        ToolProvider tool = new Jig();
+    void serveIsATopLevelCommand() {
         var out = new StringWriter();
         var err = new StringWriter();
 
-        int unqualified = tool.run(new PrintWriter(out, true), new PrintWriter(err, true), "serve");
+        for (String option : new String[] {"--help", "-h"}) {
+            out.getBuffer().setLength(0);
+            int status = jig.run(new PrintWriter(out, true), new PrintWriter(err, true), "serve", option);
 
-        assertEquals(2, unqualified);
-        assertEquals("", out.toString());
-        assertTrue(err.toString().contains("unexpected argument: serve"),
-                err.toString());
+            assertEquals(0, status, err.toString());
+            assertTrue(out.toString().startsWith("Usage: jig serve [--listen <host:port>]"), out.toString());
+            assertEquals("", err.toString());
+        }
+    }
+
+    @Test
+    void completesServeAtTopLevel() {
+        var out = new StringWriter();
+        var err = new StringWriter();
+
+        int command = jig.run(new PrintWriter(out, true), new PrintWriter(err, true), "__complete", "ser");
+        assertEquals(0, command, err.toString());
+        assertEquals("serve\tStart the module proxy\n:0\n", out.toString());
 
         out.getBuffer().setLength(0);
-        err.getBuffer().setLength(0);
-        int namespaced = tool.run(new PrintWriter(out, true), new PrintWriter(err, true), "maven", "serve",
-                "--help");
-
-        assertEquals(0, namespaced, err.toString());
-        assertTrue(out.toString().startsWith("Usage: jig maven serve "),
-                out.toString());
+        int option = jig.run(new PrintWriter(out, true), new PrintWriter(err, true), "__complete", "serve", "--l");
+        assertEquals(0, option, err.toString());
+        assertEquals("--listen\tAddress on which to listen\n:0\n", out.toString());
+        assertEquals("", err.toString());
     }
 
     @Test
@@ -369,6 +411,7 @@ class JigToolProviderTest {
                     out.toString());
             assertTrue(out.toString().contains("--version"),
                     out.toString());
+            assertTrue(out.toString().contains("jig serve [--listen <host:port>]"), out.toString());
             assertTrue(out.toString()
                           .contains("""
                     Resolve options:
