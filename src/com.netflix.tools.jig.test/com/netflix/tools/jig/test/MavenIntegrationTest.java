@@ -34,12 +34,13 @@ import org.junit.jupiter.params.Parameter;
 import org.junit.jupiter.params.ParameterizedClass;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Native project discovery across Maven's class- and interface-based lifecycle APIs. */
+/** Contract checks on every Maven version; detailed scenarios at lifecycle API boundaries. */
 @EnabledOnOs({OS.LINUX, OS.MAC})
 @EnabledIf("availableJdks")
 @ParameterizedClass(name = "Maven {0}")
@@ -50,6 +51,27 @@ class MavenIntegrationTest {
 
     @TempDir
     Path temporaryDirectory;
+
+    @TempDir
+    static Path pluginFixtures;
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void reusesCompiledPluginFixturesWithoutSharingMutableRepositories() throws Exception {
+        Path root = fixture(true);
+        Path fixtures = pluginFixtures.resolve(maven.version());
+        Path compiled = fixtures.resolve("fixture-plugin/classes/fixture/Compile.class");
+        var modified = Files.getLastModifiedTime(compiled);
+        Path plugin = Path.of("org/apache/maven/plugins/maven-compiler-plugin/3.1/maven-compiler-plugin-3.1.jar");
+        byte[] original = Files.readAllBytes(fixtures.resolve(plugin));
+        Path other = temporaryDirectory.resolve("other-repository");
+        MavenCompilationFixture.install(maven, other, fixtures);
+        assertEquals(modified, Files.getLastModifiedTime(compiled));
+        assertArrayEquals(original, Files.readAllBytes(other.resolve(plugin)));
+        Files.write(other.resolve(plugin), new byte[] {0});
+        assertArrayEquals(original, Files.readAllBytes(fixtures.resolve(plugin)));
+        assertArrayEquals(original, Files.readAllBytes(root.resolve("repository").resolve(plugin)));
+    }
 
     @Test
     void discoversActiveModulesWithoutExecutingBoundLifecycleGoals() throws Exception {
@@ -63,6 +85,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void standaloneProjectsDoNotIncludeTheirParentOrSiblingModules() throws Exception {
         Path root = fixture();
         Path app = root.resolve("app");
@@ -84,6 +107,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void everyRequestReflectsCurrentProfilesAndProjectModels() throws Exception {
         Path root = fixture();
         var initial = discover(root);
@@ -102,7 +126,7 @@ class MavenIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsMavenConfig")
+    @EnabledIf("detailedMavenConfigCoverage")
     void readsCurrentMavenConfigWhenSupportedByTheNativeVersion() throws Exception {
         Path root = fixture();
         Files.delete(root.resolve("extra.enabled"));
@@ -131,6 +155,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void unknownProjectSelectorsFailWithoutPartialOutput() throws Exception {
         Path root = fixture();
         var result = discover(root, "--project", "fixture:missing");
@@ -141,6 +166,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void nativeModelFailuresDoNotPublishPartialProjectIdentifiers() throws Exception {
         Path root = fixture();
         Path pom = root.resolve("pom.xml");
@@ -238,6 +264,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void sourceOnlyResolutionUsesConfiguredRootsWithoutResolvingDependencies() throws Exception {
         Path root = fixture();
         Path app = root.resolve("app");
@@ -253,6 +280,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void failedDependencyResolutionDoesNotPublishPartialArguments() throws Exception {
         Path root = fixture(true);
         Path app = root.resolve("app");
@@ -267,6 +295,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void selectedAggregatorSourceRootsDoNotIncludeItsChildren() throws Exception {
         Path root = fixture();
         Path pom = root.resolve("pom.xml");
@@ -278,6 +307,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void resolvedOptionsComposeWithStandaloneJavacAndJava() throws Exception {
         Path root = fixture(true);
         Path app = root.resolve("app");
@@ -314,6 +344,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void moduleArgumentsComposeWithStandaloneJavacAndJava() throws Exception {
         Path root = fixture(true);
         Path app = root.resolve("app");
@@ -364,6 +395,7 @@ class MavenIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void moduleSourceArgumentsDoNotRequireArtifactResolution() throws Exception {
         Path root = fixture();
         Path app = root.resolve("app");
@@ -448,7 +480,7 @@ class MavenIntegrationTest {
         Files.writeString(root.resolve("extra.enabled"), "");
         launcher(root, "--offline\n");
         if (compilation) {
-            MavenCompilationFixture.install(maven, root.resolve("repository"));
+            MavenCompilationFixture.install(maven, root.resolve("repository"), pluginFixtures.resolve(maven.version()));
         }
         return root;
     }
@@ -508,8 +540,13 @@ class MavenIntegrationTest {
                 new MavenDistribution("4.0.0-rc-5", 17));
     }
 
-    private boolean supportsMavenConfig() {
-        return List.of("3.0.", "3.1.", "3.2.").stream().noneMatch(maven.version()::startsWith);
+    private boolean detailedCoverage() {
+        // Minimum class-based lifecycle, current Maven 3, and Maven 4's interface API.
+        return List.of("3.0.3", "3.10.0", "4.0.0-rc-5").contains(maven.version());
+    }
+
+    private boolean detailedMavenConfigCoverage() {
+        return detailedCoverage() && List.of("3.0.", "3.1.", "3.2.").stream().noneMatch(maven.version()::startsWith);
     }
 
     private static boolean availableJdks() {

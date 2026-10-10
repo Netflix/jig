@@ -18,6 +18,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -38,7 +39,27 @@ final class MavenCompilationFixture {
                 """;
     }
 
-    static void install(MavenDistribution maven, Path repository) throws Exception {
+    static synchronized void install(MavenDistribution maven, Path repository, Path fixtures) throws Exception {
+        Path compiler = fixtures.resolve("org/apache/maven/plugins/maven-compiler-plugin/3.1/maven-compiler-plugin-3.1.jar");
+        if (!Files.isRegularFile(compiler)) {
+            build(maven, fixtures);
+        }
+        // Share only immutable plugin artifacts. Maven writes into each test's
+        // own repository, never into the compiled fixture repository.
+        Path artifacts = fixtures.resolve("org");
+        try (var files = Files.walk(artifacts)) {
+            for (Path source : files.toList()) {
+                Path target = repository.resolve(fixtures.relativize(source));
+                if (Files.isDirectory(source)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(source, target, StandardCopyOption.COPY_ATTRIBUTES);
+                }
+            }
+        }
+    }
+
+    private static void build(MavenDistribution maven, Path repository) throws Exception {
         Path staging = Files.createDirectories(repository.resolve("fixture-plugin"));
         Path source = staging.resolve("Compile.java");
         Files.writeString(source, """

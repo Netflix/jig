@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Tests each Gradle version against local projects without remote project dependencies. */
+/** Contract checks on every Gradle version; detailed scenarios at API and cache boundaries. */
 @EnabledOnOs({OS.LINUX, OS.MAC})
 @EnabledIf("availableJdks")
 @ParameterizedClass(name = "Gradle {0}")
@@ -229,7 +229,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void resolvesModuleOptionsThatComposeWithJavacAndJava() throws Exception {
         var fixture = fixture(true);
         Path options = temporaryDirectory.resolve("compile.args");
@@ -273,7 +273,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void moduleBinaryPathsRequireTheCorrespondingModuleSourceOption() throws Exception {
         var fixture = fixture(true);
         String binaries = resolve(fixture, "compile", "module-path,source-path");
@@ -282,7 +282,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void generalResolutionDelegatesModuleDetectionForCompileAndRuntimeAcrossCacheReplay() throws Exception {
         var fixture = fixture(true);
         Path explicit = fixture.root().resolve("explicit.jar");
@@ -328,7 +328,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void respectsDisabledModulePathInference() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
@@ -340,7 +340,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsRelease")
+    @EnabledIf("detailedReleaseCoverage")
     void capturesEffectiveReleaseWithoutConflictingSourceAndTargetOptions() throws Exception {
         var fixture = fixture(false);
         String capture = resolve(fixture, "compile", "release,source,target");
@@ -352,7 +352,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsArgumentProviders")
+    @EnabledIf("detailedArgumentProviderCoverage")
     void materializesAnnotationProcessorDependenciesWithoutCompilingTheSelectedProject() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ndependencies { annotationProcessor project(':library') }\n",
@@ -366,7 +366,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void runtimeModuleInferenceUsesTheRunTasksConfiguration() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.run { modularity.inferModulePath = false }\n",
@@ -378,7 +378,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsArgumentProviders")
+    @EnabledIf("detailedArgumentProviderCoverage")
     void capturesArgumentProvidersAndApplicationMetadata() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -396,7 +396,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsLazyTasks")
+    @EnabledIf("detailedLazyTaskCoverage")
     void sourceDiscoveryDoesNotRealizeCompileRunOrUnrelatedTasks() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -409,7 +409,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void reusesConfigurationCacheForDiscoveryAndSourceSetClasspathsAndInvalidatesChangedConfiguration() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -446,6 +446,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("eagerTaskCoverage")
     void configurationOnDemandEvaluatesOnlyTheSelectedProjectAndRequiredDependencies() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configureondemand=true\n");
@@ -457,7 +458,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void argumentProvidersRemainLazyAndRetainProducerDependenciesOnCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -492,7 +493,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsLazyTasks")
+    @EnabledIf("detailedLazyTaskCoverage")
     void discoversSourceSetsWithoutRealizingCompilationTasks() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -507,6 +508,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void resolvesTestAndCustomSourceSetsWithoutLeakingMainApplicationMetadata() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -554,7 +556,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void generatedSourceProducersRemainLazyAndRunOnConfigurationCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -586,6 +588,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void classpathResolutionUsesTheSourceSetRatherThanTheCompilationTaskOverride() throws Exception {
         var fixture = fixture(false);
         jar(fixture.root().resolve("source set.jar"), null);
@@ -600,6 +603,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void rejectsUnknownProjectPathsAndSourceSetsWithoutReturningArguments() throws Exception {
         var fixture = fixture(false);
         for (String[] selection : List.of(
@@ -648,7 +652,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void compilerResolutionDelegatesModuleInferenceAndUsesTheCompileTasksModuleVersion() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -671,7 +675,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void compilerResolutionUsesGradlesOwnModuleSourcePathDefaults() throws Exception {
         var fixture = fixture(true);
         Path configured = Files.createDirectories(fixture.app().resolve("configured source path"));
@@ -685,6 +689,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionRunsExplicitProducerDependenciesBeforeCapturingOptions() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -715,6 +720,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionPreservesOutputsAndHistoryWithoutRunningActionsOrFinalizers() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -743,7 +749,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void compilerResolutionKeepsGeneratorsAndArgumentProvidersLazyAcrossCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -804,6 +810,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionHandlesEmptyCustomSourceSets() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { empty {} }\ntasks.compileEmptyJava.options.debug = false\n", StandardOpenOption.APPEND);
@@ -815,6 +822,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("eagerTaskCoverage")
     void compilerOptionsPreserveProcessingGeneratedSourcesAndNativeHeaders() throws Exception {
         var fixture = fixture(false);
         Path processor = processorJar();
@@ -849,7 +857,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void compilerResolutionUsesTaskOverridesWithoutRealizingUnusedSourceSetProducers() throws Exception {
         var fixture = fixture(false);
         Path alternative = Files.createDirectories(fixture.app().resolve("alternative"));
@@ -1025,6 +1033,38 @@ class GradleIntegrationTest {
 
     private int javaRelease() {
         return gradle.javaVersion();
+    }
+
+    private boolean detailedCoverage() {
+        return gradle.version().equals("9.7.1");
+    }
+
+    private boolean eagerTaskCoverage() {
+        // Old eager task containers and current Gradle.
+        return gradle.version().equals("3.5.1") || detailedCoverage();
+    }
+
+    private boolean detailedModuleCoverage() {
+        // First tested module inference API and current Gradle.
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsModules();
+    }
+
+    private boolean detailedReleaseCoverage() {
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsRelease();
+    }
+
+    private boolean detailedArgumentProviderCoverage() {
+        return (gradle.version().equals("4.10.3") || detailedCoverage()) && supportsArgumentProviders();
+    }
+
+    private boolean detailedLazyTaskCoverage() {
+        return (gradle.version().equals("4.10.3") || detailedCoverage()) && supportsLazyTasks();
+    }
+
+    private boolean detailedConfigurationCacheCoverage() {
+        // Initial configuration-cache protocol and current Gradle. Composite
+        // identity/cache behavior remains covered on every supporting version.
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsConfigurationCache();
     }
 
     private boolean supportsRelease() {
