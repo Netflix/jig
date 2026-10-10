@@ -151,11 +151,11 @@ final class GradleCommands {
             arguments.add("-Pjig.gradle.classpath=" + request.classpath());
             arguments.add("-Pjig.gradle.options=" + String.join(",", request.options().stream().sorted().toList()));
         }
-        String projectPath = request.listProjects() ? ":" : request.projectPath();
-        arguments.add((projectPath.equals(":") ? ":" : projectPath + ":") + CAPTURE_TASK);
+        arguments.add(":" + CAPTURE_TASK);
         if (request.verbose()) {
             err.println("jig gradle: " + arguments);
         }
+        var projectPaths = new ArrayList<String>();
         var process = new ProcessBuilder(arguments)
                 .directory(request.root().toFile())
                 .redirectInput(Redirect.INHERIT)
@@ -167,13 +167,27 @@ final class GradleCommands {
                 while ((line = reader.readLine()) != null) {
                     if (line.startsWith(CAPTURE_PREFIX)) {
                         try {
-                            values.load(new ByteArrayInputStream(Base64.getDecoder().decode(line.substring(CAPTURE_PREFIX.length()))));
+                            var captured = new Properties();
+                            captured.load(new ByteArrayInputStream(Base64.getDecoder().decode(line.substring(CAPTURE_PREFIX.length()))));
+                            if (request.listProjects()) {
+                                if (!"1".equals(captured.getProperty("version"))) {
+                                    throw new IOException("Unsupported Gradle capture version: " + captured.getProperty("version"));
+                                }
+                                projectPaths.addAll(GradleArguments.list(captured, "project-paths"));
+                            }
+                            values.putAll(captured);
                         } catch (IllegalArgumentException e) {
                             throw new IOException("Invalid Gradle capture", e);
                         }
                     } else {
                         err.println(line);
                     }
+                }
+            }
+            if (request.listProjects() && !values.isEmpty()) {
+                values.setProperty("project-paths.count", Integer.toString(projectPaths.size()));
+                for (int index = 0; index < projectPaths.size(); index++) {
+                    values.setProperty("project-paths." + index, projectPaths.get(index));
                 }
             }
             return process.waitFor();

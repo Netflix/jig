@@ -115,6 +115,29 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryMergesBuildQualifiedPathsFromMultipleCaptures() throws Exception {
+        var fixture = fixture();
+        var included = new Properties();
+        included.setProperty("version", "1");
+        putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
+        try (var output = Files.newOutputStream(fixture.root().resolve("included.properties"))) {
+            included.store(output, null);
+        }
+        Files.writeString(fixture.root().resolve("gradlew"), """
+                #!/bin/sh
+                for build in included compile included; do
+                    printf 'jig-gradle:'
+                    base64 < "$build.properties" | tr -d '\\n'
+                    printf '\\n'
+                done
+                """);
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(":\n:app\n:tools\n:tools:plugin\n", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void resolutionUsesProjectPathsFromDiscoveryAndProjectsRequestedOptions() throws Exception {
         var fixture = fixture();
         var result = resolve(fixture, "compile", "source-path,class-path,release");
@@ -348,7 +371,7 @@ class GradleCommandsTest {
         assertTrue(script.startsWith(cache), script.toString());
         assertTrue(Files.isRegularFile(script));
         assertTrue(script.getFileName().toString().matches("[0-9a-f]{64}\\.gradle"), script.toString());
-        assertEquals(":app:_jigCapture", invocation.getLast());
+        assertEquals(":_jigCapture", invocation.getLast());
         assertFalse(invocation.stream().anyMatch(argument -> argument.startsWith("-Pjig.gradle.output=") || argument.startsWith("-Pjig.gradle.task=")));
         assertFalse(Files.exists(fixture.root().resolve(".gradle/jig")));
     }

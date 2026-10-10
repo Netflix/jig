@@ -160,10 +160,15 @@ class JigCaptureTask extends DefaultTask {
 def gradleVersion = GradleVersion.current().baseVersion
 def lazyTasks = gradleVersion >= GradleVersion.version('4.9')
 
-// Settings already define project identities and directories. The launcher
-// selects a fully qualified task to avoid searching unselected projects.
+// Settings define project identities and directories. Root dispatchers route
+// requests using native task references, including on older composite builds.
 gradle.settingsEvaluated { settings ->
-    def parameters = gradle.startParameter.projectProperties
+    def invocation = gradle
+    while (invocation.parent != null) {
+        invocation = invocation.parent
+    }
+    // Older versions do not copy command-line project properties to nested builds.
+    def parameters = invocation.startParameter.projectProperties
     if (gradleVersion >= GradleVersion.version('6.6')) {
         // Explicit provider reads let Gradle track changed request properties,
         // including in its earliest configuration-cache releases.
@@ -179,6 +184,9 @@ gradle.settingsEvaluated { settings ->
         }
     }
     def rootDirectory = new File(parameters['jig.gradle.root']).canonicalFile
+    if (gradle.parent == null && settings.rootProject.projectDir.canonicalFile != rootDirectory) {
+        throw new GradleException('The supplied root project directory is not this build root: ' + rootDirectory)
+    }
     def selectedPath = parameters['jig.gradle.project-path']
     def listProjects = Boolean.parseBoolean(parameters['jig.gradle.list'])
     def listSourceSets = Boolean.parseBoolean(parameters['jig.gradle.list-source-sets'])
@@ -201,146 +209,182 @@ gradle.settingsEvaluated { settings ->
         descriptor.children.each { visit(it) }
     }
     visit(settings.rootProject)
-    if (settings.rootProject.projectDir.canonicalFile != rootDirectory) {
-        throw new GradleException('The supplied root project directory is not this build root: ' + rootDirectory)
-    }
-    def selected = listProjects ? [settings.rootProject] : descriptors.findAll { it.path == selectedPath }
-    if (selected.size() != 1) {
-        throw new GradleException('Unknown project path in this build: ' + selectedPath)
-    }
-    def projectPath = selected[0].path
-    def projectPaths = descriptors.collect { it.path }.unique().sort()
-    gradle.beforeProject { project ->
-        if (project.path != projectPath) {
-            return
-        }
-        // Register after evaluation so even eager task-container callbacks cannot
-        // snapshot a half-configured source set. The capture task itself is lazy.
-        project.afterEvaluate {
-            def configure = { task ->
-                task.description = 'Capture the Java argument view requested by jig'
-                task.projectPaths = projectPaths
-                task.sourceRoots = project.files()
-                task.binaryPath = project.files()
-                task.processorPath = project.files()
-                if (listProjects) {
-                    return
-                }
-                def sourceSets = project.extensions.findByName('sourceSets')
-                if (sourceSets == null && project.hasProperty('sourceSets')) {
-                    sourceSets = project.property('sourceSets')
-                }
-                task.sourceSetNames = sourceSets == null ? [] : sourceSets.names.toList().sort()
-                if (listSourceSets) {
-                    return
-                }
-                def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)
-                if (sourceSet == null) {
-                    throw new GradleException('Unknown source set in project ' + projectPath + ': ' + sourceSetName)
-                }
-                if (compilerRequest) {
-                    def compile = project.tasks.getByName(sourceSet.compileJavaTaskName)
-                    if (!(compile instanceof JavaCompile)) {
-                        throw new GradleException('Compiler option capture requires a JavaCompile task: ' + compile.path)
-                    }
-                    // This invocation inspects configuration, not whether compilation
-                    // would execute. Replace predicates/disabled state and discard
-                    // finalizers so querying cannot run compiler-adjacent actions.
-                    compile.enabled = true
-                    compile.setOnlyIf(new JigCompilerCapture())
-                    compile.setFinalizedBy([])
-                    task.dependsOn(compile)
-                    return
-                }
-                task.sourceRoots = sourceSet.allJava.sourceDirectories
-                def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
-                def run = needsRun ? project.tasks.findByName('run') : null
-                def needsCompilerArguments = classpath == 'compile' && needsArguments
-                def needsCompilerModularity = needsModularity && (classpath == 'compile' || run == null)
-                def needsSourcePreparation = needsClasspath && needsSources
-                def needsCompile = needsLanguage || needsProcessors || needsCompilerArguments || needsCompilerModularity || needsSourcePreparation
-                def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
-                if (needsClasspath) {
-                    task.binaryPath = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
-                    task.sourceOutput = sourceSet.output
-                    task.sourcePathRequested = requested.contains('source-path')
-                    task.moduleSourcePathRequested = requested.contains('module-source-path')
-                    if (classpath == 'compile') {
-                        // SourceSetOutput carries the native classes/resources
-                        // producer graph; do not synthesize a compiler invocation.
-                        task.binaryPath = sourceSet.output + task.binaryPath
-                    }
-                    if (needsSources) {
-                        compile.dependsOn(task.sourceRoots)
-                        compile.onlyIf(new JigCompilationRequired(
-                                sourcePathRequested: task.sourcePathRequested,
-                                moduleSourcePathRequested: task.moduleSourcePathRequested,
-                                sourceRoots: task.sourceRoots))
-                    }
-                }
-                if (needsProcessors && compile.options.hasProperty('annotationProcessorPath') && compile.options.annotationProcessorPath != null) {
-                    task.processorPath = compile.options.annotationProcessorPath
-                }
-                if (needsModularity) {
-                    if (classpath == 'runtime' && run != null) {
-                        task.detectSourceModule = false
-                        task.inferModules = (run.hasProperty('modularity') && run.modularity.inferModulePath.get()
-                                && run.hasProperty('mainModule') && run.mainModule.present)
-                        if (task.inferModules) {
-                            task.metadata['module-name'] = run.mainModule.get()
-                        }
-                    } else {
-                        task.inferModules = compile.hasProperty('modularity') && compile.modularity.inferModulePath.get()
-                    }
-                }
-                // Keep generator dependencies on source directory collections instead
-                // of flattening them during configuration. Do not depend on the whole
-                // source-set output, which would run compilation for source-only queries.
-                if (needsSources || (needsModularity && task.inferModules && task.detectSourceModule)) {
-                    task.dependsOn(task.sourceRoots)
-                }
-                if (run != null) {
-                    if (run.hasProperty('mainClass') && run.mainClass.present) {
-                        task.metadata['main-class'] = run.mainClass.get()
-                    } else if (run.hasProperty('main') && run.main != null) {
-                        task.metadata['main-class'] = run.main.toString()
-                    }
-                }
-                if (needsLanguage) {
-                    if (compile.options.hasProperty('release') && compile.options.release.present) {
-                        task.metadata['release'] = compile.options.release.get().toString()
-                    }
-                    task.metadata['source'] = compile.sourceCompatibility.toString()
-                    task.metadata['target'] = compile.targetCompatibility.toString()
-                    if (compile.options.encoding != null) {
-                        task.metadata['encoding'] = compile.options.encoding
-                    }
-                    if (requested.contains('system') && compile.hasProperty('javaCompiler')) {
-                        def compiler = compile.javaCompiler.get()
-                        if (compiler.metadata.languageVersion.asInt() >= 9) {
-                            task.metadata['system'] = compiler.metadata.installationPath.asFile.canonicalPath
-                        }
-                    }
-                }
-                if (requested.contains('module-version') && project.version.toString() != 'unspecified') {
-                    task.metadata['module-version'] = project.version.toString()
-                }
-                if (classpath == 'compile' && needsArguments) {
-                    task.additionalArguments = compile.options.compilerArgs.collect { it.toString() }
-                    if (compile.options.hasProperty('compilerArgumentProviders')) {
-                        task.argumentProviders = new ArrayList(compile.options.compilerArgumentProviders)
-                    }
-                } else if (classpath == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
-                    task.additionalArguments = (run.jvmArgs == null ? [] : run.jvmArgs).collect { it.toString() }
-                    if (run.hasProperty('jvmArgumentProviders')) {
-                        task.argumentProviders = new ArrayList(run.jvmArgumentProviders)
-                    }
-                }
+    // Older Gradle versions cannot determine buildSrc's identity until projects
+    // have been attached. Use Gradle's identity, not names inferred from directories.
+    gradle.projectsLoaded {
+        def buildPath = gradle.identityPath.toString()
+        def qualifiedPath = { path -> buildPath == ':' ? path : buildPath + (path == ':' ? '' : path) }
+        def selected = listProjects ? [settings.rootProject] : descriptors.findAll { qualifiedPath(it.path) == selectedPath }
+        def projectPath = selected.empty ? null : selected[0].path
+        def projectPaths = descriptors.collect { qualifiedPath(it.path) }.unique().sort()
+        gradle.beforeProject { project ->
+            def dispatch = !listProjects && project.path == ':' && projectPath != ':'
+            if (project.path != projectPath && !dispatch) {
+                return
             }
-            if (lazyTasks) {
-                project.tasks.register(captureTaskName, JigCaptureTask, configure)
-            } else {
-                project.tasks.create(captureTaskName, JigCaptureTask, configure)
+            // Register after evaluation so even eager task-container callbacks cannot
+            // snapshot a half-configured source set. The capture task itself is lazy.
+            project.afterEvaluate {
+                def configure = { task ->
+                    task.description = 'Capture the Java argument view requested by jig'
+                    if (dispatch) {
+                        if (projectPath != null) {
+                            task.dependsOn(projectPath + ':' + captureTaskName)
+                        } else {
+                            if (gradleVersion < GradleVersion.version('4.0') && !gradle.includedBuilds.empty) {
+                                throw new GradleException('Composite selection requires Gradle 4.0 or later; this version does not apply init scripts to included builds')
+                            }
+                            def included = gradle.includedBuilds.find {
+                                def path = qualifiedPath(':' + it.name)
+                                selectedPath == path || selectedPath.startsWith(path + ':')
+                            }
+                            if (included != null) {
+                                // Native task references work before Gradle added
+                                // included-build paths to its command-line selector.
+                                task.dependsOn(included.task(':' + captureTaskName))
+                            } else if (!gradle.includedBuilds.empty) {
+                                // Gradle 6/7 flatten nested build identities. Traverse
+                                // native references; only the owning build emits a capture.
+                                task.dependsOn(gradle.includedBuilds.collect { it.task(':' + captureTaskName) })
+                            } else if (buildPath == ':') {
+                                throw new GradleException('Unknown project path in this build: ' + selectedPath)
+                            }
+                        }
+                        return
+                    }
+                    task.projectPaths = projectPaths
+                    task.sourceRoots = project.files()
+                    task.binaryPath = project.files()
+                    task.processorPath = project.files()
+                    if (listProjects) {
+                        // Task references let Gradle configure and execute each included
+                        // build's discovery without sharing mutable state across builds.
+                        if (gradleVersion < GradleVersion.version('4.0') && !gradle.includedBuilds.empty) {
+                            throw new GradleException('Composite discovery requires Gradle 4.0 or later; this version does not apply init scripts to included builds')
+                        }
+                        task.dependsOn(gradle.includedBuilds.collect { it.task(':' + captureTaskName) })
+                        return
+                    }
+                    def sourceSets = project.extensions.findByName('sourceSets')
+                    if (sourceSets == null && project.hasProperty('sourceSets')) {
+                        sourceSets = project.property('sourceSets')
+                    }
+                    task.sourceSetNames = sourceSets == null ? [] : sourceSets.names.toList().sort()
+                    if (listSourceSets) {
+                        return
+                    }
+                    def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)
+                    if (sourceSet == null) {
+                        throw new GradleException('Unknown source set in project ' + projectPath + ': ' + sourceSetName)
+                    }
+                    if (compilerRequest) {
+                        def compile = project.tasks.getByName(sourceSet.compileJavaTaskName)
+                        if (!(compile instanceof JavaCompile)) {
+                            throw new GradleException('Compiler option capture requires a JavaCompile task: ' + compile.path)
+                        }
+                        // This invocation inspects configuration, not whether compilation
+                        // would execute. Replace predicates/disabled state and discard
+                        // finalizers so querying cannot run compiler-adjacent actions.
+                        compile.enabled = true
+                        compile.setOnlyIf(new JigCompilerCapture())
+                        compile.setFinalizedBy([])
+                        task.dependsOn(compile)
+                        return
+                    }
+                    task.sourceRoots = sourceSet.allJava.sourceDirectories
+                    def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
+                    def run = needsRun ? project.tasks.findByName('run') : null
+                    def needsCompilerArguments = classpath == 'compile' && needsArguments
+                    def needsCompilerModularity = needsModularity && (classpath == 'compile' || run == null)
+                    def needsSourcePreparation = needsClasspath && needsSources
+                    def needsCompile = needsLanguage || needsProcessors || needsCompilerArguments || needsCompilerModularity || needsSourcePreparation
+                    def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
+                    if (needsClasspath) {
+                        task.binaryPath = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
+                        task.sourceOutput = sourceSet.output
+                        task.sourcePathRequested = requested.contains('source-path')
+                        task.moduleSourcePathRequested = requested.contains('module-source-path')
+                        if (classpath == 'compile') {
+                            // SourceSetOutput carries the native classes/resources
+                            // producer graph; do not synthesize a compiler invocation.
+                            task.binaryPath = sourceSet.output + task.binaryPath
+                        }
+                        // Included build logic may already have compiled to load
+                        // the main build's plugins. Preserve that native bootstrap;
+                        // executed tasks are no longer mutable.
+                        if (needsSources && !compile.state.executed) {
+                            compile.dependsOn(task.sourceRoots)
+                            compile.onlyIf(new JigCompilationRequired(
+                                    sourcePathRequested: task.sourcePathRequested,
+                                    moduleSourcePathRequested: task.moduleSourcePathRequested,
+                                    sourceRoots: task.sourceRoots))
+                        }
+                    }
+                    if (needsProcessors && compile.options.hasProperty('annotationProcessorPath') && compile.options.annotationProcessorPath != null) {
+                        task.processorPath = compile.options.annotationProcessorPath
+                    }
+                    if (needsModularity) {
+                        if (classpath == 'runtime' && run != null) {
+                            task.detectSourceModule = false
+                            task.inferModules = (run.hasProperty('modularity') && run.modularity.inferModulePath.get()
+                                    && run.hasProperty('mainModule') && run.mainModule.present)
+                            if (task.inferModules) {
+                                task.metadata['module-name'] = run.mainModule.get()
+                            }
+                        } else {
+                            task.inferModules = compile.hasProperty('modularity') && compile.modularity.inferModulePath.get()
+                        }
+                    }
+                    // Keep generator dependencies on source directory collections instead
+                    // of flattening them during configuration. Do not depend on the whole
+                    // source-set output, which would run compilation for source-only queries.
+                    if (needsSources || (needsModularity && task.inferModules && task.detectSourceModule)) {
+                        task.dependsOn(task.sourceRoots)
+                    }
+                    if (run != null) {
+                        if (run.hasProperty('mainClass') && run.mainClass.present) {
+                            task.metadata['main-class'] = run.mainClass.get()
+                        } else if (run.hasProperty('main') && run.main != null) {
+                            task.metadata['main-class'] = run.main.toString()
+                        }
+                    }
+                    if (needsLanguage) {
+                        if (compile.options.hasProperty('release') && compile.options.release.present) {
+                            task.metadata['release'] = compile.options.release.get().toString()
+                        }
+                        task.metadata['source'] = compile.sourceCompatibility.toString()
+                        task.metadata['target'] = compile.targetCompatibility.toString()
+                        if (compile.options.encoding != null) {
+                            task.metadata['encoding'] = compile.options.encoding
+                        }
+                        if (requested.contains('system') && compile.hasProperty('javaCompiler')) {
+                            def compiler = compile.javaCompiler.get()
+                            if (compiler.metadata.languageVersion.asInt() >= 9) {
+                                task.metadata['system'] = compiler.metadata.installationPath.asFile.canonicalPath
+                            }
+                        }
+                    }
+                    if (requested.contains('module-version') && project.version.toString() != 'unspecified') {
+                        task.metadata['module-version'] = project.version.toString()
+                    }
+                    if (classpath == 'compile' && needsArguments) {
+                        task.additionalArguments = compile.options.compilerArgs.collect { it.toString() }
+                        if (compile.options.hasProperty('compilerArgumentProviders')) {
+                            task.argumentProviders = new ArrayList(compile.options.compilerArgumentProviders)
+                        }
+                    } else if (classpath == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
+                        task.additionalArguments = (run.jvmArgs == null ? [] : run.jvmArgs).collect { it.toString() }
+                        if (run.hasProperty('jvmArgumentProviders')) {
+                            task.argumentProviders = new ArrayList(run.jvmArgumentProviders)
+                        }
+                    }
+                }
+                def taskType = dispatch ? DefaultTask : JigCaptureTask
+                if (lazyTasks) {
+                    project.tasks.register(captureTaskName, taskType, configure)
+                } else {
+                    project.tasks.create(captureTaskName, taskType, configure)
+                }
             }
         }
     }

@@ -33,8 +33,8 @@ final class GradleCommandLine {
     private static final Set<String> EXTRA_OPTIONS = Set.of("class-path", "processor-path", "source", "target", "encoding", "system",
             "add-reads");
     private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Gradle root project directory");
-    private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "An absolute Gradle project path, such as : or :app");
-    private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List configured Gradle project paths");
+    private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "A build-tree-qualified Gradle project path, such as :app or :build-logic:plugin");
+    private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List Gradle project paths, including included builds");
     private static final ToolOption LIST_SOURCE_SETS = ToolOption.flag("--list-source-sets", "List source sets in the selected project");
     private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "A source set from --list-source-sets");
     private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath");
@@ -72,6 +72,7 @@ final class GradleCommandLine {
         return COMMAND_LINE.help("jig gradle")
                 + "\nUses the root project's wrapper, or gradle on PATH.\n"
                 + "Project paths and source-set names are obtained from the build.\n"
+                + "Included-build discovery and selection require Gradle 4.0 or later.\n"
                 + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
                 + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
                 + "Binary paths prepare selected outputs unless the corresponding source paths are requested.\n"
