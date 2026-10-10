@@ -41,6 +41,9 @@ final class MavenCommands {
             printHelp(out);
             return arguments.length == 0 ? 2 : 0;
         }
+        if (arguments[0].startsWith("-")) {
+            return MavenProjectCommands.run(out, err, arguments);
+        }
         String operation = arguments[0];
         if (!operation.equals("install") && !operation.equals("deploy") && !operation.equals("deploy-central")) {
             err.println("jig: unknown Maven operation: " + operation);
@@ -225,6 +228,8 @@ final class MavenCommands {
         out.println("       jig maven deploy-central [--module-version <version>] [--name <name>] [--manual] <artifact-directory>");
         out.println();
         out.println("Installs or deploys flat, module-named artifacts.");
+        out.println();
+        out.print(MavenProjectCommands.help());
     }
 
     private record Request(Path artifacts, RemoteRepository repository, String name,

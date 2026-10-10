@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Tests each Gradle version against local projects without remote project dependencies. */
+/** Contract checks on every Gradle version; detailed scenarios at API and cache boundaries. */
 @EnabledOnOs({OS.LINUX, OS.MAC})
 @EnabledIf("availableJdks")
 @ParameterizedClass(name = "Gradle {0}")
@@ -77,9 +77,124 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void capturesSelectedBuildWithoutRejectingIncludedBuildsOrBuildSrc() throws Exception {
+        var fixture = fixture(false);
+        Path included = Files.createDirectories(fixture.root().resolve("included-library"));
+        Files.createDirectories(included.resolve("child"));
+        Files.writeString(included.resolve("settings.gradle"), "rootProject.name = 'included-library'\ninclude 'child'\n");
+        Files.writeString(included.resolve("child/build.gradle"), "apply plugin: 'java'\n");
+        Files.writeString(included.resolve("build.gradle"), "apply plugin: 'java'\ngroup = 'example'\nversion = '1.0'\n");
+        Path source = Files.createDirectories(included.resolve("src/main/java/included"));
+        Files.writeString(source.resolve("Library.java"), "package included; public class Library {}\n");
+        Files.writeString(fixture.root().resolve("settings.gradle"), "\nincludeBuild 'included-library'\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ndependencies { implementation 'example:included-library:1.0' }\n", StandardOpenOption.APPEND);
+        Path buildSrc = Files.createDirectories(fixture.root().resolve("buildSrc"));
+        Files.writeString(buildSrc.resolve("build.gradle"), "apply plugin: 'java'\n");
+        // Gradle 6.6's configuration cache does not support composite builds.
+        if (atLeast(6, 8)) {
+            Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        if (!supportsCompositeCapture()) {
+            var error = new StringWriter();
+            assertEquals(1, new Jig().run(new PrintWriter(new StringWriter()), new PrintWriter(error),
+                    "gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths"), error.toString());
+            assertTrue(error.toString().contains("Composite discovery requires Gradle 4.0 or later"), error.toString());
+            // Native dependencies still work; only composite capture is unavailable.
+            String captured = resolve(fixture, "compile", "class-path,source-path");
+            assertTrue(captured.contains(included.resolve("build/libs/included-library-1.0.jar").toString()), captured);
+            return;
+        }
+        assertEquals(List.of(":", ":app", ":included-library", ":included-library:child", ":library", ":plain"),
+                run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths").lines().toList());
+        assertEquals(List.of("main", "test"), run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", ":included-library", "--list-source-sets").lines().toList());
+        String includedSources = run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", ":included-library", "--source-set", "main", "--classpath", "compile", "-r", "source-path");
+        assertTrue(includedSources.contains(included.resolve("src/main/java").toString()), includedSources);
+        assertFalse(includedSources.contains(fixture.app().resolve("sources/java").toString()), includedSources);
+        assertEquals(List.of("main", "test"), run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", ":included-library:child", "--list-source-sets").lines().toList());
+        String captured = resolve(fixture, "compile", "class-path,source-path");
+        assertTrue(captured.contains(included.resolve("build/libs/included-library-1.0.jar").toString()), captured);
+        assertTrue(Files.isRegularFile(included.resolve(classesDirectory() + "/included/Library.class")));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertEquals(captured, resolve(fixture, "compile", "class-path,source-path"));
+    }
+
+    @Test
+    @EnabledIf("supportsNamedCompositeCapture")
+    void discoversAndSelectsRenamedNestedIncludedBuilds() throws Exception {
+        var fixture = fixture(false);
+        Path outer = Files.createDirectories(fixture.root().resolve("outer"));
+        Path inner = Files.createDirectories(outer.resolve("inner"));
+        Files.writeString(fixture.root().resolve("settings.gradle"), "\nincludeBuild('outer') { name = 'tools' }\n", StandardOpenOption.APPEND);
+        Files.writeString(outer.resolve("settings.gradle"), "rootProject.name = 'outer'\ninclude 'plugin'\nincludeBuild('inner') { name = 'support' }\n");
+        Files.createDirectories(outer.resolve("plugin"));
+        Files.writeString(outer.resolve("plugin/build.gradle"), "apply plugin: 'java'\n");
+        Files.writeString(inner.resolve("settings.gradle"), "rootProject.name = 'inner'\n");
+        Files.writeString(inner.resolve("build.gradle"), "apply plugin: 'java'\n");
+        if (atLeast(6, 8)) {
+            Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        String discovered = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
+        // Gradle 6/7 flatten nested build identities; newer versions retain nesting.
+        String nested = atLeast(8, 0) ? ":tools:support" : ":support";
+        var expected = new ArrayList<>(List.of(":", ":app", ":library", ":plain", ":tools", ":tools:plugin"));
+        expected.add(nested);
+        assertEquals(expected.stream().sorted().toList(), discovered.lines().toList());
+        String sources = run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", nested, "--source-set", "main", "--classpath", "compile", "-r", "source-path");
+        assertTrue(sources.contains(inner.resolve("src/main/java").toString()), sources);
+        assertEquals(sources, run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", nested, "--source-set", "main", "--classpath", "compile", "-r", "source-path"));
+        assertEquals(List.of("main", "test"), run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--project-path", ":tools:plugin", "--list-source-sets").lines().toList());
+    }
+
+    @Test
+    @EnabledIf("supportsConfigurationCache")
+    void resolvesIncludedBuildLogicAlreadyCompiledToConfigureTheMainBuild() throws Exception {
+        var fixture = fixture(false);
+        Path included = Files.createDirectories(fixture.root().resolve("build-logic"));
+        Files.writeString(included.resolve("settings.gradle"), "rootProject.name = 'build-logic'\n");
+        Files.writeString(included.resolve("build.gradle"), """
+                plugins { id 'java' }
+                group = 'fixture'
+                version = '1.0'
+                dependencies { compileOnly gradleApi() }
+                """);
+        Path descriptors = Files.createDirectories(included.resolve("src/main/resources/META-INF/gradle-plugins"));
+        Files.writeString(descriptors.resolve("fixture.build-setup.properties"), "implementation-class=buildlogic.BuildSetup\n");
+        Path sources = Files.createDirectories(included.resolve("src/main/java/buildlogic"));
+        Files.writeString(sources.resolve("BuildSetup.java"), """
+                package buildlogic;
+                import org.gradle.api.Plugin;
+                import org.gradle.api.Project;
+                public class BuildSetup implements Plugin<Project> {
+                    public void apply(Project project) {}
+                }
+                """);
+        Path settings = fixture.root().resolve("settings.gradle");
+        Files.writeString(settings, "\nincludeBuild 'build-logic'\n", StandardOpenOption.APPEND);
+        Path build = fixture.root().resolve("build.gradle");
+        Files.writeString(build, "buildscript { dependencies { classpath 'fixture:build-logic:1.0' } }\napply plugin: 'fixture.build-setup'\n"
+                + Files.readString(build));
+        if (atLeast(6, 8)) {
+            Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        String captured = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":build-logic",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path");
+        assertTrue(Files.isRegularFile(included.resolve("build/classes/java/main/buildlogic/BuildSetup.class")));
+        assertTrue(captured.contains(included.resolve("src/main/java").toString()), captured);
+        assertFalse(captured.contains(included.resolve("build/classes/java/main").toString()), captured);
+        assertEquals(captured, run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":build-logic",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path"));
+    }
+
+    @Test
     void resolvesClasspathSpecificPathsAndMaterializesDependencyOutputs() throws Exception {
         var fixture = fixture(false);
-        String compile = resolve(fixture, "compile", "class-path");
+        String compile = resolve(fixture, "compile", "class-path,source-path");
         assertTrue(compile.contains("compile only.jar"), compile);
         assertTrue(compile.contains("shared.jar"), compile);
         assertTrue(compile.contains("library/" + classesDirectory()), compile);
@@ -94,7 +209,27 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    void binaryPathsDelegateSelectedCompilationButSourcePathsLeaveItToTheCaller() throws Exception {
+        var fixture = fixture(false);
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        String sources = resolve(fixture, "runtime", "class-path,source-path");
+        assertTrue(Files.isRegularFile(fixture.root().resolve("library/" + classesDirectory() + "/lib/Library.class")));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertFalse(sources.contains(fixture.app().resolve(classesDirectory()).toString()), sources);
+        // Module sources are not an equivalent source view for an unnamed set.
+        String binaries = resolve(fixture, "compile", "class-path,module-source-path");
+        assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertTrue(binaries.contains(fixture.app().resolve(classesDirectory()).toString()), binaries);
+        Files.delete(fixture.app().resolve(classesDirectory() + "/app/Main.class"));
+        assertEquals(sources, resolve(fixture, "runtime", "class-path,source-path"));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertFalse(Files.exists(fixture.app().resolve("build/test-results")));
+    }
+
+    @Test
+    @EnabledIf("detailedModuleCoverage")
     void resolvesModuleOptionsThatComposeWithJavacAndJava() throws Exception {
         var fixture = fixture(true);
         Path options = temporaryDirectory.resolve("compile.args");
@@ -115,6 +250,7 @@ class GradleIntegrationTest {
         assertTrue(captured.contains("\"--class-path\""), captured);
         assertTrue(captured.contains("app.mod=" + fixture.app().resolve("sources/java")), captured);
         assertTrue(captured.contains("\"--module\"\n\"app.mod\""), captured);
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
         Path compiled = temporaryDirectory.resolve("compiled");
         execute("javac", "@" + options, "-d", compiled.toString());
         assertTrue(Files.isRegularFile(compiled.resolve("app.mod/module-info.class")));
@@ -137,7 +273,16 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
+    void moduleBinaryPathsRequireTheCorrespondingModuleSourceOption() throws Exception {
+        var fixture = fixture(true);
+        String binaries = resolve(fixture, "compile", "module-path,source-path");
+        assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/module-info.class")));
+        assertTrue(binaries.contains(fixture.app().resolve(classesDirectory()).toString()), binaries);
+    }
+
+    @Test
+    @EnabledIf("detailedModuleCoverage")
     void generalResolutionDelegatesModuleDetectionForCompileAndRuntimeAcrossCacheReplay() throws Exception {
         var fixture = fixture(true);
         Path explicit = fixture.root().resolve("explicit.jar");
@@ -174,7 +319,7 @@ class GradleIntegrationTest {
             // modular while disabling inference on the run task itself.
             Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = "
                     + classpath.equals("runtime") + "\ntasks.run.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
-            String captured = resolve(fixture, classpath, "class-path,module-path");
+            String captured = resolve(fixture, classpath, "class-path,module-path" + (classpath.equals("compile") ? ",module-source-path" : ""));
             assertFalse(captured.contains("\"--module-path\""), captured);
             for (Path binary : List.of(explicit, multiRelease, notMultiRelease, exploded)) {
                 assertTrue(captured.contains(binary.toString()), captured);
@@ -183,19 +328,19 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void respectsDisabledModulePathInference() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
                 StandardOpenOption.APPEND);
-        String capture = resolve(fixture, "compile", "module-path,class-path,module,source-path");
+        String capture = resolve(fixture, "compile", "module-path,class-path,module,module-source-path");
         assertTrue(capture.contains("\"--class-path\""), capture);
         assertFalse(capture.contains("\"--module-path\""), capture);
         assertFalse(capture.contains("\"--module\""), capture);
     }
 
     @Test
-    @EnabledIf("supportsRelease")
+    @EnabledIf("detailedReleaseCoverage")
     void capturesEffectiveReleaseWithoutConflictingSourceAndTargetOptions() throws Exception {
         var fixture = fixture(false);
         String capture = resolve(fixture, "compile", "release,source,target");
@@ -207,7 +352,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsArgumentProviders")
+    @EnabledIf("detailedArgumentProviderCoverage")
     void materializesAnnotationProcessorDependenciesWithoutCompilingTheSelectedProject() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ndependencies { annotationProcessor project(':library') }\n",
@@ -221,7 +366,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void runtimeModuleInferenceUsesTheRunTasksConfiguration() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.run { modularity.inferModulePath = false }\n",
@@ -233,7 +378,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsArgumentProviders")
+    @EnabledIf("detailedArgumentProviderCoverage")
     void capturesArgumentProvidersAndApplicationMetadata() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -251,7 +396,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsLazyTasks")
+    @EnabledIf("detailedLazyTaskCoverage")
     void sourceDiscoveryDoesNotRealizeCompileRunOrUnrelatedTasks() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -264,7 +409,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void reusesConfigurationCacheForDiscoveryAndSourceSetClasspathsAndInvalidatesChangedConfiguration() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -301,6 +446,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("eagerTaskCoverage")
     void configurationOnDemandEvaluatesOnlyTheSelectedProjectAndRequiredDependencies() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configureondemand=true\n");
@@ -312,7 +458,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void argumentProvidersRemainLazyAndRetainProducerDependenciesOnCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -347,7 +493,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsLazyTasks")
+    @EnabledIf("detailedLazyTaskCoverage")
     void discoversSourceSetsWithoutRealizingCompilationTasks() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -362,6 +508,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void resolvesTestAndCustomSourceSetsWithoutLeakingMainApplicationMetadata() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -409,7 +556,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void generatedSourceProducersRemainLazyAndRunOnConfigurationCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -441,6 +588,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void classpathResolutionUsesTheSourceSetRatherThanTheCompilationTaskOverride() throws Exception {
         var fixture = fixture(false);
         jar(fixture.root().resolve("source set.jar"), null);
@@ -449,12 +597,13 @@ class GradleIntegrationTest {
                 sourceSets.main.compileClasspath = files(rootProject.file('source set.jar'))
                 tasks.compileJava.classpath = files(rootProject.file('compile task.jar'))
                 """, StandardOpenOption.APPEND);
-        String capture = resolve(fixture, "compile", "class-path");
+        String capture = resolve(fixture, "compile", "class-path,source-path");
         assertTrue(capture.contains("source set.jar"), capture);
         assertFalse(capture.contains("compile task.jar"), capture);
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void rejectsUnknownProjectPathsAndSourceSetsWithoutReturningArguments() throws Exception {
         var fixture = fixture(false);
         for (String[] selection : List.of(
@@ -503,7 +652,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void compilerResolutionDelegatesModuleInferenceAndUsesTheCompileTasksModuleVersion() throws Exception {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -526,7 +675,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsModules")
+    @EnabledIf("detailedModuleCoverage")
     void compilerResolutionUsesGradlesOwnModuleSourcePathDefaults() throws Exception {
         var fixture = fixture(true);
         Path configured = Files.createDirectories(fixture.app().resolve("configured source path"));
@@ -540,6 +689,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionRunsExplicitProducerDependenciesBeforeCapturingOptions() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -570,6 +720,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionPreservesOutputsAndHistoryWithoutRunningActionsOrFinalizers() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), """
@@ -598,7 +749,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void compilerResolutionKeepsGeneratorsAndArgumentProvidersLazyAcrossCacheReplay() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
@@ -659,6 +810,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
     void compilerResolutionHandlesEmptyCustomSourceSets() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { empty {} }\ntasks.compileEmptyJava.options.debug = false\n", StandardOpenOption.APPEND);
@@ -670,6 +822,7 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("eagerTaskCoverage")
     void compilerOptionsPreserveProcessingGeneratedSourcesAndNativeHeaders() throws Exception {
         var fixture = fixture(false);
         Path processor = processorJar();
@@ -704,7 +857,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("supportsConfigurationCache")
+    @EnabledIf("detailedConfigurationCacheCoverage")
     void compilerResolutionUsesTaskOverridesWithoutRealizingUnusedSourceSetProducers() throws Exception {
         var fixture = fixture(false);
         Path alternative = Files.createDirectories(fixture.app().resolve("alternative"));
@@ -859,7 +1012,7 @@ class GradleIntegrationTest {
     }
 
     private static List<GradleDistribution> gradleVersions() {
-        return List.of(new GradleDistribution("3.5.1", 8), new GradleDistribution("4.10.3", 8),
+        return List.of(new GradleDistribution("3.5.1", 8), new GradleDistribution("4.0", 8), new GradleDistribution("4.10.3", 8),
                 new GradleDistribution("5.6.4", 11), new GradleDistribution("6.6.1", 11),
                 new GradleDistribution("6.9.4", 11), new GradleDistribution("7.6.6", 17),
                 new GradleDistribution("8.5", 17), new GradleDistribution("9.6.1", 17),
@@ -882,6 +1035,38 @@ class GradleIntegrationTest {
         return gradle.javaVersion();
     }
 
+    private boolean detailedCoverage() {
+        return gradle.version().equals("9.7.1");
+    }
+
+    private boolean eagerTaskCoverage() {
+        // Old eager task containers and current Gradle.
+        return gradle.version().equals("3.5.1") || detailedCoverage();
+    }
+
+    private boolean detailedModuleCoverage() {
+        // First tested module inference API and current Gradle.
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsModules();
+    }
+
+    private boolean detailedReleaseCoverage() {
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsRelease();
+    }
+
+    private boolean detailedArgumentProviderCoverage() {
+        return (gradle.version().equals("4.10.3") || detailedCoverage()) && supportsArgumentProviders();
+    }
+
+    private boolean detailedLazyTaskCoverage() {
+        return (gradle.version().equals("4.10.3") || detailedCoverage()) && supportsLazyTasks();
+    }
+
+    private boolean detailedConfigurationCacheCoverage() {
+        // Initial configuration-cache protocol and current Gradle. Composite
+        // identity/cache behavior remains covered on every supporting version.
+        return (gradle.version().equals("6.6.1") || detailedCoverage()) && supportsConfigurationCache();
+    }
+
     private boolean supportsRelease() {
         return atLeast(6, 6);
     }
@@ -900,6 +1085,15 @@ class GradleIntegrationTest {
 
     private boolean supportsConfigurationCache() {
         return atLeast(6, 6);
+    }
+
+    private boolean supportsCompositeCapture() {
+        // Gradle 3.5 does not apply invocation init scripts to included builds.
+        return atLeast(4, 0);
+    }
+
+    private boolean supportsNamedCompositeCapture() {
+        return atLeast(6, 0);
     }
 
     private static void jar(Path path, String module) throws Exception {

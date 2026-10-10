@@ -14,18 +14,22 @@
 
 package com.netflix.tools.jig.test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.Properties;
 import java.util.spi.ToolProvider;
 import javax.tools.OptionChecker;
 
 import com.netflix.tools.jig.Jig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -58,6 +62,34 @@ class JigToolProviderTest {
         assertEquals(0, result, err.toString());
         assertEquals("macos-aarch64\tTarget platform for classified modules\n:0\n", out.toString());
         assertEquals("", err.toString());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void standaloneMainFlushesResolvedArgumentsBeforeExiting(@TempDir Path directory) throws Exception {
+        Path source = directory.resolve("sources");
+        var values = new Properties();
+        values.setProperty("version", "1");
+        values.setProperty("project-paths.count", "1");
+        values.setProperty("project-paths.0", ":");
+        values.setProperty("source-sets.count", "1");
+        values.setProperty("source-sets.0", "main");
+        values.setProperty("sources.count", "1");
+        values.setProperty("sources.0", source.toString());
+        var bytes = new ByteArrayOutputStream();
+        values.store(bytes, null);
+        Files.writeString(directory.resolve("gradlew"), "#!/bin/sh\nprintf '%s\\n' 'jig-gradle:" + Base64.getEncoder().encodeToString(bytes.toByteArray()) + "'\n");
+        Path implementation = Path.of(Jig.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+        Path java = Path.of(System.getProperty("java.home"), "bin/java");
+        Path diagnostics = directory.resolve("stderr.txt");
+        var process = new ProcessBuilder(java.toString(), "--module-path", implementation.toString(),
+                "--patch-module", "com.netflix.tools.jig=" + implementation,
+                "--module", "com.netflix.tools.jig/com.netflix.tools.jig.Jig", "gradle", "--root-project-dir", directory.toString(),
+                "--project-path", ":", "--source-set", "main", "--classpath", "compile", "-r", "source-path")
+                .redirectError(diagnostics.toFile()).start();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), implementation + "\n" + output + Files.readString(diagnostics));
+        assertEquals("\"--source-path\"\n\"" + source + "\"\n", output);
     }
 
     @Test

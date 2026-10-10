@@ -1271,7 +1271,10 @@ public class Jig implements ToolProvider, OptionChecker {
         var jig = new Jig();
         var out = new PrintWriter(System.out, true);
         var err = new PrintWriter(System.err, true);
-        System.exit(jig.run(out, err, args));
+        int status = jig.run(out, err, args);
+        out.flush();
+        err.flush();
+        System.exit(status);
     }
 
     private static void printHelp(PrintWriter out) {

@@ -128,7 +128,8 @@ final class JigCommandLine {
             .operand("ARTIFACT-DIRECTORY", "Directory of flat, module-named artifacts", Cardinality.EXACTLY_ONE)
             .build();
     private final CommandLine mavenCommandLine = CommandLine.builder()
-            .description("Maven repository operations")
+            .description("Maven project discovery and repository operations")
+            .options(MavenProjectCommands.options())
             .command("install", "Install artifacts in the local repository", mavenInstallCommandLine)
             .command("deploy", "Deploy artifacts to a repository", mavenDeployCommandLine)
             .command("deploy-central", "Deploy artifacts to Maven Central", mavenDeployCentralCommandLine)
@@ -175,7 +176,7 @@ final class JigCommandLine {
                 completions.add(new Completion("gradle", "Resolve Gradle project arguments"));
             }
             if ("maven".startsWith(request.current())) {
-                completions.add(new Completion("maven", "Maven repository operations"));
+                completions.add(new Completion("maven", "Maven project discovery and repository operations"));
             }
         }
         completions.sort(Comparator.comparing(Completion::value));
