@@ -3,13 +3,13 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
 ![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
 
-`jig` provides module resolution and tool interoperability for Java development. It produces the standard arguments accepted by `javac`, `java`, `javadoc`, `jlink` and other tools, whether dependencies are declared as Java modules or managed by an existing Gradle build.
+`jig` resolves arguments for standard Java tools, including `javac`, `java`, `javadoc` and `jshell`.
 
-For the Java Module System, `jig` also provides module version resolution, compilation and assembly. It resolves source modules, local binaries and artifacts published to Maven repositories together, allowing the same module graph and compilation work to be reused across tools.
+Given a module source path, it reads `module-info.java` to resolve dependencies and compiles source modules when a tool needs binaries. Dependency versions and other metadata can be supplied in source comments.
 
-The same module model extends to Maven repositories. Existing artifacts can be located by Java module name, while modules can be installed or published with consumer POMs generated from their descriptors. A repository proxy makes the module namespace available to ordinary Maven clients.
+For Maven and Gradle projects, it uses the build tool's own dependency resolution. You can run JDK tools with the project's dependencies without maintaining a separate classpath, duplicating dependency declarations, or opening an IDE.
 
-Source modules are provided metadata that isn't supported by the source module descriptor with Javadoc tags and version comments on `requires` directives:
+The source module model supports additional metadata through Javadoc tags and version comments on `requires` directives:
 
 ```java
 /**
@@ -87,11 +87,9 @@ Launches the JUnit Platform for test discovery and execution.
 
 ## Interoperability
 
-For Gradle builds, `jig gradle` obtains tool arguments from an explicitly selected project and source set. Gradle owns the build model and dependency resolution; `jig` makes its paths and compiler options composable with standalone JDK tools, without requiring module-system adoption first.
-
 ### Gradle
 
-Discover projects and source sets from the build root:
+Discover projects and source sets from the build root. Project paths also address included builds, such as `:build-logic:plugin`:
 
 ```sh
 jig gradle --root-project-dir . --list-project-paths
@@ -123,6 +121,25 @@ javac @compile.args @sources.args
 
 Replace the project, source set and main class with those of your application. Prepare `sources.args` with the source filenames to compile, including generated sources and `module-info.java` where applicable, and use a `javac` matching the build's configured toolchain.
 
+### Maven
+
+Discover projects from the Maven project base directory:
+
+```sh
+jig maven --project-base-dir . --list-projects
+```
+
+Select a project by `groupId:artifactId` or the shorter `:artifactId` form, then request its `compile`, `runtime` or `test` scope. For an application project with artifact ID `app`:
+
+```sh
+jig maven --project-base-dir . \
+  --project :app --scope runtime \
+  --resolve-options class-path,module-path,add-modules \
+  --write-argfile runtime.args
+
+java @runtime.args com.example.Main
+```
+
 ## Documentation
 
 The [wiki](https://github.com/Netflix/jig/wiki) covers:
@@ -134,4 +151,4 @@ The [wiki](https://github.com/Netflix/jig/wiki) covers:
 - [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules)
 - [Command Reference](https://github.com/Netflix/jig/wiki/Command-Reference)
 
-Use `jig --help` for the native option reference and `jig gradle --help` for the Gradle contract.
+Use `jig --help` for native module resolution, `jig gradle --help` for Gradle interoperability, and `jig maven --help` for Maven interoperability.
