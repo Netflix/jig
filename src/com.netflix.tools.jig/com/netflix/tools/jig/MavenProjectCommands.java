@@ -65,7 +65,7 @@ final class MavenProjectCommands {
                 + "Argument resolution requires --project and --scope.\n"
                 + "Resolve options: class-path, source-path, module-path, module-source-path, module, add-modules, describe-module.\n"
                 + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
-                + "Paths come from Maven's project model and native dependency resolution; build goals are not executed.\n";
+                + "Binary paths prepare native compile outputs; requesting source paths leaves selected sources to the caller.\n";
     }
 
     static int run(PrintWriter out, PrintWriter err, String[] arguments) {
@@ -95,7 +95,8 @@ final class MavenProjectCommands {
             Path home = version.lines().stream().map(MavenProjectCommands::withoutColor)
                     .filter(line -> line.startsWith("Maven home:")).map(line -> Path.of(line.substring("Maven home:".length()).trim()))
                     .findFirst().orElseThrow(() -> new IOException("Maven did not report its installation directory"));
-            Path extension = MavenCaptureExtension.create(home.toRealPath());
+            boolean prepare = request.options().contains("class-path") || request.options().contains("module-path");
+            Path extension = MavenCaptureExtension.create(home.toRealPath(), prepare);
             var captureArguments = new ArrayList<>(launcher);
             captureArguments.addAll(List.of("--batch-mode", "--quiet", "-Dstyle.color=never", "--file", request.base().resolve("pom.xml").toString(),
                     "-Dmaven.ext.class.path=" + extension));
@@ -106,7 +107,13 @@ final class MavenProjectCommands {
                 captureArguments.addAll(List.of("-Djig.maven.project=" + request.project(), "-Djig.maven.scope=" + request.scope(),
                         "-Djig.maven.options=" + String.join(",", request.options().stream().sorted().toList())));
             }
-            captureArguments.add("validate");
+            String phase = "validate";
+            if (prepare) {
+                captureArguments.add("--also-make");
+                boolean testScope = request.scope().equals("test");
+                phase = testScope ? "test-compile" : "compile";
+            }
+            captureArguments.add(phase);
             var capture = invoke(request, captureArguments, err);
             var values = new Properties();
             for (String line : capture.lines()) {
@@ -132,7 +139,7 @@ final class MavenProjectCommands {
             if (request.listProjects()) {
                 list(values, "projects").stream().distinct().sorted().forEach(out::println);
             } else {
-                String generated = MavenArguments.render(request.options(), request.moduleForm(), request.scope(), values);
+                String generated = MavenArguments.render(request.options(), request.moduleForm(), values);
                 if (request.argumentFile() == null) {
                     out.print(generated);
                 } else {

@@ -72,6 +72,24 @@ class JigCompilerCapture implements Spec<Task> {
     }
 }
 
+// Resolve the source representation after producers have run, not while the
+// build is being configured. Preserve the build's existing compile predicates.
+class JigCompilationRequired implements Spec<Task> {
+    boolean sourcePathRequested
+    boolean moduleSourcePathRequested
+    FileCollection sourceRoots
+
+    @Override
+    boolean isSatisfiedBy(Task task) {
+        return !sourceView(sourceRoots, sourcePathRequested, moduleSourcePathRequested)
+    }
+
+    static boolean sourceView(FileCollection roots, boolean sourcePath, boolean moduleSourcePath) {
+        def named = roots.files.any { new File(it, 'module-info.java').isFile() }
+        return named ? moduleSourcePath : sourcePath
+    }
+}
+
 // The execution state contains values, file collections, and argument providers,
 // never Project, SourceSet, JavaCompile, JavaExec, or init-script closures. Gradle
 // can restore it without evaluating the build on a configuration-cache hit.
@@ -85,6 +103,9 @@ class JigCaptureTask extends DefaultTask {
     @Input boolean inferModules = false
     @Input boolean detectSourceModule = true
     @Classpath FileCollection binaryPath
+    @Internal FileCollection sourceOutput
+    @Input boolean sourcePathRequested = false
+    @Input boolean moduleSourcePathRequested = false
     @Classpath FileCollection processorPath
 
     @TaskAction
@@ -97,7 +118,9 @@ class JigCaptureTask extends DefaultTask {
         def roots = sourceRoots.files
         putList(values, 'sources', roots.collect { it.canonicalPath })
         def modular = false
-        def classpath = binaryPath.files
+        def sourceView = JigCompilationRequired.sourceView(sourceRoots, sourcePathRequested, moduleSourcePathRequested)
+        def selectedPath = sourceView && sourceOutput != null ? binaryPath - sourceOutput : binaryPath
+        def classpath = selectedPath.files
         def modulepath = []
         if (inferModules) {
             // The detector is absent in older Gradle versions, which also lack
@@ -106,8 +129,8 @@ class JigCaptureTask extends DefaultTask {
             def detectorType = Class.forName('org.gradle.internal.jvm.JavaModuleDetector')
             def detector = services.get(detectorType)
             modular = !detectSourceModule || detectorType.isModuleSource(true, roots)
-            classpath = detector.inferClasspath(modular, binaryPath).files
-            modulepath = detector.inferModulePath(modular, binaryPath).files
+            classpath = detector.inferClasspath(modular, selectedPath).files
+            modulepath = detector.inferModulePath(modular, selectedPath).files
         }
         putList(values, 'classpath', classpath.collect { it.canonicalPath })
         putList(values, 'module-path', modulepath.collect { it.canonicalPath })
@@ -232,10 +255,28 @@ gradle.settingsEvaluated { settings ->
                 task.sourceRoots = sourceSet.allJava.sourceDirectories
                 def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
                 def run = needsRun ? project.tasks.findByName('run') : null
-                def needsCompile = needsLanguage || needsProcessors || (classpath == 'compile' && needsArguments) || (needsModularity && (classpath == 'compile' || run == null))
+                def needsCompilerArguments = classpath == 'compile' && needsArguments
+                def needsCompilerModularity = needsModularity && (classpath == 'compile' || run == null)
+                def needsSourcePreparation = needsClasspath && needsSources
+                def needsCompile = needsLanguage || needsProcessors || needsCompilerArguments || needsCompilerModularity || needsSourcePreparation
                 def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
                 if (needsClasspath) {
                     task.binaryPath = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
+                    task.sourceOutput = sourceSet.output
+                    task.sourcePathRequested = requested.contains('source-path')
+                    task.moduleSourcePathRequested = requested.contains('module-source-path')
+                    if (classpath == 'compile') {
+                        // SourceSetOutput carries the native classes/resources
+                        // producer graph; do not synthesize a compiler invocation.
+                        task.binaryPath = sourceSet.output + task.binaryPath
+                    }
+                    if (needsSources) {
+                        compile.dependsOn(task.sourceRoots)
+                        compile.onlyIf(new JigCompilationRequired(
+                                sourcePathRequested: task.sourcePathRequested,
+                                moduleSourcePathRequested: task.moduleSourcePathRequested,
+                                sourceRoots: task.sourceRoots))
+                    }
                 }
                 if (needsProcessors && compile.options.hasProperty('annotationProcessorPath') && compile.options.annotationProcessorPath != null) {
                     task.processorPath = compile.options.annotationProcessorPath

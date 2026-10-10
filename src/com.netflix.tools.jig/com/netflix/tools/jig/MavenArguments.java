@@ -37,7 +37,7 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
 final class MavenArguments {
     private MavenArguments() {}
 
-    static String render(Set<String> options, ModuleForm moduleForm, String scope, Properties values) throws IOException {
+    static String render(Set<String> options, ModuleForm moduleForm, Properties values) throws IOException {
         List<String> sources = MavenProjectCommands.list(values, "sources");
         List<String> supplied = MavenProjectCommands.list(values, "classpath");
         String outputDirectory = values.getProperty("output-directory");
@@ -47,18 +47,19 @@ final class MavenArguments {
         Path output = Path.of(outputDirectory).toAbsolutePath().normalize();
         ModuleDescriptor sourceModule = sourceModule(sources);
         ModuleDescriptor module = sourceModule != null ? sourceModule : binaryModule(output);
+        boolean sourceView = options.contains(module == null ? "source-path" : "module-source-path");
         var classpath = new LinkedHashSet<String>();
         var modulePath = new LinkedHashSet<String>();
         for (String entry : supplied) {
             Path path = Path.of(entry).toAbsolutePath().normalize();
+            if (path.equals(output) && sourceView) {
+                // The corresponding sources, not an old compiled output, satisfy
+                // this selection. Prerequisites remain on the binary paths.
+                continue;
+            }
             if (module == null) {
                 classpath.add(entry);
-            } else if (path.equals(output)) {
-                // Compilation consumes the selected sources; runtime consumes its output.
-                if (!scope.equals("compile")) {
-                    modulePath.add(entry);
-                }
-            } else if (namedModule(path)) {
+            } else if (path.equals(output) || namedModule(path)) {
                 modulePath.add(entry);
             } else {
                 classpath.add(entry);

@@ -79,7 +79,7 @@ class GradleIntegrationTest {
     @Test
     void resolvesClasspathSpecificPathsAndMaterializesDependencyOutputs() throws Exception {
         var fixture = fixture(false);
-        String compile = resolve(fixture, "compile", "class-path");
+        String compile = resolve(fixture, "compile", "class-path,source-path");
         assertTrue(compile.contains("compile only.jar"), compile);
         assertTrue(compile.contains("shared.jar"), compile);
         assertTrue(compile.contains("library/" + classesDirectory()), compile);
@@ -91,6 +91,26 @@ class GradleIntegrationTest {
         assertTrue(runtime.contains("shared.jar"), runtime);
         assertFalse(runtime.contains("compile only.jar"), runtime);
         assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+    }
+
+    @Test
+    void binaryPathsDelegateSelectedCompilationButSourcePathsLeaveItToTheCaller() throws Exception {
+        var fixture = fixture(false);
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        String sources = resolve(fixture, "runtime", "class-path,source-path");
+        assertTrue(Files.isRegularFile(fixture.root().resolve("library/" + classesDirectory() + "/lib/Library.class")));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertFalse(sources.contains(fixture.app().resolve(classesDirectory()).toString()), sources);
+        // Module sources are not an equivalent source view for an unnamed set.
+        String binaries = resolve(fixture, "compile", "class-path,module-source-path");
+        assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertTrue(binaries.contains(fixture.app().resolve(classesDirectory()).toString()), binaries);
+        Files.delete(fixture.app().resolve(classesDirectory() + "/app/Main.class"));
+        assertEquals(sources, resolve(fixture, "runtime", "class-path,source-path"));
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
+        assertFalse(Files.exists(fixture.app().resolve("build/test-results")));
     }
 
     @Test
@@ -115,6 +135,7 @@ class GradleIntegrationTest {
         assertTrue(captured.contains("\"--class-path\""), captured);
         assertTrue(captured.contains("app.mod=" + fixture.app().resolve("sources/java")), captured);
         assertTrue(captured.contains("\"--module\"\n\"app.mod\""), captured);
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
         Path compiled = temporaryDirectory.resolve("compiled");
         execute("javac", "@" + options, "-d", compiled.toString());
         assertTrue(Files.isRegularFile(compiled.resolve("app.mod/module-info.class")));
@@ -134,6 +155,15 @@ class GradleIntegrationTest {
         String runtime = Files.readString(runtimeOptions);
         assertTrue(runtime.contains("\"--module\"\n\"app.mod/app.Main\""), runtime);
         assertEquals("hello", execute("java", "@" + runtimeOptions).strip());
+    }
+
+    @Test
+    @EnabledIf("supportsModules")
+    void moduleBinaryPathsRequireTheCorrespondingModuleSourceOption() throws Exception {
+        var fixture = fixture(true);
+        String binaries = resolve(fixture, "compile", "module-path,source-path");
+        assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/module-info.class")));
+        assertTrue(binaries.contains(fixture.app().resolve(classesDirectory()).toString()), binaries);
     }
 
     @Test
@@ -174,7 +204,7 @@ class GradleIntegrationTest {
             // modular while disabling inference on the run task itself.
             Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = "
                     + classpath.equals("runtime") + "\ntasks.run.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
-            String captured = resolve(fixture, classpath, "class-path,module-path");
+            String captured = resolve(fixture, classpath, "class-path,module-path" + (classpath.equals("compile") ? ",module-source-path" : ""));
             assertFalse(captured.contains("\"--module-path\""), captured);
             for (Path binary : List.of(explicit, multiRelease, notMultiRelease, exploded)) {
                 assertTrue(captured.contains(binary.toString()), captured);
@@ -188,7 +218,7 @@ class GradleIntegrationTest {
         var fixture = fixture(true);
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
                 StandardOpenOption.APPEND);
-        String capture = resolve(fixture, "compile", "module-path,class-path,module,source-path");
+        String capture = resolve(fixture, "compile", "module-path,class-path,module,module-source-path");
         assertTrue(capture.contains("\"--class-path\""), capture);
         assertFalse(capture.contains("\"--module-path\""), capture);
         assertFalse(capture.contains("\"--module\""), capture);
@@ -449,7 +479,7 @@ class GradleIntegrationTest {
                 sourceSets.main.compileClasspath = files(rootProject.file('source set.jar'))
                 tasks.compileJava.classpath = files(rootProject.file('compile task.jar'))
                 """, StandardOpenOption.APPEND);
-        String capture = resolve(fixture, "compile", "class-path");
+        String capture = resolve(fixture, "compile", "class-path,source-path");
         assertTrue(capture.contains("source set.jar"), capture);
         assertFalse(capture.contains("compile task.jar"), capture);
     }

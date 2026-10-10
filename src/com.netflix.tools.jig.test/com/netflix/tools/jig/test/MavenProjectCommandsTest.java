@@ -115,6 +115,26 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void binaryPathRequestsUseNativeBuildPreparationButSourceOnlyRequestsDoNot() throws Exception {
+        var fixture = fixture(false);
+        for (String scope : List.of("compile", "runtime", "test")) {
+            var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", scope,
+                    "-r", "class-path");
+            assertEquals(0, result.status(), result.error());
+            List<String> invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+            assertTrue(invocation.contains("--also-make"), invocation.toString());
+            assertEquals(scope.equals("test") ? "test-compile" : "compile", invocation.getLast());
+        }
+        var sources = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                "-r", "source-path");
+        assertEquals(0, sources.status(), sources.error());
+        List<String> invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+        assertFalse(invocation.contains("--also-make"), invocation.toString());
+        assertEquals("validate", invocation.getLast());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void aFailedResolutionDoesNotOverwriteAnExistingArgumentFile() throws Exception {
         var fixture = fixture(false);
         Path wrapper = fixture.project().resolve("mvnw");
@@ -185,6 +205,9 @@ class MavenProjectCommandsTest {
         assertEquals(0, compile.status(), compile.error());
         assertEquals("\"--class-path\"\n\"" + plain + "\"\n\"--module-path\"\n\"" + fixture.project().resolve("dependency.jar")
                 + "\"\n\"--module-source-path\"\n\"example.app=" + sources + "\"\n\"--module\"\n\"example.app\"\n", compile.output());
+        var binaryCompile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "module-path,source-path");
+        assertEquals(0, binaryCompile.status(), binaryCompile.error());
+        assertTrue(binaryCompile.output().contains(fixture.project().resolve("output").toString()), binaryCompile.output());
         var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "module-path,module=main");
         assertEquals(0, runtime.status(), runtime.error());
         assertTrue(runtime.output().contains(fixture.project().resolve("output").toString()), runtime.output());
@@ -373,13 +396,23 @@ class MavenProjectCommandsTest {
         Path home = Files.createDirectories(temporaryDirectory.resolve("maven home"));
         Path sources = Files.createDirectories(home.resolve("sources"));
         Path session = sources.resolve("MavenSession.java");
+        Path lifecycleParticipant = sources.resolve("AbstractMavenLifecycleParticipant.java");
+        Path listener = sources.resolve("ExecutionListener.java");
+        Path request = sources.resolve("MavenExecutionRequest.java");
+        Path event = sources.resolve("ExecutionEvent.java");
+        Path result = sources.resolve("MavenExecutionResult.java");
         Path project = sources.resolve("MavenProject.java");
         Path lifecycle = sources.resolve("LifecycleStarter.java");
         Path resolver = sources.resolve("LifecycleDependencyResolver.java");
         Path filter = sources.resolve("ArtifactFilter.java");
         Path cumulative = sources.resolve("CumulativeScopeArtifactFilter.java");
         Path build = sources.resolve("Build.java");
-        Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } public java.util.Properties getUserProperties() { return new java.util.Properties(); } public void setCurrentProject(org.apache.maven.project.MavenProject project) {} }\n");
+        Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } public void setProjects(java.util.List<org.apache.maven.project.MavenProject> projects) {} public MavenExecutionResult getResult() { return new MavenExecutionResult(); } public MavenSession clone() { return this; } public MavenExecutionRequest getRequest() { return new MavenExecutionRequest(); } public java.util.Properties getUserProperties() { return new java.util.Properties(); } public void setCurrentProject(org.apache.maven.project.MavenProject project) {} }\n");
+        Files.writeString(lifecycleParticipant, "package org.apache.maven; public abstract class AbstractMavenLifecycleParticipant { public void afterProjectsRead(org.apache.maven.execution.MavenSession session) {} }\n");
+        Files.writeString(listener, "package org.apache.maven.execution; public interface ExecutionListener {}\n");
+        Files.writeString(request, "package org.apache.maven.execution; public class MavenExecutionRequest { public ExecutionListener getExecutionListener() { return null; } public MavenExecutionRequest setExecutionListener(ExecutionListener listener) { return this; } public MavenExecutionRequest setGoals(java.util.List<String> goals) { return this; } }\n");
+        Files.writeString(event, "package org.apache.maven.execution; public interface ExecutionEvent { enum Type { SessionStarted, SessionEnded } Type getType(); MavenSession getSession(); }\n");
+        Files.writeString(result, "package org.apache.maven.execution; public class MavenExecutionResult { public boolean hasExceptions() { return false; } }\n");
         Files.writeString(project, """
                 package org.apache.maven.project;
                 public class MavenProject {
@@ -404,7 +437,7 @@ class MavenProjectCommandsTest {
         Path classes = home.resolve("classes");
         var diagnostics = new StringWriter();
         assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
-                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString(), build.toString()), diagnostics.toString());
+                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), lifecycleParticipant.toString(), listener.toString(), request.toString(), event.toString(), result.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString(), build.toString()), diagnostics.toString());
         Path library = Files.createDirectories(home.resolve("lib")).resolve("maven-core-fixture.jar");
         try (var output = new JarOutputStream(Files.newOutputStream(library)); var paths = Files.walk(classes)) {
             for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {

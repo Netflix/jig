@@ -154,7 +154,7 @@ class MavenIntegrationTest {
 
     @Test
     void resolvesMavensNativeCompileRuntimeAndTestClasspaths() throws Exception {
-        Path root = fixture();
+        Path root = fixture(true);
         Path app = root.resolve("app");
         Path repository = root.resolve("repository");
         for (String artifact : List.of("compile", "provided", "runtime", "test", "transitive")) {
@@ -181,6 +181,58 @@ class MavenIntegrationTest {
     }
 
     @Test
+    void binaryPathsPrepareReactorOutputsAndSourcesLeaveSelectedCompilationToTheCaller() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        Path library = Files.createDirectories(root.resolve("library"));
+        Files.writeString(root.resolve("pom.xml"), pom("root", "", "<packaging>pom</packaging><modules><module>library</module><module>app</module></modules>"));
+        Files.writeString(library.resolve("pom.xml"), pom("library", "", ""));
+        String model = pom("app", "", "<dependencies><dependency><groupId>fixture</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies>" + customLayout());
+        model = model.replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <executions><execution><id>generate</id><phase>generate-sources</phase><goals><goal>generate</goal></goals></execution></executions>
+                """);
+        Files.writeString(app.resolve("pom.xml"), model);
+        Path librarySource = Files.createDirectories(library.resolve("src/main/java/lib")).resolve("Library.java");
+        Files.writeString(librarySource, "package lib; public class Library { public static String message() { return \"native\"; } }\n");
+        Path main = Files.createDirectories(app.resolve("sources/java/app")).resolve("Main.java");
+        Files.writeString(main, "package app; public class Main { public static void main(String[] args) { System.out.println(lib.Library.message() + \":\" + Generated.message()); } }\n");
+        Path check = Files.createDirectories(app.resolve("checks/java/app")).resolve("Check.java");
+        Files.writeString(check, "package app; public class Check { Main main; }\n");
+        var sources = discover(root, "--project", ":app", "--scope", "compile", "-r", "class-path,source-path");
+        assertEquals(0, sources.status(), sources.error());
+        assertTrue(Files.isRegularFile(library.resolve("target/classes/lib/Library.class")));
+        assertFalse(Files.exists(app.resolve("out/main/app/Main.class")));
+        assertFalse(sources.output().contains(app.resolve("out/main").toString()), sources.output());
+        assertTrue(sources.output().contains(app.resolve("target/generated-fixture").toString()), sources.output());
+        var testSources = discover(root, "--project", ":app", "--scope", "test", "-r", "class-path,source-path");
+        assertEquals(0, testSources.status(), testSources.error());
+        assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")));
+        assertFalse(Files.exists(app.resolve("out/test/app/Check.class")));
+        Files.delete(app.resolve("out/main/app/Main.class"));
+        Path arguments = root.resolve("runtime.args");
+        var binaries = discover(root, "--project", ":app", "--scope", "runtime", "-r", "class-path,module-source-path", "-w", arguments.toString());
+        assertEquals(0, binaries.status(), binaries.error());
+        assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")));
+        assertFalse(Files.exists(app.resolve("out/test/app/Check.class")));
+        var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "@" + arguments, "app.Main")
+                .redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), output);
+        assertEquals("native:generated", output.strip());
+        var tests = discover(root, "--project", ":app", "--scope", "test", "-r", "class-path");
+        assertEquals(0, tests.status(), tests.error());
+        assertTrue(Files.isRegularFile(app.resolve("out/test/app/Check.class")));
+        assertFalse(Files.exists(app.resolve("target/surefire-reports")));
+        Files.writeString(main, "not Java\n");
+        Files.writeString(arguments, "original\n");
+        var failed = discover(root, "--project", ":app", "--scope", "runtime", "-r", "class-path", "-w", arguments.toString());
+        assertNotEquals(0, failed.status());
+        assertEquals("", failed.output());
+        assertEquals("original\n", Files.readString(arguments));
+    }
+
+    @Test
     void sourceOnlyResolutionUsesConfiguredRootsWithoutResolvingDependencies() throws Exception {
         Path root = fixture();
         Path app = root.resolve("app");
@@ -197,7 +249,7 @@ class MavenIntegrationTest {
 
     @Test
     void failedDependencyResolutionDoesNotPublishPartialArguments() throws Exception {
-        Path root = fixture();
+        Path root = fixture(true);
         Path app = root.resolve("app");
         Files.writeString(app.resolve("pom.xml"), pom("app", "", "<dependencies>" + dependency("missing", "compile") + "</dependencies>" + customLayout()));
         Path argumentFile = root.resolve("tool.args");
@@ -222,7 +274,7 @@ class MavenIntegrationTest {
 
     @Test
     void resolvedOptionsComposeWithStandaloneJavacAndJava() throws Exception {
-        Path root = fixture();
+        Path root = fixture(true);
         Path app = root.resolve("app");
         Path repository = root.resolve("repository");
         artifact(repository, "compile", "");
@@ -258,7 +310,7 @@ class MavenIntegrationTest {
 
     @Test
     void moduleArgumentsComposeWithStandaloneJavacAndJava() throws Exception {
-        Path root = fixture();
+        Path root = fixture(true);
         Path app = root.resolve("app");
         Path repository = root.resolve("repository");
         artifact(repository, "compile", "");
@@ -358,6 +410,10 @@ class MavenIntegrationTest {
     }
 
     private Path fixture() throws Exception {
+        return fixture(false);
+    }
+
+    private Path fixture(boolean compilation) throws Exception {
         Path parent = Files.createDirectories(temporaryDirectory.resolve("parent"));
         Files.writeString(parent.resolve("pom.xml"), pom("parent", "", "<packaging>pom</packaging>"));
         Path root = Files.createDirectories(temporaryDirectory.resolve("project with spaces")).toRealPath();
@@ -386,6 +442,9 @@ class MavenIntegrationTest {
         }
         Files.writeString(root.resolve("extra.enabled"), "");
         launcher(root, "--offline\n");
+        if (compilation) {
+            MavenCompilationFixture.install(maven, root.resolve("repository"));
+        }
         return root;
     }
 
@@ -406,6 +465,14 @@ class MavenIntegrationTest {
     }
 
     private static String pom(String artifact, String parent, String content) {
+        String plugins = MavenCompilationFixture.plugins();
+        if (content.contains("<plugins>")) {
+            content = content.replace("<plugins>", plugins.replace("</plugins>", ""));
+        } else if (content.contains("<build>")) {
+            content = content.replace("<build>", "<build>" + plugins);
+        } else {
+            content += "<build>" + plugins + "</build>";
+        }
         return """
                 <project xmlns="http://maven.apache.org/POM/4.0.0">
                   <modelVersion>4.0.0</modelVersion>

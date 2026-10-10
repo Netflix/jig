@@ -74,6 +74,7 @@ final class GradleCommandLine {
                 + "Project paths and source-set names are obtained from the build.\n"
                 + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
                 + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
+                + "Binary paths prepare selected outputs unless the corresponding source paths are requested.\n"
                 + "Unknown projects or source sets are errors; empty source sets produce only configured arguments.\n"
                 + "Compiler resolution implies compile and uses Gradle's compiler argument builder.\n"
                 + "It excludes source filenames and launcher options; the caller owns the invocation.\n"

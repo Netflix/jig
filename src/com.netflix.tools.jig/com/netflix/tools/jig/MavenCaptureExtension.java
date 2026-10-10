@@ -40,7 +40,7 @@ import com.netflix.tools.jig.module.ModuleRepositorySession;
 final class MavenCaptureExtension {
     private MavenCaptureExtension() {}
 
-    static Path create(Path mavenHome) throws IOException {
+    static Path create(Path mavenHome, boolean prepare) throws IOException {
         List<Path> libraries;
         try (var files = Files.list(mavenHome.resolve("lib"))) {
             libraries = files.filter(path -> path.getFileName().toString().endsWith(".jar")).sorted().toList();
@@ -60,7 +60,7 @@ final class MavenCaptureExtension {
         boolean interfaceStarter = ClassFile.of().parse(starter).flags().has(AccessFlag.INTERFACE);
         String source = new String(resource("maven-capture.java.template"), StandardCharsets.UTF_8)
                 .replace("LIFECYCLE_ADAPTER", interfaceStarter ? "implements" : "extends");
-        byte[] descriptor = resource("maven-components.xml");
+        byte[] descriptor = resource(prepare ? "maven-build-components.xml" : "maven-components.xml");
         var inputs = new ByteArrayOutputStream();
         inputs.write(source.getBytes(StandardCharsets.UTF_8));
         inputs.write(descriptor);
