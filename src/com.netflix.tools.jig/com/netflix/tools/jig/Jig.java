@@ -158,13 +158,13 @@ public class Jig implements ToolProvider, OptionChecker {
 
     int runWithSessions(PrintWriter out, PrintWriter err, Supplier<ModuleRepositorySession> sessions,
                         String... args) {
+        if (args.length > 0 && args[0].equals("serve")) {
+            return serve(out, err, Arrays.copyOfRange(args, 1, args.length));
+        }
         if (args.length > 0 && args[0].equals("gradle")) {
             return GradleCommands.run(out, err, Arrays.copyOfRange(args, 1, args.length));
         }
         if (args.length > 0 && args[0].equals("maven")) {
-            if (args.length > 1 && args[1].equals("serve")) {
-                return serve(out, err, Arrays.copyOfRange(args, 2, args.length));
-            }
             return MavenCommands.run(out, err, sessions, Arrays.copyOfRange(args, 1, args.length));
         }
         Options options;
@@ -1259,7 +1259,7 @@ public class Jig implements ToolProvider, OptionChecker {
     }
 
     private static void printServeHelp(PrintWriter out) {
-        out.println("Usage: jig maven serve [--listen <host:port>]");
+        out.println("Usage: jig serve [--listen <host:port>]");
         out.println();
         out.println("Starts the module proxy.");
         out.println("Defaults to 127.0.0.1 with a random available port.");
@@ -1281,7 +1281,7 @@ public class Jig implements ToolProvider, OptionChecker {
         out.println("Usage: jig [options]");
         out.println("       jig gradle [options]");
         out.println("       jig maven <operation> [options]");
-        out.println("       jig maven serve [--listen <host:port>]");
+        out.println("       jig serve [--listen <host:port>]");
         out.println();
         out.println("Resolves a Java module graph from requires directives.");
         out.println("By default, validates the graph and exits.");

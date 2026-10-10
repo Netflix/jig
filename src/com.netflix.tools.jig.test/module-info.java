@@ -15,6 +15,7 @@
 open module com.netflix.tools.jig.test {
     requires com.netflix.tools.jig;
     requires java.compiler;
+    requires java.management;
     requires java.net.http;
     requires java.xml;
     requires jdk.compiler;
