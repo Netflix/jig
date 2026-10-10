@@ -81,13 +81,14 @@ class JigToolProviderTest {
         Files.writeString(directory.resolve("gradlew"), "#!/bin/sh\nprintf '%s\\n' 'jig-gradle:" + Base64.getEncoder().encodeToString(bytes.toByteArray()) + "'\n");
         Path implementation = Path.of(Jig.class.getProtectionDomain().getCodeSource().getLocation().toURI());
         Path java = Path.of(System.getProperty("java.home"), "bin/java");
+        Path diagnostics = directory.resolve("stderr.txt");
         var process = new ProcessBuilder(java.toString(), "--module-path", implementation.toString(),
                 "--patch-module", "com.netflix.tools.jig=" + implementation,
                 "--module", "com.netflix.tools.jig/com.netflix.tools.jig.Jig", "gradle", "--root-project-dir", directory.toString(),
                 "--project-path", ":", "--source-set", "main", "--classpath", "compile", "-r", "source-path")
-                .redirectErrorStream(true).start();
+                .redirectError(diagnostics.toFile()).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, process.waitFor(), implementation + "\n" + output);
+        assertEquals(0, process.waitFor(), implementation + "\n" + output + Files.readString(diagnostics));
         assertEquals("\"--source-path\"\n\"" + source + "\"\n", output);
     }
 
