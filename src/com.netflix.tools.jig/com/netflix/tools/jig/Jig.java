@@ -1076,20 +1076,7 @@ public class Jig implements ToolProvider, OptionChecker {
     }
 
     private static void appendArgument(StringBuilder output, String argument) {
-        boolean quote = argument.isEmpty() || argument.startsWith("#") || argument.chars().anyMatch(Character::isWhitespace);
-        if (!quote) {
-            output.append(argument).append('\n');
-            return;
-        }
-        output.append('"');
-        for (int i = 0; i < argument.length(); i++) {
-            char character = argument.charAt(i);
-            if (character == '\\' || character == '"') {
-                output.append('\\');
-            }
-            output.append(character);
-        }
-        output.append('"').append('\n');
+        JavaArgumentFile.append(output, argument);
     }
 
     private static int serve(PrintWriter out, PrintWriter err, String[] args) {

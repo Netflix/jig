@@ -24,7 +24,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Properties;
 import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
@@ -35,24 +34,29 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
 
 /** Projects Maven-selected paths using jig's existing source and artifact module identities. */
 final class MavenArguments {
+    record View(List<String> sources, List<String> classpath, Path output, boolean sourceView) {
+        static View read(BuildCapture capture) throws IOException {
+            return new View(capture.list("sources"), capture.list("classpath"),
+                    Path.of(capture.require("output-directory")).toAbsolutePath().normalize(), capture.flag("source-view"));
+        }
+    }
+
     private MavenArguments() {}
 
-    static String render(Set<String> options, ModuleForm moduleForm, Properties values) throws IOException {
-        List<String> sources = MavenProjectCommands.list(values, "sources");
-        List<String> supplied = MavenProjectCommands.list(values, "classpath");
-        String outputDirectory = values.getProperty("output-directory");
-        if (outputDirectory == null) {
-            throw new IOException("Missing Maven capture entry: output-directory");
-        }
-        Path output = Path.of(outputDirectory).toAbsolutePath().normalize();
+    static String render(Set<String> options, ModuleForm moduleForm, View view) throws IOException {
+        List<String> sources = view.sources();
+        List<String> supplied = view.classpath();
+        Path output = view.output();
         ModuleDescriptor sourceModule = sourceModule(sources);
-        ModuleDescriptor module = sourceModule != null ? sourceModule : binaryModule(output);
-        boolean sourceView = options.contains(module == null ? "source-path" : "module-source-path");
+        ModuleDescriptor module = sourceModule;
+        if (module == null && !view.sourceView()) {
+            module = binaryModule(output);
+        }
         var classpath = new LinkedHashSet<String>();
         var modulePath = new LinkedHashSet<String>();
         for (String entry : supplied) {
             Path path = Path.of(entry).toAbsolutePath().normalize();
-            if (path.equals(output) && sourceView) {
+            if (path.equals(output) && view.sourceView()) {
                 // The corresponding sources, not an old compiled output, satisfy
                 // this selection. Prerequisites remain on the binary paths.
                 continue;
@@ -87,7 +91,7 @@ final class MavenArguments {
                 arguments.addAll(List.of("--describe-module", name));
             }
         }
-        return MavenProjectCommands.argumentFile(arguments);
+        return JavaArgumentFile.render(arguments);
     }
 
     private static ModuleDescriptor sourceModule(List<String> sources) {

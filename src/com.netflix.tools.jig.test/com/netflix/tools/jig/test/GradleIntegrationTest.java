@@ -588,6 +588,38 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedModuleCoverage")
+    void generatedModuleDescriptorsControlSourceSelectionAcrossCacheReplay() throws Exception {
+        var fixture = fixture(true);
+        Files.delete(fixture.app().resolve("sources/java/module-info.java"));
+        Files.writeString(fixture.app().resolve("sources/java/app/Main.java"), "not Java; selected compilation must not run\n");
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                abstract class GenerateModule extends DefaultTask {
+                    @OutputDirectory abstract org.gradle.api.file.DirectoryProperty getDestination()
+                    @TaskAction void generate() {
+                        def file = new File(destination.get().asFile, 'module-info.java')
+                        file.parentFile.mkdirs()
+                        file.text = 'module app.mod { requires lib.mod; }'
+                    }
+                }
+                def generator = tasks.register('generateModule', GenerateModule) {
+                    destination = layout.buildDirectory.dir('generated/module')
+                }
+                sourceSets.main.java.srcDir(generator.flatMap { it.destination })
+                """, StandardOpenOption.APPEND);
+        Path descriptor = fixture.app().resolve("build/generated/module/module-info.java");
+        String first = resolve(fixture, "compile", "class-path,module-path,module-source-path,module");
+        assertTrue(first.contains("app.mod="), first);
+        assertTrue(first.contains(descriptor.getParent().toString()), first);
+        assertFalse(first.contains(fixture.app().resolve(classesDirectory()).toString()), first);
+        assertFalse(Files.exists(fixture.app().resolve(classesDirectory())));
+        Files.delete(descriptor);
+        assertEquals(first, resolve(fixture, "compile", "class-path,module-path,module-source-path,module"));
+        assertTrue(Files.isRegularFile(descriptor));
+    }
+
+    @Test
     @EnabledIf("detailedCoverage")
     void classpathResolutionUsesTheSourceSetRatherThanTheCompilationTaskOverride() throws Exception {
         var fixture = fixture(false);

@@ -15,6 +15,7 @@
 package com.netflix.tools.jig;
 
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.lang.classfile.ClassFile;
@@ -24,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.jar.JarEntry;
@@ -38,6 +40,8 @@ import com.netflix.tools.jig.module.ModuleRepositorySession;
 
 /** Packages only our Java 8 capture code against the selected Maven runtime. */
 final class MavenCaptureExtension {
+    private static final List<String> COMPILER_OPTIONS = List.of("--release", "8", "-Xlint:-options", "-proc:none", "-g:none");
+
     private MavenCaptureExtension() {}
 
     static Path create(Path mavenHome, boolean prepare) throws IOException {
@@ -62,10 +66,24 @@ final class MavenCaptureExtension {
                 .replace("LIFECYCLE_ADAPTER", interfaceStarter ? "implements" : "extends");
         byte[] descriptor = resource(prepare ? "maven-build-components.xml" : "maven-components.xml");
         var inputs = new ByteArrayOutputStream();
-        inputs.write(source.getBytes(StandardCharsets.UTF_8));
-        inputs.write(descriptor);
-        inputs.write(Files.readAllBytes(core));
-        inputs.write(System.getProperty("java.runtime.version").getBytes(StandardCharsets.UTF_8));
+        try (var fingerprint = new DataOutputStream(inputs)) {
+            byte[] code = source.getBytes(StandardCharsets.UTF_8);
+            fingerprint.writeInt(code.length);
+            fingerprint.write(code);
+            fingerprint.writeInt(descriptor.length);
+            fingerprint.write(descriptor);
+            fingerprint.writeUTF(System.getProperty("java.runtime.version"));
+            fingerprint.writeUTF(System.getProperty("java.vendor"));
+            fingerprint.writeInt(COMPILER_OPTIONS.size());
+            for (String option : COMPILER_OPTIONS) {
+                fingerprint.writeUTF(option);
+            }
+            fingerprint.writeInt(libraries.size());
+            for (Path library : libraries) {
+                fingerprint.writeUTF(library.getFileName().toString());
+                fingerprint.write(ContentHash.sha256(Files.readAllBytes(library)).bytes());
+            }
+        }
         // This is a compiled code artifact, independent of projects and requests.
         Path directory = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
                 .resolve("maven/capture").toAbsolutePath().normalize();
@@ -109,10 +127,11 @@ final class MavenCaptureExtension {
         };
         var diagnostics = new StringWriter();
         try (var manager = compiler.getStandardFileManager(null, null, StandardCharsets.UTF_8)) {
-            List<String> arguments = List.of("--release", "8", "-Xlint:-options", "-proc:none", "-g:none", "-classpath",
-                    String.join(System.getProperty("path.separator"), libraries.stream().map(Path::toString).toList()), "-d", classes.toString());
+            var arguments = new ArrayList<>(COMPILER_OPTIONS);
+            arguments.addAll(List.of("-classpath", String.join(System.getProperty("path.separator"), libraries.stream().map(Path::toString).toList()),
+                    "-d", classes.toString()));
             if (!compiler.getTask(diagnostics, manager, null, arguments, null, List.of(input)).call()) {
-                throw new IOException("Cannot compile the Maven capture extension:\n" + diagnostics);
+                throw new IOException("Cannot compile the Maven capture extension against " + libraries + ":\n" + diagnostics);
             }
         }
     }

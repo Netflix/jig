@@ -14,20 +14,14 @@
 
 package com.netflix.tools.jig;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.lang.ProcessBuilder.Redirect;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Properties;
 import java.util.Set;
 
 import com.netflix.tools.jig.CommandLine.ParsedArguments;
@@ -81,18 +75,19 @@ final class MavenProjectCommands {
             return 2;
         }
         try {
-            var launcher = launcher(request.base());
+            var launcher = BuildProcess.launcher(request.base(), "mvn", "mvnw", "mvn.cmd", "mvnw.cmd");
             var versionArguments = new ArrayList<>(launcher);
             versionArguments.addAll(List.of("--batch-mode", "-Dstyle.color=never", "--version"));
-            var version = invoke(request, versionArguments, err);
-            if (version.status() != 0) {
-                version.lines().forEach(err::println);
-                return version.status();
+            var versionLines = new ArrayList<String>();
+            int versionStatus = invoke(request, versionArguments, versionLines::add, err);
+            if (versionStatus != 0) {
+                versionLines.forEach(err::println);
+                return versionStatus;
             }
             if (request.verbose()) {
-                version.lines().forEach(err::println);
+                versionLines.forEach(err::println);
             }
-            Path home = version.lines().stream().map(MavenProjectCommands::withoutColor)
+            Path home = versionLines.stream().map(MavenProjectCommands::withoutColor)
                     .filter(line -> line.startsWith("Maven home:")).map(line -> Path.of(line.substring("Maven home:".length()).trim()))
                     .findFirst().orElseThrow(() -> new IOException("Maven did not report its installation directory"));
             boolean prepare = request.options().contains("class-path") || request.options().contains("module-path");
@@ -114,32 +109,37 @@ final class MavenProjectCommands {
                 phase = testScope ? "test-compile" : "compile";
             }
             captureArguments.add(phase);
-            var capture = invoke(request, captureArguments, err);
-            var values = new Properties();
-            for (String line : capture.lines()) {
+            var captures = new ArrayList<BuildCapture>();
+            int status = invoke(request, captureArguments, line -> {
                 if (line.startsWith(CAPTURE_PREFIX)) {
-                    try {
-                        values.load(new ByteArrayInputStream(Base64.getDecoder().decode(line.substring(CAPTURE_PREFIX.length()))));
-                    } catch (IllegalArgumentException failure) {
-                        throw new IOException("Invalid Maven capture", failure);
+                    if (!captures.isEmpty()) {
+                        throw new IOException("Duplicate Maven capture");
                     }
+                    captures.add(BuildCapture.decode("Maven", line.substring(CAPTURE_PREFIX.length())));
                 } else {
                     err.println(line);
+                    err.flush();
                 }
+            }, err);
+            if (status != 0) {
+                return status;
             }
-            if (capture.status() != 0) {
-                return capture.status();
-            }
-            if (values.isEmpty()) {
+            if (captures.isEmpty()) {
                 throw new IOException("Maven did not return a capture");
             }
-            if (!"1".equals(values.getProperty("version"))) {
-                throw new IOException("Unsupported Maven capture version: " + values.getProperty("version"));
-            }
+            BuildCapture capture = captures.getFirst();
+            capture.expect("kind", request.listProjects() ? "projects" : "arguments");
+            List<String> projects = capture.list("projects");
             if (request.listProjects()) {
-                list(values, "projects").stream().distinct().sorted().forEach(out::println);
+                projects.stream().distinct().sorted().forEach(out::println);
             } else {
-                String generated = MavenArguments.render(request.options(), request.moduleForm(), values);
+                String selected = capture.require("project");
+                if (!selected.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+") || !projects.contains(selected)
+                        || !(selected.equals(request.project()) || (request.project().startsWith(":") && selected.endsWith(request.project())))) {
+                    throw new IOException("Unexpected Maven capture project: " + selected);
+                }
+                capture.expect("scope", request.scope());
+                String generated = MavenArguments.render(request.options(), request.moduleForm(), MavenArguments.View.read(capture));
                 if (request.argumentFile() == null) {
                     out.print(generated);
                 } else {
@@ -154,10 +154,9 @@ final class MavenProjectCommands {
             Thread.currentThread().interrupt();
             err.println("jig maven: interrupted");
             return 1;
-        } catch (RuntimeException failure) {
+        } catch (IllegalArgumentException failure) {
             err.println("jig maven: " + failure.getMessage());
-            failure.printStackTrace(err);
-            return 1;
+            return 2;
         }
     }
 
@@ -244,72 +243,17 @@ final class MavenProjectCommands {
         return values.isEmpty() ? null : values.getFirst();
     }
 
-    static List<String> list(Properties values, String name) throws IOException {
-        String count = values.getProperty(name + ".count");
-        int size;
-        try {
-            size = Integer.parseInt(count);
-        } catch (NumberFormatException failure) {
-            throw new IOException("Invalid Maven capture count for " + name + ": " + count, failure);
-        }
-        if (size < 0 || size > 100_000) {
-            throw new IOException("Invalid Maven capture count for " + name + ": " + count);
-        }
-        var projects = new ArrayList<String>();
-        for (int index = 0; index < size; index++) {
-            String project = values.getProperty(name + "." + index);
-            if (project == null) {
-                throw new IOException("Missing Maven capture entry: " + name + "." + index);
-            }
-            projects.add(project);
-        }
-        return List.copyOf(projects);
-    }
-
-    static String argumentFile(List<String> arguments) {
-        var output = new StringBuilder();
-        for (String argument : arguments) {
-            output.append('"').append(argument.replace("\\", "\\\\").replace("\"", "\\\"")
-                    .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t").replace("\f", "\\f")).append('"').append('\n');
-        }
-        return output.toString();
-    }
-
-    private static ProcessResult invoke(Request request, List<String> arguments, PrintWriter err) throws IOException, InterruptedException {
+    private static int invoke(Request request, List<String> arguments, BuildProcess.LineConsumer output, PrintWriter err)
+            throws IOException, InterruptedException {
         if (request.verbose()) {
             err.println("jig maven: " + arguments);
         }
-        var process = new ProcessBuilder(arguments).directory(request.base().toFile())
-                .redirectInput(Redirect.INHERIT).redirectErrorStream(true).start();
-        try {
-            var lines = new ArrayList<String>();
-            try (var reader = process.inputReader(StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    lines.add(line);
-                }
-            }
-            return new ProcessResult(process.waitFor(), List.copyOf(lines));
-        } finally {
-            if (process.isAlive()) {
-                process.destroyForcibly();
-            }
-        }
+        return BuildProcess.run(request.base(), arguments, output);
     }
 
     private static String withoutColor(String line) {
         return line.replaceAll("\u001b\\[[0-9;]*m", "");
     }
 
-    private static List<String> launcher(Path base) {
-        boolean windows = System.getProperty("os.name").toLowerCase(Locale.ROOT).startsWith("windows");
-        Path wrapper = base.resolve(windows ? "mvnw.cmd" : "mvnw");
-        if (windows) {
-            return List.of("cmd.exe", "/d", "/c", Files.isRegularFile(wrapper) ? wrapper.toString() : "mvn.cmd");
-        }
-        return Files.isRegularFile(wrapper) ? List.of("sh", wrapper.toString()) : List.of("mvn");
-    }
-
     private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean verbose) {}
-    private record ProcessResult(int status, List<String> lines) {}
 }

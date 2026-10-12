@@ -19,9 +19,10 @@ import java.lang.module.ModuleFinder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Properties;
+import java.util.Map;
 
 import com.netflix.tools.jig.GradleCommandLine.Request;
 import com.netflix.tools.jig.Jig.Options.ModuleForm;
@@ -32,25 +33,34 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
  * dependencies.
  */
 final class GradleArguments {
+    record View(List<String> sources, List<String> classpath, List<String> modulePath, List<String> processors,
+                List<String> additional, boolean modular, Map<String, String> metadata) {
+        static View read(BuildCapture capture) throws IOException {
+            var metadata = new LinkedHashMap<String, String>();
+            for (String name : List.of("release", "source", "target", "encoding", "module-version", "main-class", "system", "module-name")) {
+                String value = capture.optional(name);
+                if (value != null) {
+                    metadata.put(name, value);
+                }
+            }
+            return new View(capture.list("sources"), capture.list("classpath"), capture.list("module-path"),
+                    capture.list("processors"), capture.list("additional"), capture.flag("modular"), Map.copyOf(metadata));
+        }
+    }
+
     private GradleArguments() {}
 
-    static String render(Request request, Properties values) throws IOException {
-        if (request.compiler()) {
-            if (values.getProperty("compiler-options.count") == null) {
-                throw new IOException("Missing Gradle compiler options");
-            }
-            return argumentFile(list(values, "compiler-options"));
-        }
+    static String render(Request request, View view) {
         var arguments = new ArrayList<String>();
         var options = request.options();
-        List<String> sources = list(values, "sources");
-        List<String> additional = list(values, "additional");
-        boolean release = values.getProperty("release") != null || additional.stream().anyMatch(argument -> argument.equals("--release") || argument.startsWith("--release="));
-        boolean modular = Boolean.parseBoolean(values.getProperty("modular", "false"));
-        path(arguments, options.contains("class-path"), "--class-path", list(values, "classpath"));
-        path(arguments, options.contains("module-path"), "--module-path", list(values, "module-path"));
+        var metadata = view.metadata();
+        List<String> sources = view.sources();
+        List<String> additional = view.additional();
+        boolean release = metadata.containsKey("release") || additional.stream().anyMatch(argument -> argument.equals("--release") || argument.startsWith("--release="));
+        path(arguments, options.contains("class-path"), "--class-path", view.classpath());
+        path(arguments, options.contains("module-path"), "--module-path", view.modulePath());
         path(arguments, options.contains("source-path"), "--source-path", sources);
-        path(arguments, options.contains("processor-path"), "--processor-path", list(values, "processors"));
+        path(arguments, options.contains("processor-path"), "--processor-path", view.processors());
         for (String name : List.of("release", "source", "target", "encoding", "module-version", "main-class")) {
             boolean selected = options.contains(name) && !(release && (name.equals("source") || name.equals("target")));
             value(
@@ -59,23 +69,23 @@ final class GradleArguments {
                     name.equals("source") || name.equals("target") || name.equals("encoding")
                             ? "-" + name
                             : "--" + name,
-                    values.getProperty(name));
+                    metadata.get(name));
         }
         value(arguments, options.contains("system") && !release, "--system",
-                values.getProperty("system"));
+                metadata.get("system"));
         boolean needsModule = options.contains("module")
                 || options.contains("add-modules")
                 || options.contains("module-source-path")
                 || options.contains("describe-module");
-        if (modular && needsModule) {
-            String module = moduleName(sources, values);
+        if (view.modular() && needsModule) {
+            String module = moduleName(sources, metadata);
             if (module != null) {
                 path(arguments, options.contains("module-source-path"), "--module-source-path",
                         List.of(module + "=" + String.join(System.getProperty("path.separator"), sources)));
                 value(arguments, options.contains("add-modules") && !(options.contains("module") && request.moduleForm() == ModuleForm.ROOTS),
                         "--add-modules", module);
                 if (options.contains("module")) {
-                    String main = values.getProperty("main-class");
+                    String main = metadata.get("main-class");
                     value(arguments, request.moduleForm() != ModuleForm.MAIN || main != null, "--module",
                             request.moduleForm() == ModuleForm.MAIN ? module + "/" + main : module);
                 }
@@ -83,46 +93,7 @@ final class GradleArguments {
             }
         }
         additional(arguments, request, additional);
-        return argumentFile(arguments);
-    }
-
-    private static String argumentFile(List<String> arguments) {
-        var output = new StringBuilder();
-        for (String argument : arguments) {
-            output.append('"')
-                  .append(
-                          argument.replace("\\", "\\\\")
-                                  .replace("\"", "\\\"")
-                                  .replace("\n", "\\n")
-                                  .replace("\r", "\\r")
-                                  .replace("\t", "\\t")
-                                  .replace("\f", "\\f"))
-                  .append('"')
-                  .append('\n');
-        }
-        return output.toString();
-    }
-
-    static List<String> list(Properties values, String name) throws IOException {
-        String count = values.getProperty(name + ".count", "0");
-        int size;
-        try {
-            size = Integer.parseInt(count);
-        } catch (NumberFormatException e) {
-            throw new IOException("Invalid Gradle capture count for " + name + ": " + count, e);
-        }
-        if (size < 0 || size > 100_000) {
-            throw new IOException("Invalid Gradle capture count for " + name + ": " + count);
-        }
-        var entries = new ArrayList<String>();
-        for (int i = 0; i < size; i++) {
-            String entry = values.getProperty(name + "." + i);
-            if (entry == null) {
-                throw new IOException("Missing Gradle capture entry: " + name + "." + i);
-            }
-            entries.add(entry);
-        }
-        return List.copyOf(entries);
+        return JavaArgumentFile.render(arguments);
     }
 
     private static void path(List<String> arguments, boolean requested, String option,
@@ -141,8 +112,8 @@ final class GradleArguments {
         }
     }
 
-    private static String moduleName(List<String> sources, Properties values) {
-        String explicit = values.getProperty("module-name");
+    private static String moduleName(List<String> sources, Map<String, String> metadata) {
+        String explicit = metadata.get("module-name");
         if (explicit != null && !explicit.isEmpty()) {
             return explicit;
         }
