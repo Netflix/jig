@@ -137,6 +137,7 @@ class JigCaptureTask extends DefaultTask {
     @Input String projectPath = ''
     @Input String sourceSet = ''
     @Input List<String> projectPaths = []
+    @Input List<String> projectDirectories = []
     @Input List<String> sourceSetNames = []
     @Internal FileCollection sourceRoots
     @Input Map<String, String> metadata = [:]
@@ -158,6 +159,7 @@ class JigCaptureTask extends DefaultTask {
         values.setProperty('project-path', projectPath)
         values.setProperty('source-set', sourceSet)
         putList(values, 'project-paths', projectPaths)
+        putList(values, 'project-directories', projectDirectories)
         putList(values, 'source-sets', sourceSetNames)
         def roots = sourceRoots.files
         putList(values, 'sources', roots.collect { it.canonicalPath })
@@ -266,7 +268,9 @@ gradle.settingsEvaluated { settings ->
         def qualifiedPath = { path -> buildPath == ':' ? path : buildPath + (path == ':' ? '' : path) }
         def selected = listProjects ? [settings.rootProject] : descriptors.findAll { qualifiedPath(it.path) == selectedPath }
         def projectPath = selected.empty ? null : selected[0].path
-        def projectPaths = descriptors.collect { qualifiedPath(it.path) }.unique().sort()
+        def projectDescriptors = descriptors.sort { qualifiedPath(it.path) }
+        def projectPaths = projectDescriptors.collect { qualifiedPath(it.path) }
+        def projectDirectories = projectDescriptors.collect { it.projectDir.canonicalPath }
         gradle.beforeProject { project ->
             def dispatch = !listProjects && project.path == ':' && projectPath != ':'
             if (project.path != projectPath && !dispatch) {
@@ -307,6 +311,7 @@ gradle.settingsEvaluated { settings ->
                     task.projectPath = selectedPath ?: ''
                     task.sourceSet = sourceSetName ?: ''
                     task.projectPaths = projectPaths
+                    task.projectDirectories = listProjects ? projectDirectories : []
                     task.sourceRoots = project.files()
                     task.binaryPath = project.files()
                     task.processorPath = project.files()

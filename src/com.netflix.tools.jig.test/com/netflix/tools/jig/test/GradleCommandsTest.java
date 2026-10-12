@@ -114,6 +114,92 @@ class GradleCommandsTest {
     }
 
     @Test
+    void validatesProjectListingFormatsBeforeLaunchingGradle() throws Exception {
+        Path root = Files.createDirectories(temporaryDirectory.resolve("root"));
+        assertInvalid("text or tsv", "gradle", "--root-project-dir", root.toString(),
+                "--list-project-paths", "--format", "json");
+        assertInvalid("only be specified once", "gradle", "--root-project-dir", root.toString(),
+                "--list-project-paths", "--format", "tsv", "--format", "text");
+        assertInvalid("only to project listing", "gradle", "--root-project-dir", root.toString(),
+                "--project-path", ":", "--list-source-sets", "--format", "tsv");
+        assertTrue(run("__complete", "gradle", "--for").output().contains("--format\t"));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryListsProjectDirectoriesAsTsv() throws Exception {
+        var fixture = fixture();
+        var result = discoverTsv(fixture);
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project() + "\n", result.output());
+        assertTrue(result.error().contains("Gradle build output"), result.error());
+        var text = run("gradle", "--root-project-dir", fixture.root().toString(),
+                "--list-project-paths", "--format", "text");
+        assertEquals(0, text.exitCode(), text.error());
+        assertEquals(":\n:app\n", text.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void invalidProjectDirectoriesNeverPublishPartialTsv() throws Exception {
+        var fixture = fixture();
+        var original = capture(fixture);
+        for (String field : List.of("project-directories.count", "project-directories.1")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.remove(field);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), result.error());
+            assertEquals("", result.output());
+            assertTrue(result.error().contains(field), result.error());
+        }
+        for (String directory : List.of("relative", "", fixture.project() + "\tpart",
+                fixture.project() + "\npart", fixture.project() + "\rpart")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("project-directories.1", directory);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), result.error());
+            assertEquals("", result.output());
+        }
+        original.setProperty("project-directories.count", "1");
+        storeCapture(fixture, original);
+        var mismatched = discoverTsv(fixture);
+        assertEquals(1, mismatched.exitCode(), mismatched.error());
+        assertEquals("", mismatched.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void tsvPreservesBackslashesAndRejectsUnrepresentableSelectors() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        String directory = fixture.project() + "\\directory";
+        values.setProperty("project-directories.1", directory);
+        storeCapture(fixture, values);
+        var valid = discoverTsv(fixture);
+        assertEquals(0, valid.exitCode(), valid.error());
+        assertEquals(":\t" + fixture.root() + "\n:app\t" + directory + "\n", valid.output());
+        for (String selector : List.of("", ":app\tpart", ":app\npart", ":app\rpart")) {
+            values.setProperty("project-paths.1", selector);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), result.error());
+            assertEquals("", result.output());
+            assertTrue(result.error().contains("selector"), result.error());
+        }
+        values.setProperty("project-paths.1", ":app");
+        storeCapture(fixture, values);
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
+        var failed = discoverTsv(fixture);
+        assertEquals(7, failed.exitCode(), failed.error());
+        assertEquals("", failed.output());
+    }
+
+    @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void discoveryMergesBuildQualifiedPathsFromMultipleCaptures() throws Exception {
         var fixture = fixture();
@@ -122,6 +208,8 @@ class GradleCommandsTest {
         included.setProperty("kind", "projects");
         included.setProperty("build-path", ":tools");
         putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
+        Path tools = temporaryDirectory.resolve("included tools");
+        putList(included, "project-directories", List.of(tools.toString(), tools.resolve("plugin").toString()));
         var rootCapture = capture(fixture);
         rootCapture.setProperty("kind", "projects");
         storeCapture(fixture, rootCapture);
@@ -139,6 +227,19 @@ class GradleCommandsTest {
         var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
         assertEquals(0, result.exitCode(), result.error());
         assertEquals(":\n:app\n:tools\n:tools:plugin\n", result.output());
+        var tsv = discoverTsv(fixture);
+        assertEquals(0, tsv.exitCode(), tsv.error());
+        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project()
+                + "\n:tools\t" + tools + "\n:tools:plugin\t" + tools.resolve("plugin") + "\n", tsv.output());
+        putList(included, "project-paths", List.of(":app"));
+        putList(included, "project-directories", List.of(tools.toString()));
+        try (var output = Files.newOutputStream(fixture.root().resolve("included.properties"))) {
+            included.store(output, null);
+        }
+        var conflicting = discoverTsv(fixture);
+        assertEquals(1, conflicting.exitCode(), conflicting.error());
+        assertEquals("", conflicting.output());
+        assertTrue(conflicting.error().contains("Conflicting project directory"), conflicting.error());
     }
 
     @Test
@@ -777,6 +878,7 @@ class GradleCommandsTest {
         values.setProperty("project-path", ":app");
         values.setProperty("source-set", "main");
         putList(values, "project-paths", List.of(":", ":app"));
+        putList(values, "project-directories", List.of(root.toString(), project.toString()));
         putList(values, "source-sets", List.of("main", "test", "integrationTest"));
         putList(values, "sources",
                 present ? List.of(project.resolve("custom sources").toString()) : List.of());
@@ -799,6 +901,10 @@ class GradleCommandsTest {
         for (int i = 0; i < elements.size(); i++) {
             values.setProperty(name + "." + i, elements.get(i));
         }
+    }
+
+    private static Result discoverTsv(Fixture fixture) {
+        return run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv");
     }
 
     private Result resolve(Fixture fixture, String classpath, String options) {

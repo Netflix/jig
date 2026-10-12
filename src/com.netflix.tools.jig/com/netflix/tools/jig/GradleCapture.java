@@ -24,6 +24,7 @@ import com.netflix.tools.jig.GradleCommandLine.Request;
 final class GradleCapture {
     private final Request request;
     private final List<String> projects = new ArrayList<>();
+    private final List<BuildCapture> discoveries = new ArrayList<>();
     private boolean discovered;
     private BuildCapture metadata;
     private BuildCapture compiler;
@@ -37,6 +38,7 @@ final class GradleCapture {
             capture.expect("kind", "projects");
             capture.require("build-path");
             projects.addAll(capture.list("project-paths"));
+            discoveries.add(capture);
             discovered = true;
         } else if (request.compiler() && capture.require("kind").equals("compiler-options")) {
             if (compiler != null) {
@@ -60,6 +62,10 @@ final class GradleCapture {
             return List.copyOf(projects);
         }
         return metadata().list("project-paths");
+    }
+
+    String tabSeparatedProjects() throws IOException {
+        return ProjectListing.tsv(discoveries, "project-paths");
     }
 
     BuildCapture metadata() throws IOException {

@@ -54,7 +54,11 @@ final class GradleCommands {
             }
             List<String> projects = captures.projects();
             if (request.listProjects()) {
-                projects.stream().distinct().sorted().forEach(out::println);
+                if (request.tabSeparated()) {
+                    out.print(captures.tabSeparatedProjects());
+                } else {
+                    projects.stream().distinct().sorted().forEach(out::println);
+                }
             } else {
                 if (!projects.contains(request.projectPath())) {
                     throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());

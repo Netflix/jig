@@ -43,7 +43,7 @@ final class MavenProjectCommands {
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments using the Maven build runtime")
-            .options(BASE, PROJECT, LIST, SCOPE, RESOLVE, WRITE, VERBOSE, HELP)
+            .options(BASE, PROJECT, LIST, ProjectListing.FORMAT, SCOPE, RESOLVE, WRITE, VERBOSE, HELP)
             .build();
 
     private MavenProjectCommands() {}
@@ -131,7 +131,11 @@ final class MavenProjectCommands {
             capture.expect("kind", request.listProjects() ? "projects" : "arguments");
             List<String> projects = capture.list("projects");
             if (request.listProjects()) {
-                projects.stream().distinct().sorted().forEach(out::println);
+                if (request.tabSeparated()) {
+                    out.print(ProjectListing.tsv(List.of(capture), "projects"));
+                } else {
+                    projects.stream().distinct().sorted().forEach(out::println);
+                }
             } else {
                 String selected = capture.require("project");
                 if (!selected.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+") || !projects.contains(selected)
@@ -170,6 +174,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--project-base-dir may only be specified once");
         }
         boolean listProjects = parsed.contains(LIST);
+        boolean tabSeparated = ProjectListing.tabSeparated(single(parsed, ProjectListing.FORMAT), listProjects);
         String project = single(parsed, PROJECT);
         String scope = single(parsed, SCOPE);
         String resolve = single(parsed, RESOLVE);
@@ -229,7 +234,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
@@ -255,5 +260,5 @@ final class MavenProjectCommands {
         return line.replaceAll("\u001b\\[[0-9;]*m", "");
     }
 
-    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean verbose) {}
+    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean tabSeparated, boolean verbose) {}
 }

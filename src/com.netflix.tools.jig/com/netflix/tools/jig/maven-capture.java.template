@@ -57,9 +57,11 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             values.setProperty("kind", session.getUserProperties().getProperty("jig.maven.scope") == null ? "projects" : "arguments");
             int index = 0;
             for (MavenProject project : session.getProjects()) {
-                values.setProperty("projects." + index++, project.getGroupId() + ":" + project.getArtifactId());
+                values.setProperty("projects." + index, project.getGroupId() + ":" + project.getArtifactId());
+                values.setProperty("project-directories." + index++, project.getBasedir().getCanonicalPath());
             }
             values.setProperty("projects.count", Integer.toString(index));
+            values.setProperty("project-directories.count", Integer.toString(index));
             if (session.getUserProperties().getProperty("jig.maven.scope") != null) {
                 resolve(session, values, preparedSources);
             }
