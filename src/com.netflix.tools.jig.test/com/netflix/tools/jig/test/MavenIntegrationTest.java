@@ -85,6 +85,22 @@ class MavenIntegrationTest {
     }
 
     @Test
+    void discoversActualProjectDirectoriesOutsideTheReactorDirectory() throws Exception {
+        Path root = fixture();
+        Path relocated = Files.move(root.resolve("app"), root.getParent().resolve("relocated app")).toRealPath();
+        Path pom = root.resolve("pom.xml");
+        Files.writeString(pom, Files.readString(pom).replace("<module>app</module>", "<module>../relocated app</module>"));
+        var result = discover(root, "--format", "tsv");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("fixture:app\t" + relocated + "\nfixture:extra\t" + root.resolve("extra")
+                + "\nfixture:root\t" + root + "\n", result.output());
+        var selected = discover(root, "--project", ":app", "--format", "tsv");
+        assertEquals(0, selected.status(), selected.error());
+        assertEquals("fixture:app\t" + relocated + "\n", selected.output());
+        assertNoBuildOutputs();
+    }
+
+    @Test
     @EnabledIf("detailedCoverage")
     void standaloneProjectsDoNotIncludeTheirParentOrSiblingModules() throws Exception {
         Path root = fixture();

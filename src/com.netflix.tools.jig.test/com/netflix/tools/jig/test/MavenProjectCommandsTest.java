@@ -248,6 +248,76 @@ class MavenProjectCommandsTest {
     }
 
     @Test
+    void validatesProjectListingFormatsBeforeLaunchingMaven() throws Exception {
+        Path project = Files.createDirectories(temporaryDirectory.resolve("project"));
+        Files.writeString(project.resolve("pom.xml"), "<project/>\n");
+        assertInvalid("text or tsv", "maven", "--project-base-dir", project.toString(),
+                "--list-projects", "--format", "json");
+        assertInvalid("only be specified once", "maven", "--project-base-dir", project.toString(),
+                "--list-projects", "--format", "tsv", "--format", "text");
+        assertInvalid("only to project listing", "maven", "--project-base-dir", project.toString(),
+                "--project", ":app", "--scope", "compile", "-r", "source-path", "--format", "tsv");
+        assertTrue(run("__complete", "maven", "--for").output().contains("--format\t"));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryListsProjectDirectoriesAsTsv() throws Exception {
+        var fixture = fixture(false);
+        var result = discover(fixture, "--format", "tsv");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("example:app\t" + fixture.project().resolve("app")
+                + "\nexample:root\t" + fixture.project() + "\n", result.output());
+        assertTrue(result.error().contains("Maven build output"), result.error());
+        var text = discover(fixture, "--format", "text");
+        assertEquals(0, text.status(), text.error());
+        assertEquals("example:app\nexample:root\n", text.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void invalidProjectDirectoriesNeverPublishPartialTsv() throws Exception {
+        var fixture = fixture(false);
+        Path capture = fixture.project().resolve("capture.properties");
+        var original = new Properties();
+        try (var input = Files.newInputStream(capture)) {
+            original.load(input);
+        }
+        for (String field : List.of("project-directories.count", "project-directories.1")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.remove(field);
+            try (var output = Files.newOutputStream(capture)) {
+                values.store(output, null);
+            }
+            var result = discover(fixture, "--format", "tsv");
+            assertEquals(1, result.status(), result.error());
+            assertEquals("", result.output());
+            assertTrue(result.error().contains(field), result.error());
+        }
+        for (String directory : List.of("relative", "", fixture.project() + "\tpart",
+                fixture.project() + "\npart", fixture.project() + "\rpart")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("project-directories.1", directory);
+            try (var output = Files.newOutputStream(capture)) {
+                values.store(output, null);
+            }
+            var result = discover(fixture, "--format", "tsv");
+            assertEquals(1, result.status(), result.error());
+            assertEquals("", result.output());
+        }
+        original.setProperty("project-directories.2", fixture.project().resolve("different").toString());
+        try (var output = Files.newOutputStream(capture)) {
+            original.store(output, null);
+        }
+        var conflicting = discover(fixture, "--format", "tsv");
+        assertEquals(1, conflicting.status(), conflicting.error());
+        assertEquals("", conflicting.output());
+        assertTrue(conflicting.error().contains("Conflicting project directory"), conflicting.error());
+    }
+
+    @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void passesProjectSelectorsToMavenWithoutReinterpretingThem() throws Exception {
         var fixture = fixture(false);
@@ -305,9 +375,11 @@ class MavenProjectCommandsTest {
         var fixture = fixture(false);
         Path wrapper = fixture.project().resolve("mvnw");
         Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
-        var failed = discover(fixture);
-        assertEquals(7, failed.status(), failed.error());
-        assertEquals("", failed.output());
+        for (String format : List.of("text", "tsv")) {
+            var failed = discover(fixture, "--format", format);
+            assertEquals(7, failed.status(), failed.error());
+            assertEquals("", failed.output());
+        }
         Files.writeString(wrapper, Files.readString(wrapper).replace("printf 'jig-maven:'", "printf 'not-capture:'").replace("exit 7", "exit 0"));
         var missing = discover(fixture);
         assertEquals(1, missing.status(), missing.error());
@@ -514,6 +586,10 @@ class MavenProjectCommandsTest {
         values.setProperty("projects.0", "example:app");
         values.setProperty("projects.1", "example:root");
         values.setProperty("projects.2", "example:app");
+        values.setProperty("project-directories.count", "3");
+        values.setProperty("project-directories.0", project.resolve("app").toString());
+        values.setProperty("project-directories.1", project.toString());
+        values.setProperty("project-directories.2", project.resolve("app").toString());
         values.setProperty("classpath.count", "1");
         values.setProperty("classpath.0", project.resolve("dependency.jar").toString());
         values.setProperty("sources.count", "1");
@@ -584,6 +660,7 @@ class MavenProjectCommandsTest {
                 public class MavenProject {
                     public String getGroupId() { return null; }
                     public String getArtifactId() { return null; }
+                    public java.io.File getBasedir() { return null; }
                     public java.util.List<String> getCompileSourceRoots() { return java.util.Collections.emptyList(); }
                     public java.util.List<String> getTestCompileSourceRoots() { return java.util.Collections.emptyList(); }
                     public java.util.List<String> getCompileClasspathElements() { return java.util.Collections.emptyList(); }
@@ -623,8 +700,10 @@ class MavenProjectCommandsTest {
                 .map(argument -> Path.of(argument.substring("-Dmaven.ext.class.path=".length()))).findFirst().orElseThrow();
     }
 
-    private static Result discover(Fixture fixture) {
-        return run("maven", "--project-base-dir", fixture.project().toString(), "--list-projects");
+    private static Result discover(Fixture fixture, String... options) {
+        var arguments = new ArrayList<>(List.of("maven", "--project-base-dir", fixture.project().toString(), "--list-projects"));
+        arguments.addAll(List.of(options));
+        return run(arguments.toArray(String[]::new));
     }
 
     private static String shellQuote(String value) {

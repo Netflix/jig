@@ -77,6 +77,29 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void discoversActualProjectDirectoriesWithoutResolvingDependencies() throws Exception {
+        var fixture = fixture(false);
+        Path relocated = Files.move(fixture.app(), fixture.root().getParent().resolve("relocated app")).toRealPath();
+        Files.writeString(fixture.root().resolve("settings.gradle"),
+                "\nproject(':app').projectDir = file('../relocated app')\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.root().resolve("prevent-resolution"), "");
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"),
+                    "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\n"
+                            + "org.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        String expected = ":\t" + fixture.root() + "\n:app\t" + relocated
+                + "\n:library\t" + fixture.root().resolve("library")
+                + "\n:plain\t" + fixture.root().resolve("plain") + "\n";
+        for (int query = 0; query < 2; query++) {
+            assertEquals(expected, run("gradle", "--root-project-dir", fixture.root().toString(),
+                    "--list-project-paths", "--format", "tsv"));
+        }
+        assertFalse(Files.exists(relocated.resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
     void capturesSelectedBuildWithoutRejectingIncludedBuildsOrBuildSrc() throws Exception {
         var fixture = fixture(false);
         Path included = Files.createDirectories(fixture.root().resolve("included-library"));
@@ -142,6 +165,12 @@ class GradleIntegrationTest {
         var expected = new ArrayList<>(List.of(":", ":app", ":library", ":plain", ":tools", ":tools:plugin"));
         expected.add(nested);
         assertEquals(expected.stream().sorted().toList(), discovered.lines().toList());
+        var directories = new ArrayList<>(List.of(
+                ":\t" + fixture.root(), ":app\t" + fixture.app(),
+                ":library\t" + fixture.root().resolve("library"), ":plain\t" + fixture.root().resolve("plain"),
+                ":tools\t" + outer, ":tools:plugin\t" + outer.resolve("plugin"), nested + "\t" + inner));
+        assertEquals(directories.stream().sorted().toList(), run("gradle", "--root-project-dir",
+                fixture.root().toString(), "--list-project-paths", "--format", "tsv").lines().toList());
         String sources = run("gradle", "--root-project-dir", fixture.root().toString(),
                 "--project-path", nested, "--source-set", "main", "--classpath", "compile", "-r", "source-path");
         assertTrue(sources.contains(inner.resolve("src/main/java").toString()), sources);
@@ -420,6 +449,7 @@ class GradleIntegrationTest {
         // build again, even when dependency outputs have changed.
         for (String[] discovery : List.of(
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths"},
+                new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv"},
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets"})) {
             assertEquals(run(discovery), run(discovery));
         }

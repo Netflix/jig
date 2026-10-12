@@ -45,7 +45,7 @@ final class GradleCommandLine {
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments from a Gradle source set")
-            .options(ROOT, PROJECT, LIST_PROJECTS, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, COMPILER, WRITE,
+            .options(ROOT, PROJECT, LIST_PROJECTS, ProjectListing.FORMAT, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, COMPILER, WRITE,
                     VERBOSE, HELP)
             .build();
 
@@ -55,6 +55,7 @@ final class GradleCommandLine {
             String sourceSet,
             String classpath,
             boolean listProjects,
+            boolean tabSeparated,
             boolean listSourceSets,
             boolean compiler,
             Set<String> options,
@@ -98,6 +99,7 @@ final class GradleCommandLine {
         String resolve = single(parsed, RESOLVE);
         String write = single(parsed, WRITE);
         boolean listProjects = parsed.contains(LIST_PROJECTS);
+        boolean tabSeparated = ProjectListing.tabSeparated(single(parsed, ProjectListing.FORMAT), listProjects);
         boolean listSourceSets = parsed.contains(LIST_SOURCE_SETS);
         if (root == null) {
             throw new IllegalArgumentException("--root-project-dir is required");
@@ -166,6 +168,7 @@ final class GradleCommandLine {
                 sourceSet,
                 classpath,
                 listProjects,
+                tabSeparated,
                 listSourceSets,
                 compiler,
                 Set.copyOf(options),
