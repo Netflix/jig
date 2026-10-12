@@ -118,8 +118,13 @@ class GradleCommandsTest {
     void discoveryMergesBuildQualifiedPathsFromMultipleCaptures() throws Exception {
         var fixture = fixture();
         var included = new Properties();
-        included.setProperty("version", "1");
+        included.setProperty("version", "2");
+        included.setProperty("kind", "projects");
+        included.setProperty("build-path", ":tools");
         putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
+        var rootCapture = capture(fixture);
+        rootCapture.setProperty("kind", "projects");
+        storeCapture(fixture, rootCapture);
         try (var output = Files.newOutputStream(fixture.root().resolve("included.properties"))) {
             included.store(output, null);
         }
@@ -342,6 +347,172 @@ class GradleCommandsTest {
         assertEquals("", result.output());
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void missingListCountsAreNotTreatedAsEmptyResults() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        values.remove("classpath.count");
+        storeCapture(fixture, values);
+        Path file = temporaryDirectory.resolve("options.args");
+        Files.writeString(file, "original\n");
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path", "-w", file.toString());
+        assertEquals(1, result.exitCode(), result.error());
+        assertTrue(result.error().contains("classpath.count"), result.error());
+        assertEquals("", result.output());
+        assertEquals("original\n", Files.readString(file));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void requiredCaptureFieldsAreValidatedBeforeProjection() throws Exception {
+        var fixture = fixture();
+        var original = capture(fixture);
+        Files.writeString(fixture.root().resolve("gradlew"), """
+                #!/bin/sh
+                printf 'jig-gradle:'
+                base64 < compile.properties | tr -d '\\n'
+                printf '\\n'
+                """);
+        for (String field : List.of("version", "kind", "project-path", "source-set", "project-paths.count", "source-sets.count",
+                "sources.count", "classpath.count", "module-path.count", "processors.count", "additional.count", "modular")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.remove(field);
+            storeCapture(fixture, values);
+            var result = resolve(fixture, "compile", "source-path");
+            assertEquals(1, result.exitCode(), field + ": " + result.error());
+            assertEquals("", result.output(), field);
+            assertTrue(result.error().contains(field), result.error());
+        }
+        for (String count : List.of("-1", "100001", "invalid", "")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("classpath.count", count);
+            storeCapture(fixture, values);
+            var result = resolve(fixture, "compile", "source-path");
+            assertEquals(1, result.exitCode(), result.error());
+            assertTrue(result.error().contains("Invalid Gradle capture count"), result.error());
+        }
+        original.setProperty("modular", "perhaps");
+        storeCapture(fixture, original);
+        var result = resolve(fixture, "compile", "source-path");
+        assertEquals(1, result.exitCode(), result.error());
+        assertTrue(result.error().contains("Invalid Gradle capture flag"), result.error());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void unexpectedKindsAndProjectIdentitiesAreRejected() throws Exception {
+        var fixture = fixture();
+        var original = capture(fixture);
+        Files.writeString(fixture.root().resolve("gradlew"), """
+                #!/bin/sh
+                printf 'jig-gradle:'
+                base64 < compile.properties | tr -d '\\n'
+                printf '\\n'
+                """);
+        for (var mismatch : List.of(List.of("kind", "projects"), List.of("kind", "compiler-options"),
+                List.of("project-path", ":other"), List.of("source-set", "other"))) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty(mismatch.getFirst(), mismatch.getLast());
+            storeCapture(fixture, values);
+            var result = resolve(fixture, "compile", "source-path");
+            assertEquals(1, result.exitCode(), result.error());
+            assertTrue(result.error().contains("capture " + mismatch.getFirst()), result.error());
+            assertEquals("", result.output());
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void recordsCannotOverwriteOtherRecordsOrMaskUnsupportedVersions() throws Exception {
+        var fixture = fixture();
+        Path wrapper = fixture.root().resolve("gradlew");
+        String script = Files.readString(wrapper);
+        Files.writeString(wrapper, script.replace("emit \"$kind\"", "emit \"$kind\"; emit \"$kind\""));
+        var duplicate = resolve(fixture, "compile", "source-path");
+        assertEquals(1, duplicate.exitCode(), duplicate.error());
+        assertTrue(duplicate.error().contains("Duplicate Gradle project capture"), duplicate.error());
+        assertEquals("", duplicate.output());
+        var unsupported = capture(fixture);
+        unsupported.setProperty("version", "99");
+        try (var output = Files.newOutputStream(fixture.root().resolve("unsupported.properties"))) {
+            unsupported.store(output, null);
+        }
+        Files.writeString(wrapper, script.replace("emit \"$kind\"", """
+                printf 'jig-gradle:'
+                base64 < unsupported.properties | tr -d '\\n'
+                printf '\\n'
+                emit "$kind"
+                """));
+        var result = resolve(fixture, "compile", "source-path");
+        assertEquals(1, result.exitCode(), result.error());
+        assertTrue(result.error().contains("Unsupported Gradle capture version: 99"), result.error());
+        assertEquals("", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void compilerRecordsMustMatchTheSelectedProjectAndSourceSet() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        putList(values, "compiler-options", List.of("-g:none"));
+        storeCapture(fixture, values);
+        Path wrapper = fixture.root().resolve("gradlew");
+        String script = Files.readString(wrapper);
+        Files.writeString(wrapper, script.replace("emit compiler-options; break", "source_set=wrong; emit compiler-options; source_set=main; break"));
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(1, result.exitCode(), result.error());
+        assertTrue(result.error().contains("capture source-set: wrong"), result.error());
+        assertEquals("", result.output());
+        Files.writeString(wrapper, script.replace("emit compiler-options; break", "emit compiler-options; emit compiler-options; break"));
+        var duplicate = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(1, duplicate.exitCode(), duplicate.error());
+        assertTrue(duplicate.error().contains("Duplicate Gradle compiler options capture"), duplicate.error());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void compilerArgumentEncodingRoundTripsThroughTheJavaLauncher() throws Exception {
+        var fixture = fixture();
+        Path echo = temporaryDirectory.resolve("ArgumentEcho.java");
+        Files.writeString(echo, """
+                public class ArgumentEcho {
+                    public static void main(String[] arguments) {
+                        for (String argument : arguments) {
+                            System.out.println(java.util.Base64.getEncoder().encodeToString(argument.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                        }
+                    }
+                }
+                """);
+        Path classes = temporaryDirectory.resolve("classes");
+        var diagnostics = new StringWriter();
+        assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
+                "-d", classes.toString(), echo.toString()), diagnostics.toString());
+        var arguments = List.of("", "#comment", "double\"quote", "single'quote", "back\\slash\\", "new\nline", "carriage\rreturn", "tab\ttab", "form\ffeed", "space and quote\"");
+        var compiler = new ArrayList<>(List.of("--class-path", classes.toString(), "ArgumentEcho"));
+        compiler.addAll(arguments);
+        var values = capture(fixture);
+        putList(values, "compiler-options", compiler);
+        storeCapture(fixture, values);
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--resolve-compiler-options");
+        assertEquals(0, result.exitCode(), result.error());
+        Path file = temporaryDirectory.resolve("launcher.args");
+        Files.writeString(file, result.output());
+        var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "@" + file)
+                .redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), output);
+        assertEquals(arguments.stream().map(argument -> java.util.Base64.getEncoder().encodeToString(argument.getBytes(java.nio.charset.StandardCharsets.UTF_8))).toList(),
+                output.lines().toList());
+    }
+
     private static Properties capture(Fixture fixture) throws Exception {
         var values = new Properties();
         try (var input = Files.newInputStream(fixture.root()
@@ -482,27 +653,36 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void compilerAndMetadataResponsesAreMergedWithoutPublishingTransportRecords() throws Exception {
+    void compilerAndMetadataRecordsRemainSeparateWithoutPublishingTransportRecords() throws Exception {
         var fixture = fixture();
         var compiler = new Properties();
+        compiler.setProperty("version", "2");
+        compiler.setProperty("kind", "compiler-options");
+        compiler.setProperty("project-path", ":app");
+        compiler.setProperty("source-set", "main");
         List<String> options = List.of("-g:none", "-Akey=value with spaces");
         putList(compiler, "compiler-options", options);
         try (var output = Files.newOutputStream(fixture.root().resolve("compiler.properties"))) {
             compiler.store(output, "compiler");
         }
         Path wrapper = fixture.root().resolve("gradlew");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Gradle build output'", """
-                echo 'Gradle build output'
+        String script = Files.readString(wrapper);
+        String compilerRecord = """
                 printf 'jig-gradle:'
                 base64 < compiler.properties | tr -d '\\n'
                 printf '\\n'
-                """));
-        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
-                "--source-set", "main", "--resolve-compiler-options");
-        assertEquals(0, result.exitCode(), result.error());
-        assertEquals(options, arguments(result));
-        assertTrue(result.error().contains("Gradle build output"), result.error());
-        assertFalse(result.error().contains("jig-gradle:"), result.error());
+                """;
+        for (boolean compilerFirst : List.of(true, false)) {
+            Files.writeString(wrapper, compilerFirst
+                    ? script.replace("echo 'Gradle build output'", compilerRecord + "echo 'Gradle build output'")
+                    : script + compilerRecord);
+            var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                    "--source-set", "main", "--resolve-compiler-options");
+            assertEquals(0, result.exitCode(), result.error());
+            assertEquals(options, arguments(result));
+            assertTrue(result.error().contains("Gradle build output"), result.error());
+            assertFalse(result.error().contains("jig-gradle:"), result.error());
+        }
     }
 
     @Test
@@ -556,14 +736,33 @@ class GradleCommandsTest {
                 printf '%s\\n' "$@" > invocation.txt
                 echo 'Gradle build output'
                 classpath=compile
+                kind=arguments
+                project=:app
+                source_set=main
                 for argument do
                     case "$argument" in
                         -Pjig.gradle.classpath=*) classpath=${argument#*=} ;;
+                        -Pjig.gradle.list=true) kind=projects ;;
+                        -Pjig.gradle.list-source-sets=true) kind=source-sets ;;
+                        -Pjig.gradle.compiler=true) kind=compiler-metadata ;;
+                        -Pjig.gradle.project-path=*) project=${argument#*=} ;;
+                        -Pjig.gradle.source-set=*) source_set=${argument#*=} ;;
                     esac
                 done
-                printf 'jig-gradle:'
-                base64 < "$classpath.properties" | tr -d '\\n'
-                printf '\\n'
+                emit() {
+                    printf 'jig-gradle:'
+                    {
+                        while IFS= read -r line; do printf '%s\\n' "$line"; done < "$classpath.properties"
+                        printf 'kind=%s\\nproject-path=%s\\nsource-set=%s\\n' "$1" "$project" "$source_set"
+                    } | base64 | tr -d '\\n'
+                    printf '\\n'
+                }
+                if [ "$kind" = compiler-metadata ]; then
+                    while IFS= read -r line; do
+                        case "$line" in compiler-options.count=*) emit compiler-options; break ;; esac
+                    done < "$classpath.properties"
+                fi
+                emit "$kind"
                 """);
         return new Fixture(root, project);
     }
@@ -572,13 +771,18 @@ class GradleCommandsTest {
             boolean present, boolean runtime)
             throws Exception {
         var values = new Properties();
-        values.setProperty("version", "1");
+        values.setProperty("version", "2");
+        values.setProperty("kind", "arguments");
+        values.setProperty("build-path", ":");
+        values.setProperty("project-path", ":app");
+        values.setProperty("source-set", "main");
         putList(values, "project-paths", List.of(":", ":app"));
         putList(values, "source-sets", List.of("main", "test", "integrationTest"));
         putList(values, "sources",
                 present ? List.of(project.resolve("custom sources").toString()) : List.of());
         putList(values, "classpath",
                 present ? List.of(root.resolve(runtime ? "runtime only.jar" : "compile only.jar").toString()) : List.of());
+        putList(values, "module-path", List.of());
         putList(values, "processors", List.of());
         putList(values, "additional", List.of());
         values.setProperty("modular", "false");

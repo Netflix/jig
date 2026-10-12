@@ -16,6 +16,7 @@ package com.netflix.tools.jig.test;
 
 import java.io.DataInputStream;
 import java.io.PrintWriter;
+import java.io.UncheckedIOException;
 import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -319,7 +320,7 @@ class MavenProjectCommandsTest {
     void invalidCaptureIsAnErrorWithoutPartialOutput() throws Exception {
         var fixture = fixture(false);
         Path wrapper = fixture.project().resolve("mvnw");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("base64 < capture.properties | tr -d '\\n'", "printf 'not-base64!'"));
+        Files.writeString(wrapper, Files.readString(wrapper).replace("base64 | tr -d '\\n'", "{ printf 'not-base64!'; }"));
         var result = discover(fixture);
         assertEquals(1, result.status(), result.error());
         assertEquals("", result.output());
@@ -356,13 +357,159 @@ class MavenProjectCommandsTest {
         }
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void diagnosticsAreForwardedBeforeMavenExits() throws Exception {
+        var fixture = fixture(false);
+        Path wrapper = fixture.project().resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Maven build output'", """
+                echo 'Maven build output'
+                attempts=0
+                while [ ! -f diagnostic-received ]; do
+                    attempts=$((attempts + 1))
+                    if [ "$attempts" -ge 200 ]; then exit 11; fi
+                    sleep 0.02
+                done
+                """));
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var diagnostics = new PrintWriter(error, true) {
+            @Override
+            public void println(String line) {
+                super.println(line);
+                if (line.equals("Maven build output")) {
+                    try {
+                        Files.writeString(fixture.project().resolve("diagnostic-received"), "received\n");
+                    } catch (java.io.IOException failure) {
+                        throw new UncheckedIOException(failure);
+                    }
+                }
+            }
+        };
+        int status = new Jig().run(new PrintWriter(output, true), diagnostics,
+                "maven", "--project-base-dir", fixture.project().toString(), "--list-projects");
+        assertEquals(0, status, error.toString());
+        assertTrue(output.toString().contains("example:app"), output.toString());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void extensionCacheIncludesNonCoreCompilationLibraries() throws Exception {
+        var fixture = fixture(false);
+        assertEquals(0, discover(fixture).status());
+        Path first = extension(fixture);
+        Path library = temporaryDirectory.resolve("maven home/lib/extra.jar");
+        try (var jar = new JarOutputStream(Files.newOutputStream(library))) {
+            jar.putNextEntry(new JarEntry("extra.properties"));
+            jar.write(new byte[] {1});
+            jar.closeEntry();
+        }
+        assertEquals(0, discover(fixture).status());
+        Path second = extension(fixture);
+        assertFalse(first.equals(second), second.toString());
+        try (var jar = new JarOutputStream(Files.newOutputStream(library))) {
+            jar.putNextEntry(new JarEntry("extra.properties"));
+            jar.write(new byte[] {2});
+            jar.closeEntry();
+        }
+        assertEquals(0, discover(fixture).status());
+        assertFalse(second.equals(extension(fixture)));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void theCapturedPreparationDecisionControlsSelectedBinaryExclusion() throws Exception {
+        var fixture = fixture(false);
+        Path sources = Files.createDirectories(fixture.project().resolve("sources"));
+        Files.writeString(sources.resolve("module-info.java"), "module generated.mod {}\n");
+        Path capture = fixture.project().resolve("capture.properties");
+        var values = new Properties();
+        try (var input = Files.newInputStream(capture)) {
+            values.load(input);
+        }
+        values.setProperty("classpath.count", "2");
+        values.setProperty("classpath.1", fixture.project().resolve("output").toString());
+        try (var output = Files.newOutputStream(capture)) {
+            values.store(output, null);
+        }
+        // Model a generator creating module-info.java after preparation chose binaries.
+        Path wrapper = fixture.project().resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$scope\" \"$source_view\"", "\"$scope\" false"));
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                "-r", "module-path,module-source-path");
+        assertEquals(0, result.status(), result.error());
+        assertTrue(result.output().contains(fixture.project().resolve("output").toString()), result.output());
+        assertTrue(result.output().contains("generated.mod=" + sources), result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void duplicateOrIncompleteCapturesDoNotOverwriteArgumentFiles() throws Exception {
+        var fixture = fixture(false);
+        Path wrapper = fixture.project().resolve("mvnw");
+        String script = Files.readString(wrapper);
+        Files.writeString(wrapper, script + "printf 'jig-maven:'; base64 < capture.properties | tr -d '\\n'; printf '\\n'\n");
+        Path file = fixture.project().resolve("tool.args");
+        Files.writeString(file, "original\n");
+        var duplicate = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                "-r", "class-path", "-w", file.toString());
+        assertEquals(1, duplicate.status(), duplicate.error());
+        assertTrue(duplicate.error().contains("Duplicate Maven capture"), duplicate.error());
+        assertEquals("original\n", Files.readString(file));
+        Files.writeString(wrapper, script);
+        var original = new Properties();
+        Path capture = fixture.project().resolve("capture.properties");
+        try (var input = Files.newInputStream(capture)) {
+            original.load(input);
+        }
+        for (String field : List.of("version", "project", "projects.count", "sources.count", "classpath.count", "output-directory")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.remove(field);
+            try (var output = Files.newOutputStream(capture)) {
+                values.store(output, null);
+            }
+            var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                    "-r", "class-path", "-w", file.toString());
+            assertEquals(1, result.status(), field + ": " + result.error());
+            assertTrue(result.error().contains(field), result.error());
+            assertEquals("original\n", Files.readString(file));
+        }
+        for (String project : List.of("malformed", "example:other")) {
+            original.setProperty("project", project);
+            original.setProperty("projects.0", project);
+            try (var output = Files.newOutputStream(capture)) {
+                original.store(output, null);
+            }
+            var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                    "-r", "class-path", "-w", file.toString());
+            assertEquals(1, result.status(), result.error());
+            assertTrue(result.error().contains("Unexpected Maven capture project"), result.error());
+            assertEquals("original\n", Files.readString(file));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void aMissingMainClassIsAnArgumentErrorWithoutAStackTrace() throws Exception {
+        var fixture = fixture(false);
+        Path sources = Files.createDirectories(fixture.project().resolve("sources"));
+        Files.writeString(sources.resolve("module-info.java"), "module example.app {}\n");
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                "-r", "module=main");
+        assertEquals(2, result.status(), result.error());
+        assertTrue(result.error().contains("No main class declared"), result.error());
+        assertFalse(result.error().contains("Exception"), result.error());
+    }
+
     private Fixture fixture(boolean lifecycleInterface) throws Exception {
         Path project = Files.createDirectories(temporaryDirectory.resolve("project with spaces")).toRealPath();
         Files.createDirectories(project.resolve("app"));
         Files.writeString(project.resolve("pom.xml"), "<project/>\n");
         Path home = mavenHome(lifecycleInterface);
         var values = new Properties();
-        values.setProperty("version", "1");
+        values.setProperty("version", "2");
+        values.setProperty("project", "example:app");
         values.setProperty("projects.count", "3");
         values.setProperty("projects.0", "example:app");
         values.setProperty("projects.1", "example:root");
@@ -385,8 +532,27 @@ class MavenProjectCommandsTest {
                 done
                 printf '%%s\n' "$@" > invocation.txt
                 echo 'Maven build output'
+                scope=
+                options=
+                for argument do
+                    case "$argument" in
+                        -Djig.maven.scope=*) scope=${argument#*=} ;;
+                        -Djig.maven.options=*) options=${argument#*=} ;;
+                    esac
+                done
                 printf 'jig-maven:'
-                base64 < capture.properties | tr -d '\\n'
+                {
+                    while IFS= read -r line; do printf '%%s\\n' "$line"; done < capture.properties
+                    if [ -z "$scope" ]; then
+                        printf 'kind=projects\\n'
+                    else
+                        source_option=source-path
+                        if [ -f sources/module-info.java ]; then source_option=module-source-path; fi
+                        source_view=false
+                        case ",$options," in *,"$source_option",*) source_view=true ;; esac
+                        printf 'kind=arguments\\nscope=%%s\\nsource-view=%%s\\n' "$scope" "$source_view"
+                    fi
+                } | base64 | tr -d '\\n'
                 printf '\\n'
                 """.formatted(shellQuote(home.toString())));
         return new Fixture(project);

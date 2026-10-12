@@ -14,20 +14,14 @@
 
 package com.netflix.tools.jig;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.lang.ProcessBuilder.Redirect;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
-import java.util.Properties;
 
 import com.netflix.module.compile.internal.ContentHash;
 import com.netflix.tools.jig.GradleCommandLine.Request;
@@ -53,32 +47,30 @@ final class GradleCommands {
             return 2;
         }
         try {
-            var values = new Properties();
-            int status = capture(request, initScript(), values, err);
+            var captures = new GradleCapture(request);
+            int status = capture(request, initScript(), captures, err);
             if (status != 0) {
                 return status;
             }
-            if (values.isEmpty()) {
-                throw new IOException("Gradle did not return a capture");
-            }
-            if (!"1".equals(values.getProperty("version"))) {
-                throw new IOException("Unsupported Gradle capture version: " + values.getProperty("version"));
-            }
-            List<String> projects = GradleArguments.list(values, "project-paths");
+            List<String> projects = captures.projects();
             if (request.listProjects()) {
                 projects.stream().distinct().sorted().forEach(out::println);
             } else {
                 if (!projects.contains(request.projectPath())) {
                     throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());
                 }
-                List<String> sourceSets = GradleArguments.list(values, "source-sets");
+                BuildCapture metadata = captures.metadata();
+                metadata.expect("project-path", request.projectPath());
+                List<String> sourceSets = metadata.list("source-sets");
                 if (request.listSourceSets()) {
                     sourceSets.stream().distinct().sorted().forEach(out::println);
                 } else {
                     if (!sourceSets.contains(request.sourceSet())) {
                         throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
                     }
-                    String generated = GradleArguments.render(request, values);
+                    metadata.expect("source-set", request.sourceSet());
+                    String generated = request.compiler() ? JavaArgumentFile.render(captures.compilerOptions())
+                            : GradleArguments.render(request, GradleArguments.View.read(metadata));
                     if (request.argumentFile() == null) {
                         out.print(generated);
                     } else {
@@ -126,9 +118,9 @@ final class GradleCommands {
         return init;
     }
 
-    private static int capture(Request request, Path init, Properties values, PrintWriter err)
+    private static int capture(Request request, Path init, GradleCapture captures, PrintWriter err)
             throws IOException, InterruptedException {
-        var arguments = new ArrayList<>(launcher(request.root()));
+        var arguments = new ArrayList<>(BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat"));
         arguments.addAll(
                 List.of(
                         "--project-dir",
@@ -155,58 +147,13 @@ final class GradleCommands {
         if (request.verbose()) {
             err.println("jig gradle: " + arguments);
         }
-        var projectPaths = new ArrayList<String>();
-        var process = new ProcessBuilder(arguments)
-                .directory(request.root().toFile())
-                .redirectInput(Redirect.INHERIT)
-                .redirectErrorStream(true)
-                .start();
-        try {
-            try (var reader = process.inputReader(StandardCharsets.UTF_8)) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.startsWith(CAPTURE_PREFIX)) {
-                        try {
-                            var captured = new Properties();
-                            captured.load(new ByteArrayInputStream(Base64.getDecoder().decode(line.substring(CAPTURE_PREFIX.length()))));
-                            if (request.listProjects()) {
-                                if (!"1".equals(captured.getProperty("version"))) {
-                                    throw new IOException("Unsupported Gradle capture version: " + captured.getProperty("version"));
-                                }
-                                projectPaths.addAll(GradleArguments.list(captured, "project-paths"));
-                            }
-                            values.putAll(captured);
-                        } catch (IllegalArgumentException e) {
-                            throw new IOException("Invalid Gradle capture", e);
-                        }
-                    } else {
-                        err.println(line);
-                    }
-                }
+        return BuildProcess.run(request.root(), arguments, line -> {
+            if (line.startsWith(CAPTURE_PREFIX)) {
+                captures.accept(BuildCapture.decode("Gradle", line.substring(CAPTURE_PREFIX.length())));
+            } else {
+                err.println(line);
+                err.flush();
             }
-            if (request.listProjects() && !values.isEmpty()) {
-                values.setProperty("project-paths.count", Integer.toString(projectPaths.size()));
-                for (int index = 0; index < projectPaths.size(); index++) {
-                    values.setProperty("project-paths." + index, projectPaths.get(index));
-                }
-            }
-            return process.waitFor();
-        } finally {
-            if (process.isAlive()) {
-                process.destroyForcibly();
-            }
-        }
-    }
-
-    private static List<String> launcher(Path root) {
-        boolean windows = System.getProperty("os.name")
-                .toLowerCase(Locale.ROOT)
-                .startsWith("windows");
-        Path wrapper = root.resolve(windows ? "gradlew.bat" : "gradlew");
-        if (windows) {
-            return List.of("cmd.exe", "/d", "/c",
-                    Files.isRegularFile(wrapper) ? wrapper.toString() : "gradle.bat");
-        }
-        return Files.isRegularFile(wrapper) ? List.of("sh", wrapper.toString()) : List.of("gradle");
+        });
     }
 }

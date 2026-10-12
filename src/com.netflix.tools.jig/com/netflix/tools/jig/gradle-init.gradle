@@ -25,15 +25,12 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.compile.JavaCompile
-import org.gradle.api.internal.tasks.compile.JavaCompilerArgumentsBuilder
 import org.gradle.util.GradleVersion
 
-// This predicate receives its own task at execution, after Gradle has run that
-// task's producers. No other task holds a reference to JavaCompile or its managed
-// options across the configuration-cache boundary.
-class JigCompilerCapture implements Spec<Task> {
-    @Override
-    boolean isSatisfiedBy(Task task) {
+// Keep private compiler APIs behind a capability boundary. Discovery and
+// general argument capture must not link the internal compiler builder.
+class JigGradleCompilerArguments {
+    static List<String> capture(JavaCompile task) {
         def method
         try {
             method = JavaCompile.getDeclaredMethod('createSpec')
@@ -53,22 +50,63 @@ class JigCompilerCapture implements Spec<Task> {
         }
         def arguments
         try {
-            arguments = new JavaCompilerArgumentsBuilder(spec)
+            def builder = Class.forName('org.gradle.api.internal.tasks.compile.JavaCompilerArgumentsBuilder')
+            arguments = builder.newInstance(spec)
                     .includeLauncherOptions(false)
                     .includeSourceFiles(false)
                     .build()
+        } catch (ClassNotFoundException failure) {
+            throw unsupported(failure)
         } catch (MissingMethodException failure) {
             throw unsupported(failure)
+        } catch (LinkageError failure) {
+            throw unsupported(failure)
         }
-        def values = new Properties()
-        JigCaptureTask.putList(values, 'compiler-options', arguments)
-        JigCaptureTask.emit(values)
-        // Skip before compiler actions, incremental processing, or output cleanup.
-        return false
+        return arguments
     }
 
     private static GradleException unsupported(Throwable failure) {
         return new GradleException('Compiler option capture is unsupported by Gradle ' + GradleVersion.current().version, failure)
+    }
+}
+
+// The predicate receives its own task after its producers have run. Only
+// request identities, not managed compiler objects, cross the cache boundary.
+class JigCompilerCapture implements Spec<Task> {
+    String projectPath
+    String sourceSet
+
+    @Override
+    boolean isSatisfiedBy(Task task) {
+        def values = JigCaptureTask.record('compiler-options')
+        values.setProperty('project-path', projectPath)
+        values.setProperty('source-set', sourceSet)
+        JigCaptureTask.putList(values, 'compiler-options', JigGradleCompilerArguments.capture(task))
+        JigCaptureTask.emit(values)
+        // Skip before compiler actions, incremental processing, or output cleanup.
+        return false
+    }
+}
+
+class JigGradleModulePaths {
+    static Map infer(def services, Set<File> roots, FileCollection path, boolean detectSourceModule) {
+        try {
+            def detectorType = Class.forName('org.gradle.internal.jvm.JavaModuleDetector')
+            def detector = services.get(detectorType)
+            def modular = !detectSourceModule || detectorType.isModuleSource(true, roots)
+            return [modular: modular, classpath: detector.inferClasspath(modular, path).files,
+                    modulepath: detector.inferModulePath(modular, path).files]
+        } catch (ClassNotFoundException failure) {
+            throw unsupported(failure)
+        } catch (MissingMethodException failure) {
+            throw unsupported(failure)
+        } catch (LinkageError failure) {
+            throw unsupported(failure)
+        }
+    }
+
+    private static GradleException unsupported(Throwable failure) {
+        return new GradleException('Module path capture is unsupported by Gradle ' + GradleVersion.current().version, failure)
     }
 }
 
@@ -94,6 +132,10 @@ class JigCompilationRequired implements Spec<Task> {
 // never Project, SourceSet, JavaCompile, JavaExec, or init-script closures. Gradle
 // can restore it without evaluating the build on a configuration-cache hit.
 class JigCaptureTask extends DefaultTask {
+    @Input String captureKind = 'arguments'
+    @Input String buildPath = ':'
+    @Input String projectPath = ''
+    @Input String sourceSet = ''
     @Input List<String> projectPaths = []
     @Input List<String> sourceSetNames = []
     @Internal FileCollection sourceRoots
@@ -110,9 +152,11 @@ class JigCaptureTask extends DefaultTask {
 
     @TaskAction
     void capture() {
-        def values = new Properties()
-        values.setProperty('version', '1')
+        def values = record(captureKind)
         metadata.each { name, value -> values.setProperty(name, value) }
+        values.setProperty('build-path', buildPath)
+        values.setProperty('project-path', projectPath)
+        values.setProperty('source-set', sourceSet)
         putList(values, 'project-paths', projectPaths)
         putList(values, 'source-sets', sourceSetNames)
         def roots = sourceRoots.files
@@ -126,11 +170,10 @@ class JigCaptureTask extends DefaultTask {
             // The detector is absent in older Gradle versions, which also lack
             // module-path inference. Use the build's own service when enabled,
             // after producers have run; do not reclassify binaries inside jig.
-            def detectorType = Class.forName('org.gradle.internal.jvm.JavaModuleDetector')
-            def detector = services.get(detectorType)
-            modular = !detectSourceModule || detectorType.isModuleSource(true, roots)
-            classpath = detector.inferClasspath(modular, selectedPath).files
-            modulepath = detector.inferModulePath(modular, selectedPath).files
+            def paths = JigGradleModulePaths.infer(services, roots, selectedPath, detectSourceModule)
+            modular = paths.modular
+            classpath = paths.classpath
+            modulepath = paths.modulepath
         }
         putList(values, 'classpath', classpath.collect { it.canonicalPath })
         putList(values, 'module-path', modulepath.collect { it.canonicalPath })
@@ -142,6 +185,13 @@ class JigCaptureTask extends DefaultTask {
         // No declared output: every query returns a fresh response, while Gradle
         // independently reuses configuration and dependency outputs.
         emit(values)
+    }
+
+    static Properties record(String kind) {
+        def values = new Properties()
+        values.setProperty('version', '2')
+        values.setProperty('kind', kind)
+        return values
     }
 
     static void emit(Properties values) {
@@ -252,6 +302,10 @@ gradle.settingsEvaluated { settings ->
                         }
                         return
                     }
+                    task.captureKind = listProjects ? 'projects' : listSourceSets ? 'source-sets' : compilerRequest ? 'compiler-metadata' : 'arguments'
+                    task.buildPath = buildPath
+                    task.projectPath = selectedPath ?: ''
+                    task.sourceSet = sourceSetName ?: ''
                     task.projectPaths = projectPaths
                     task.sourceRoots = project.files()
                     task.binaryPath = project.files()
@@ -286,7 +340,7 @@ gradle.settingsEvaluated { settings ->
                         // would execute. Replace predicates/disabled state and discard
                         // finalizers so querying cannot run compiler-adjacent actions.
                         compile.enabled = true
-                        compile.setOnlyIf(new JigCompilerCapture())
+                        compile.setOnlyIf(new JigCompilerCapture(projectPath: selectedPath, sourceSet: sourceSetName))
                         compile.setFinalizedBy([])
                         task.dependsOn(compile)
                         return

@@ -221,7 +221,7 @@ class MavenIntegrationTest {
         String model = pom("app", "", "<dependencies><dependency><groupId>fixture</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies>" + customLayout());
         model = model.replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
                 <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
-                <executions><execution><id>generate</id><phase>generate-sources</phase><goals><goal>generate</goal></goals></execution></executions>
+                <executions><execution><id>generate</id><phase>process-sources</phase><goals><goal>generate</goal></goals></execution></executions>
                 """);
         Files.writeString(app.resolve("pom.xml"), model);
         Path librarySource = Files.createDirectories(library.resolve("src/main/java/lib")).resolve("Library.java");
@@ -406,6 +406,47 @@ class MavenIntegrationTest {
         assertEquals(0, result.status(), result.error());
         assertEquals("\"--module-source-path\"\n\"app.mod=" + sources + "\"\n\"--module\"\n\"app.mod\"\n", result.output());
         assertNoBuildOutputs();
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void sourcePreparationDoesNotUseAStaleBinaryModuleDescriptor() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", customLayout()));
+        Path stale = temporaryDirectory.resolve("module-info.java");
+        Files.writeString(stale, "module stale.mod {}\n");
+        javac("--release", "9", "-Xlint:-options", "-d", app.resolve("out/main").toString(), stale.toString());
+        Path sources = Files.createDirectories(app.resolve("sources/java"));
+        Files.writeString(sources.resolve("Main.java"), "not Java; selected compilation must not run\n");
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "class-path,module-path,source-path,module");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("\"--source-path\"\n\"" + sources + "\"\n", result.output());
+        assertTrue(Files.isRegularFile(app.resolve("out/main/module-info.class")));
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void bothSourceOptionsSupportGeneratorDeterminedModuleIdentity() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        String model = pom("app", "", customLayout()).replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <executions><execution><id>generate</id><phase>process-sources</phase><goals><goal>generate</goal></goals>
+                  <configuration><moduleName>generated.mod</moduleName></configuration>
+                </execution></executions>
+                """);
+        Files.writeString(app.resolve("pom.xml"), model);
+        Path sources = Files.createDirectories(app.resolve("sources/java"));
+        Files.writeString(sources.resolve("Main.java"), "not Java; selected compilation must not run\n");
+        var result = discover(root, "--project", ":app", "--scope", "compile",
+                "-r", "class-path,module-path,source-path,module-source-path,module");
+        assertEquals(0, result.status(), result.error());
+        assertTrue(result.output().contains("generated.mod=" + sources), result.output());
+        assertTrue(result.output().contains(app.resolve("target/generated-fixture").toString()), result.output());
+        assertTrue(result.output().contains("\"--module\"\n\"generated.mod\""), result.output());
+        assertFalse(result.output().contains(app.resolve("out/main").toString()), result.output());
+        assertFalse(Files.exists(app.resolve("out/main")));
     }
 
     private static void javac(String... arguments) {

@@ -72,13 +72,20 @@ class JigToolProviderTest {
     void standaloneMainFlushesResolvedArgumentsBeforeExiting(@TempDir Path directory) throws Exception {
         Path source = directory.resolve("sources");
         var values = new Properties();
-        values.setProperty("version", "1");
+        values.setProperty("version", "2");
+        values.setProperty("kind", "arguments");
+        values.setProperty("project-path", ":");
+        values.setProperty("source-set", "main");
         values.setProperty("project-paths.count", "1");
         values.setProperty("project-paths.0", ":");
         values.setProperty("source-sets.count", "1");
         values.setProperty("source-sets.0", "main");
         values.setProperty("sources.count", "1");
         values.setProperty("sources.0", source.toString());
+        for (String name : List.of("classpath", "module-path", "processors", "additional")) {
+            values.setProperty(name + ".count", "0");
+        }
+        values.setProperty("modular", "false");
         var bytes = new ByteArrayOutputStream();
         values.store(bytes, null);
         Files.writeString(directory.resolve("gradlew"), "#!/bin/sh\nprintf '%s\\n' 'jig-gradle:" + Base64.getEncoder().encodeToString(bytes.toByteArray()) + "'\n");

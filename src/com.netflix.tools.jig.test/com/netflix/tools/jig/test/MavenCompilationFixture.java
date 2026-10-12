@@ -76,6 +76,7 @@ final class MavenCompilationFixture {
                     private boolean test;
                     private boolean noop;
                     private boolean generate;
+                    private String moduleName;
                     public void execute() throws MojoExecutionException {
                         if (noop) { return; }
                         try {
@@ -84,6 +85,9 @@ final class MavenCompilationFixture {
                                 File generated = new File(root, "app/Generated.java");
                                 generated.getParentFile().mkdirs();
                                 java.nio.file.Files.write(generated.toPath(), "package app; public class Generated { public static String message() { return \\\"generated\\\"; } }\\n".getBytes("UTF-8"));
+                                if (moduleName != null) {
+                                    java.nio.file.Files.write(new File(root, "module-info.java").toPath(), ("module " + moduleName + " { exports app; }\\n").getBytes("UTF-8"));
+                                }
                                 project.addCompileSourceRoot(root.getPath());
                                 return;
                             }
@@ -151,6 +155,7 @@ final class MavenCompilationFixture {
                     <parameter><name>test</name><type>boolean</type><editable>false</editable></parameter>
                     <parameter><name>noop</name><type>boolean</type><editable>false</editable></parameter>
                     <parameter><name>generate</name><type>boolean</type><editable>false</editable></parameter>
+                    <parameter><name>moduleName</name><type>java.lang.String</type><editable>true</editable></parameter>
                   </parameters>
                   <configuration>
                     <project implementation="org.apache.maven.project.MavenProject">${project}</project>

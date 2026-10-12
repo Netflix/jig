@@ -46,21 +46,22 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
 
     @Override
     public void execute(MavenSession session) {
-        capture(session);
+        capture(session, null);
         // This invocation queries the model; do not execute the requested lifecycle.
     }
 
-    private void capture(MavenSession session) {
+    private void capture(MavenSession session, Boolean preparedSources) {
         try {
             Properties values = new Properties();
-            values.setProperty("version", "1");
+            values.setProperty("version", "2");
+            values.setProperty("kind", session.getUserProperties().getProperty("jig.maven.scope") == null ? "projects" : "arguments");
             int index = 0;
             for (MavenProject project : session.getProjects()) {
                 values.setProperty("projects." + index++, project.getGroupId() + ":" + project.getArtifactId());
             }
             values.setProperty("projects.count", Integer.toString(index));
             if (session.getUserProperties().getProperty("jig.maven.scope") != null) {
-                resolve(session, values);
+                resolve(session, values, preparedSources);
             }
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             values.store(bytes, null);
@@ -80,6 +81,7 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         private LifecycleStarter lifecycleStarter;
         private MavenSession buildSession;
         private List<MavenProject> projects;
+        private boolean preparedSources;
 
         @Override
         public void afterProjectsRead(MavenSession session) {
@@ -122,8 +124,8 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 List<String> options = Arrays.asList(request.getProperty("jig.maven.options").split(","));
                 String scope = request.getProperty("jig.maven.scope");
                 MavenProject selected = selected(session);
-                boolean sourceView = sourceView(selected, scope, options);
-                if (sourceView) {
+                preparedSources = sourceView(selected, scope, options);
+                if (preparedSources) {
                     List<MavenProject> dependencies = new ArrayList<MavenProject>(projects);
                     dependencies.remove(selected);
                     if (!dependencies.isEmpty()) {
@@ -137,25 +139,31 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                     session.setProjects(Collections.singletonList(selected));
                     // Run selected generators in the original native lifecycle.
                     // Test sources additionally require the selected main output.
-                    session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "process-test-sources" : "generate-sources"));
+                    session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "process-test-sources" : "process-sources"));
                 }
             } else if (execution.getType() == ExecutionEvent.Type.SessionEnded && projects != null) {
                 session.setProjects(projects);
                 if (!session.getResult().hasExceptions()) {
                     Capture capture = new Capture();
                     capture.dependencyResolver = dependencyResolver;
-                    capture.capture(session);
+                    capture.capture(session, Boolean.valueOf(preparedSources));
                 }
             }
         }
     }
 
-    private void resolve(MavenSession session, Properties values) throws Exception {
+    private void resolve(MavenSession session, Properties values, Boolean preparedSources) throws Exception {
         Properties request = session.getUserProperties();
         String scope = request.getProperty("jig.maven.scope");
         List<String> options = Arrays.asList(request.getProperty("jig.maven.options").split(","));
         MavenProject selected = selected(session);
         session.setCurrentProject(selected);
+        values.setProperty("project", selected.getGroupId() + ":" + selected.getArtifactId());
+        values.setProperty("scope", scope);
+        // Record the representation that governed preparation. Generators can
+        // change module identity; the host must not infer another build decision.
+        values.setProperty("source-view", Boolean.toString(preparedSources == null
+                ? sourceView(selected, scope, options) : preparedSources.booleanValue()));
         List<String> paths = Collections.emptyList();
         if (options.contains("class-path") || options.contains("module-path")) {
             dependencyResolver.resolveProjectDependencies(selected, Collections.singleton(scope), Collections.singleton(scope), session, false, Collections.emptySet());
@@ -175,8 +183,6 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         for (String root : roots) {
             named |= new File(root, "module-info.java").isFile();
         }
-        String output = "test".equals(scope) ? project.getBuild().getTestOutputDirectory() : project.getBuild().getOutputDirectory();
-        named |= new File(output, "module-info.class").isFile();
         return options.contains(named ? "module-source-path" : "source-path");
     }
 
