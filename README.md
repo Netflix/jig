@@ -3,13 +3,9 @@
 [![Maven Central](https://img.shields.io/maven-central/v/com.netflix/com.netflix.tools.jig)](https://central.sonatype.com/artifact/com.netflix/com.netflix.tools.jig)
 ![JDK 25+](https://img.shields.io/badge/JDK-25%2B-blue)
 
-`jig` resolves arguments for standard Java tools, including `javac`, `java`, `javadoc` and `jshell`.
+`jig` resolves arguments for standard Java tools, including `javac`, `java`, `javadoc` and `jshell` given a module source path or Gradle or Maven project.
 
-Given a module source path, it reads `module-info.java` to resolve dependencies and compiles source modules when a tool needs binaries. Dependency versions and other metadata can be supplied in source comments.
-
-For Maven and Gradle projects, it uses the build tool's own dependency resolution. You can run JDK tools with the project's dependencies without maintaining a separate classpath, duplicating dependency declarations, or opening an IDE.
-
-The source module model supports additional metadata through Javadoc tags and version comments on `requires` directives:
+Given a module source path, it reads `module-info.java` to resolve dependencies and compiles source modules when a tool needs binaries. Dependency versions and other metadata can be supplied in source comments:
 
 ```java
 /**
@@ -19,6 +15,8 @@ module com.example.application {
     requires com.example.framework; // @1.2.3
 }
 ```
+
+For Maven and Gradle projects, it uses the build tool's own dependency resolution.
 
 [`ja`](https://github.com/Netflix/ja) uses `jig` for module resolution, compilation, assembly and publishing. Prefer `ja` for module development tasks, using `jig` directly to bring the same module model to another tool or build.
 
