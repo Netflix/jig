@@ -31,6 +31,7 @@ import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
 /** On-demand queries hosted by the explicitly selected Maven build. */
 final class MavenProjectCommands {
+    static final List<String> SCOPES = List.of("compile", "runtime", "test");
     private static final String CAPTURE_PREFIX = "jig-maven:";
     private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Maven project base directory");
     private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId or :artifactId");
@@ -56,6 +57,7 @@ final class MavenProjectCommands {
         return COMMAND_LINE.help("jig maven")
                 + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
                 + "Discovery includes active modules and does not execute build goals.\n"
+                + "The TSV listing contains absolute directory, project selector and scope.\n"
                 + "Argument resolution requires --project and --scope.\n"
                 + "Resolve options: class-path, source-path, module-path, module-source-path, module, add-modules, describe-module.\n"
                 + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
@@ -132,7 +134,7 @@ final class MavenProjectCommands {
             List<String> projects = capture.list("projects");
             if (request.listProjects()) {
                 if (request.tabSeparated()) {
-                    out.print(ProjectListing.tsv(List.of(capture), "projects"));
+                    out.print(ProjectListing.mavenContexts(List.of(capture), SCOPES));
                 } else {
                     projects.stream().distinct().sorted().forEach(out::println);
                 }
@@ -200,7 +202,7 @@ final class MavenProjectCommands {
         if (resolve != null && scope == null) {
             throw new IllegalArgumentException("--scope is required for argument resolution");
         }
-        if (scope != null && !Set.of("compile", "runtime", "test").contains(scope)) {
+        if (scope != null && !SCOPES.contains(scope)) {
             throw new IllegalArgumentException("--scope must be compile, runtime or test");
         }
         var options = new LinkedHashSet<String>();

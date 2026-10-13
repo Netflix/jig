@@ -30,6 +30,7 @@ import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
 /** Explicit build locations, project paths, and source-set argument projections for Gradle. */
 final class GradleCommandLine {
+    static final List<String> CLASSPATHS = List.of("compile", "runtime");
     private static final Set<String> EXTRA_OPTIONS = Set.of("class-path", "processor-path", "source", "target", "encoding", "system",
             "add-reads");
     private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Gradle root project directory");
@@ -73,6 +74,8 @@ final class GradleCommandLine {
         return COMMAND_LINE.help("jig gradle")
                 + "\nUses the root project's wrapper, or gradle on PATH.\n"
                 + "Project paths and source-set names are obtained from the build.\n"
+                + "The TSV listing contains absolute directory, project path, source set and classpath.\n"
+                + "Projects without Java source sets have empty source-set and classpath fields, not defaults.\n"
                 + "Included-build discovery and selection require Gradle 4.0 or later.\n"
                 + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
                 + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
@@ -142,7 +145,7 @@ final class GradleCommandLine {
         } else if (resolve != null && classpath == null) {
             throw new IllegalArgumentException("--classpath is required for argument resolution");
         }
-        if (classpath != null && !classpath.equals("compile") && !classpath.equals("runtime")) {
+        if (classpath != null && !CLASSPATHS.contains(classpath)) {
             throw new IllegalArgumentException("--classpath must be compile or runtime");
         }
         var options = new LinkedHashSet<String>();

@@ -137,6 +137,7 @@ final class GradleCommands {
                         "-Dorg.gradle.unsafe.isolated-projects=false",
                         "-Pjig.gradle.root=" + request.root(),
                         "-Pjig.gradle.list=" + request.listProjects(),
+                        "-Pjig.gradle.list-contexts=" + request.tabSeparated(),
                         "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
         if (!request.listProjects()) {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());

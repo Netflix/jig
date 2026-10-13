@@ -20,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -131,7 +132,8 @@ class GradleCommandsTest {
         var fixture = fixture();
         var result = discoverTsv(fixture);
         assertEquals(0, result.exitCode(), result.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project() + "\n", result.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", fixture.project()),
+                Map.of(":app", List.of("main", "test", "integrationTest"))), result.output());
         assertTrue(result.error().contains("Gradle build output"), result.error());
         var text = run("gradle", "--root-project-dir", fixture.root().toString(),
                 "--list-project-paths", "--format", "text");
@@ -181,7 +183,8 @@ class GradleCommandsTest {
         storeCapture(fixture, values);
         var valid = discoverTsv(fixture);
         assertEquals(0, valid.exitCode(), valid.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + directory + "\n", valid.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", Path.of(directory)),
+                Map.of(":app", List.of("main", "test", "integrationTest"))), valid.output());
         for (String selector : List.of("", ":app\tpart", ":app\npart", ":app\rpart")) {
             values.setProperty("project-paths.1", selector);
             storeCapture(fixture, values);
@@ -210,6 +213,8 @@ class GradleCommandsTest {
         putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
         Path tools = temporaryDirectory.resolve("included tools");
         putList(included, "project-directories", List.of(tools.toString(), tools.resolve("plugin").toString()));
+        putList(included, "source-set-projects", List.of(":tools:plugin", ":tools:plugin"));
+        putList(included, "source-sets", List.of("main", "test"));
         var rootCapture = capture(fixture);
         rootCapture.setProperty("kind", "projects");
         storeCapture(fixture, rootCapture);
@@ -229,8 +234,9 @@ class GradleCommandsTest {
         assertEquals(":\n:app\n:tools\n:tools:plugin\n", result.output());
         var tsv = discoverTsv(fixture);
         assertEquals(0, tsv.exitCode(), tsv.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project()
-                + "\n:tools\t" + tools + "\n:tools:plugin\t" + tools.resolve("plugin") + "\n", tsv.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", fixture.project(), ":tools", tools,
+                ":tools:plugin", tools.resolve("plugin")), Map.of(":app", List.of("main", "test", "integrationTest"),
+                ":tools:plugin", List.of("main", "test"))), tsv.output());
         putList(included, "project-paths", List.of(":app"));
         putList(included, "project-directories", List.of(tools.toString()));
         try (var output = Files.newOutputStream(fixture.root().resolve("included.properties"))) {
@@ -825,6 +831,150 @@ class GradleCommandsTest {
         assertEquals("", missing.output());
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void projectListingIncludesSourceSetsAndClasspathsWithDirectoriesFirst() throws Exception {
+        var fixture = fixture();
+        var expected = new ArrayList<String>();
+        expected.add(fixture.root() + "\t:\t\t");
+        for (String sourceSet : List.of("main", "test", "integrationTest")) {
+            for (String classpath : List.of("compile", "runtime")) {
+                expected.add(fixture.project() + "\t:app\t" + sourceSet + "\t" + classpath);
+            }
+        }
+        var result = discoverTsv(fixture);
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
+        assertTrue(result.error().contains("Gradle build output"), result.error());
+        String invocation = Files.readString(fixture.root().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Pjig.gradle.list-contexts=true"), invocation);
+        assertFalse(invocation.contains("-Pjig.gradle.source-set="), invocation);
+        assertFalse(invocation.contains("-Pjig.gradle.classpath="), invocation);
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void contextFieldsRemainSeparateAndEmptySourceSetListsDoNotImplyDefaults() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        putList(values, "source-set-projects", List.of(":app"));
+        putList(values, "source-sets", List.of("custom/test set"));
+        storeCapture(fixture, values);
+        var custom = discoverTsv(fixture);
+        assertEquals(0, custom.exitCode(), custom.error());
+        assertTrue(custom.output().contains(fixture.project() + "\t:app\tcustom/test set\tcompile\n"), custom.output());
+        assertFalse(custom.output().contains("\tmain\t"), custom.output());
+        putList(values, "source-set-projects", List.of());
+        putList(values, "source-sets", List.of());
+        storeCapture(fixture, values);
+        var empty = discoverTsv(fixture);
+        assertEquals(0, empty.exitCode(), empty.error());
+        assertEquals(List.of(fixture.root() + "\t:\t\t", fixture.project() + "\t:app\t\t").stream().sorted().toList(),
+                empty.output().lines().toList());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void contextListingRejectsIncompleteOrUnrepresentableNativeFields() throws Exception {
+        var fixture = fixture();
+        var original = capture(fixture);
+        for (String field : List.of("source-set-projects.count", "source-set-projects.0", "source-sets.count", "source-sets.0", "project-directories.0")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.remove(field);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), field + ": " + result.error());
+            assertEquals("", result.output());
+        }
+        for (String sourceSet : List.of("", "main\tpart", "main\npart", "main\rpart")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("source-sets.0", sourceSet);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), result.error());
+            assertEquals("", result.output());
+        }
+        for (String project : List.of(":missing", "", ":app\tpart")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("source-set-projects.0", project);
+            storeCapture(fixture, values);
+            var result = discoverTsv(fixture);
+            assertEquals(1, result.exitCode(), result.error());
+            assertEquals("", result.output());
+        }
+        original.setProperty("source-set-projects.count", "2");
+        storeCapture(fixture, original);
+        var mismatched = discoverTsv(fixture);
+        assertEquals(1, mismatched.exitCode(), mismatched.error());
+        assertEquals("", mismatched.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void contextListingMergesIncludedBuildsAndRejectsConflictingSourceSets() throws Exception {
+        var fixture = fixture();
+        var root = capture(fixture);
+        root.setProperty("kind", "projects");
+        storeCapture(fixture, root);
+        var included = new Properties();
+        included.setProperty("version", "2");
+        included.setProperty("kind", "projects");
+        included.setProperty("build-path", ":tools");
+        Path tools = temporaryDirectory.resolve("included tools");
+        putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
+        putList(included, "project-directories", List.of(tools.toString(), tools.resolve("plugin").toString()));
+        putList(included, "source-set-projects", List.of(":tools:plugin", ":tools:plugin"));
+        putList(included, "source-sets", List.of("main", "test"));
+        Path capture = fixture.root().resolve("included.properties");
+        try (var output = Files.newOutputStream(capture)) {
+            included.store(output, null);
+        }
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, """
+                #!/bin/sh
+                for build in included compile included; do
+                    printf 'jig-gradle:'
+                    base64 < "$build.properties" | tr -d '\\n'
+                    printf '\\n'
+                done
+                """);
+        var result = discoverTsv(fixture);
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(12, result.output().lines().count());
+        assertTrue(result.output().contains(tools.resolve("plugin") + "\t:tools:plugin\ttest\truntime\n"), result.output());
+        putList(included, "project-paths", List.of(":app"));
+        putList(included, "project-directories", List.of(fixture.project().toString()));
+        putList(included, "source-set-projects", List.of(":app"));
+        putList(included, "source-sets", List.of("main"));
+        try (var output = Files.newOutputStream(capture)) {
+            included.store(output, null);
+        }
+        var conflicting = discoverTsv(fixture);
+        assertEquals(1, conflicting.exitCode(), conflicting.error());
+        assertEquals("", conflicting.output());
+        assertTrue(conflicting.error().contains("Conflicting Gradle source sets"), conflicting.error());
+        Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
+        var failed = discoverTsv(fixture);
+        assertEquals(7, failed.exitCode(), failed.error());
+        assertEquals("", failed.output());
+    }
+
+    @Test
+    void richerListingDoesNotAddDefaultSourceSetsOrClasspaths() throws Exception {
+        Path root = Files.createDirectories(temporaryDirectory.resolve("contexts"));
+        assertInvalid("--source-set", "gradle", "--root-project-dir", root.toString(), "--project-path", ":app",
+                "--classpath", "compile", "-r", "source-path");
+        assertInvalid("--classpath", "gradle", "--root-project-dir", root.toString(), "--project-path", ":app",
+                "--source-set", "main", "-r", "source-path");
+        assertInvalid("only to project listing", "gradle", "--root-project-dir", root.toString(), "--project-path", ":app",
+                "--list-source-sets", "--format", "tsv");
+        assertFalse(run("gradle", "--help").output().contains("tsv-contexts"));
+        assertInvalid("text or tsv", "gradle", "--root-project-dir", root.toString(), "--list-project-paths", "--format", "tsv-contexts");
+    }
+
     private Fixture fixture() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root with spaces")).toRealPath();
         Path project = Files.createDirectories(root.resolve("custom project")).toRealPath();
@@ -880,6 +1030,7 @@ class GradleCommandsTest {
         putList(values, "project-paths", List.of(":", ":app"));
         putList(values, "project-directories", List.of(root.toString(), project.toString()));
         putList(values, "source-sets", List.of("main", "test", "integrationTest"));
+        putList(values, "source-set-projects", List.of(":app", ":app", ":app"));
         putList(values, "sources",
                 present ? List.of(project.resolve("custom sources").toString()) : List.of());
         putList(values, "classpath",
@@ -901,6 +1052,23 @@ class GradleCommandsTest {
         for (int i = 0; i < elements.size(); i++) {
             values.setProperty(name + "." + i, elements.get(i));
         }
+    }
+
+    private static String projectTsv(Map<String, Path> projects, Map<String, List<String>> sourceSets) {
+        var rows = new ArrayList<String>();
+        projects.forEach((selector, directory) -> {
+            var names = sourceSets.getOrDefault(selector, List.of());
+            if (names.isEmpty()) {
+                rows.add(directory + "\t" + selector + "\t\t");
+            } else {
+                for (String name : names) {
+                    for (String classpath : List.of("compile", "runtime")) {
+                        rows.add(directory + "\t" + selector + "\t" + name + "\t" + classpath);
+                    }
+                }
+            }
+        });
+        return String.join("\n", rows.stream().sorted().toList()) + "\n";
     }
 
     private static Result discoverTsv(Fixture fixture) {
