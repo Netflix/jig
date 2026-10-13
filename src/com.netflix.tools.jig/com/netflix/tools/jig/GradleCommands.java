@@ -54,10 +54,10 @@ final class GradleCommands {
             }
             List<String> projects = captures.projects();
             if (request.listProjects()) {
-                if (request.tabSeparated()) {
-                    out.print(captures.tabSeparatedProjects());
-                } else {
-                    projects.stream().distinct().sorted().forEach(out::println);
+                switch (request.format()) {
+                    case TEXT -> projects.stream().distinct().sorted().forEach(out::println);
+                    case TSV -> out.print(captures.tabSeparatedProjects());
+                    case TSV_CONTEXTS -> out.print(captures.projectContexts());
                 }
             } else {
                 if (!projects.contains(request.projectPath())) {
@@ -137,6 +137,7 @@ final class GradleCommands {
                         "-Dorg.gradle.unsafe.isolated-projects=false",
                         "-Pjig.gradle.root=" + request.root(),
                         "-Pjig.gradle.list=" + request.listProjects(),
+                        "-Pjig.gradle.list-contexts=" + (request.format() == ProjectListing.Format.TSV_CONTEXTS),
                         "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
         if (!request.listProjects()) {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());

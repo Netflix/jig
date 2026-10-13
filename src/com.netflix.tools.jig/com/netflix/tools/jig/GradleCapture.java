@@ -68,6 +68,10 @@ final class GradleCapture {
         return ProjectListing.tsv(discoveries, "project-paths");
     }
 
+    String projectContexts() throws IOException {
+        return ProjectListing.gradleContexts(discoveries, GradleCommandLine.CLASSPATHS);
+    }
+
     BuildCapture metadata() throws IOException {
         if (metadata == null) {
             throw new IOException("Gradle did not return a project capture");

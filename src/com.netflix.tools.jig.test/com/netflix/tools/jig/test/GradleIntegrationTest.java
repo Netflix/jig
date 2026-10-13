@@ -100,6 +100,53 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void projectListingCapturesNativeSourceSetsWithoutPreparingSourcesOrDependencies() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("prevent-resolution"), "");
+        Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { integrationTest }\n", StandardOpenOption.APPEND);
+        if (supportsLazyTasks()) {
+            Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.named('compileIntegrationTestJava').configure { throw new GradleException('compiler realized') }\n", StandardOpenOption.APPEND);
+        }
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"),
+                    "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\n"
+                            + "org.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        var expected = new ArrayList<String>();
+        expected.add(fixture.root() + "\t:\t\t");
+        expected.add(fixture.root().resolve("plain") + "\t:plain\t\t");
+        for (String project : List.of(":app", ":library")) {
+            Path location = project.equals(":app") ? fixture.app() : fixture.root().resolve("library");
+            List<String> sourceSets = project.equals(":app") ? List.of("main", "test", "integrationTest") : List.of("main", "test");
+            for (String sourceSet : sourceSets) {
+                for (String classpath : List.of("compile", "runtime")) {
+                    expected.add(location + "\t" + project + "\t" + sourceSet + "\t" + classpath);
+                }
+            }
+        }
+        for (int query = 0; query < 2; query++) {
+            assertEquals(expected.stream().sorted().toList(),
+                    run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts")
+                            .lines().toList());
+        }
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
+    @EnabledIf("eagerTaskCoverage")
+    void contextListingConfiguresAllProjectsWhenConfigurationOnDemandIsEnabled() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("prevent-resolution"), "");
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configureondemand=true\n");
+        String listing = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts");
+        assertTrue(listing.contains(fixture.app() + "\t:app\tmain\tcompile\n"), listing);
+        assertTrue(listing.contains(fixture.root().resolve("library") + "\t:library\ttest\truntime\n"), listing);
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
     void capturesSelectedBuildWithoutRejectingIncludedBuildsOrBuildSrc() throws Exception {
         var fixture = fixture(false);
         Path included = Files.createDirectories(fixture.root().resolve("included-library"));
@@ -129,6 +176,11 @@ class GradleIntegrationTest {
         }
         assertEquals(List.of(":", ":app", ":included-library", ":included-library:child", ":library", ":plain"),
                 run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths").lines().toList());
+        String contexts = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts");
+        assertTrue(contexts.contains(included + "\t:included-library\tmain\tcompile\n"), contexts);
+        assertTrue(contexts.contains(included.resolve("child") + "\t:included-library:child\ttest\truntime\n"), contexts);
+        assertFalse(contexts.contains("\t:buildSrc\t"), contexts);
+        assertEquals(contexts, run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts"));
         assertEquals(List.of("main", "test"), run("gradle", "--root-project-dir", fixture.root().toString(),
                 "--project-path", ":included-library", "--list-source-sets").lines().toList());
         String includedSources = run("gradle", "--root-project-dir", fixture.root().toString(),
@@ -171,6 +223,10 @@ class GradleIntegrationTest {
                 ":tools\t" + outer, ":tools:plugin\t" + outer.resolve("plugin"), nested + "\t" + inner));
         assertEquals(directories.stream().sorted().toList(), run("gradle", "--root-project-dir",
                 fixture.root().toString(), "--list-project-paths", "--format", "tsv").lines().toList());
+        String contexts = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts");
+        assertTrue(contexts.contains(inner + "\t" + nested + "\tmain\tcompile\n"), contexts);
+        assertTrue(contexts.contains(outer.resolve("plugin") + "\t:tools:plugin\ttest\truntime\n"), contexts);
+        assertEquals(contexts, run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts"));
         String sources = run("gradle", "--root-project-dir", fixture.root().toString(),
                 "--project-path", nested, "--source-set", "main", "--classpath", "compile", "-r", "source-path");
         assertTrue(sources.contains(inner.resolve("src/main/java").toString()), sources);

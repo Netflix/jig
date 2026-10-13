@@ -85,6 +85,27 @@ class MavenIntegrationTest {
     }
 
     @Test
+    void projectListingExposesExplicitNativeScopesWithoutExecutingTheBuild() throws Exception {
+        Path root = fixture();
+        var expected = new ArrayList<String>();
+        for (String artifact : List.of("root", "app", "extra")) {
+            Path project = artifact.equals("root") ? root : root.resolve(artifact);
+            for (String scope : List.of("compile", "runtime", "test")) {
+                expected.add(project + "\tfixture:" + artifact + "\t" + scope);
+            }
+        }
+        var result = discover(root, "--format", "tsv-contexts");
+        assertEquals(0, result.status(), result.error());
+        assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
+        var selected = discover(root, "--project", ":app", "--format", "tsv-contexts");
+        assertEquals(0, selected.status(), selected.error());
+        assertEquals(List.of(root.resolve("app") + "\tfixture:app\tcompile",
+                root.resolve("app") + "\tfixture:app\truntime",
+                root.resolve("app") + "\tfixture:app\ttest"), selected.output().lines().toList());
+        assertNoBuildOutputs();
+    }
+
+    @Test
     void discoversActualProjectDirectoriesOutsideTheReactorDirectory() throws Exception {
         Path root = fixture();
         Path relocated = Files.move(root.resolve("app"), root.getParent().resolve("relocated app")).toRealPath();
@@ -97,6 +118,10 @@ class MavenIntegrationTest {
         var selected = discover(root, "--project", ":app", "--format", "tsv");
         assertEquals(0, selected.status(), selected.error());
         assertEquals("fixture:app\t" + relocated + "\n", selected.output());
+        var contexts = discover(root, "--project", ":app", "--format", "tsv-contexts");
+        assertEquals(0, contexts.status(), contexts.error());
+        assertEquals(List.of(relocated + "\tfixture:app\tcompile", relocated + "\tfixture:app\truntime",
+                relocated + "\tfixture:app\ttest"), contexts.output().lines().toList());
         assertNoBuildOutputs();
     }
 

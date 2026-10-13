@@ -161,6 +161,7 @@ class JigCaptureTask extends DefaultTask {
         putList(values, 'project-paths', projectPaths)
         putList(values, 'project-directories', projectDirectories)
         putList(values, 'source-sets', sourceSetNames)
+        putList(values, 'source-set-projects', sourceSetNames.collect { projectPath })
         def roots = sourceRoots.files
         putList(values, 'sources', roots.collect { it.canonicalPath })
         def modular = false
@@ -226,7 +227,7 @@ gradle.settingsEvaluated { settings ->
         // including in its earliest configuration-cache releases.
         def providers = settings.services.get(org.gradle.api.provider.ProviderFactory)
         parameters = [:]
-        for (def name : ['root', 'project-path', 'list', 'list-source-sets', 'compiler', 'source-set', 'classpath', 'options']) {
+        for (def name : ['root', 'project-path', 'list', 'list-contexts', 'list-source-sets', 'compiler', 'source-set', 'classpath', 'options']) {
             def key = 'jig.gradle.' + name
             def value = providers.gradleProperty(key)
             if (gradleVersion < GradleVersion.version('7.4')) {
@@ -241,6 +242,7 @@ gradle.settingsEvaluated { settings ->
     }
     def selectedPath = parameters['jig.gradle.project-path']
     def listProjects = Boolean.parseBoolean(parameters['jig.gradle.list'])
+    def listContexts = listProjects && Boolean.parseBoolean(parameters['jig.gradle.list-contexts'])
     def listSourceSets = Boolean.parseBoolean(parameters['jig.gradle.list-source-sets'])
     def compilerRequest = Boolean.parseBoolean(parameters['jig.gradle.compiler'])
     def sourceSetName = parameters['jig.gradle.source-set']
@@ -273,7 +275,7 @@ gradle.settingsEvaluated { settings ->
         def projectDirectories = projectDescriptors.collect { it.projectDir.canonicalPath }
         gradle.beforeProject { project ->
             def dispatch = !listProjects && project.path == ':' && projectPath != ':'
-            if (project.path != projectPath && !dispatch) {
+            if (project.path != projectPath && !dispatch && !listContexts) {
                 return
             }
             // Register after evaluation so even eager task-container callbacks cannot
@@ -308,28 +310,32 @@ gradle.settingsEvaluated { settings ->
                     }
                     task.captureKind = listProjects ? 'projects' : listSourceSets ? 'source-sets' : compilerRequest ? 'compiler-metadata' : 'arguments'
                     task.buildPath = buildPath
-                    task.projectPath = selectedPath ?: ''
+                    task.projectPath = listContexts ? qualifiedPath(project.path) : selectedPath ?: ''
                     task.sourceSet = sourceSetName ?: ''
-                    task.projectPaths = projectPaths
-                    task.projectDirectories = listProjects ? projectDirectories : []
+                    task.projectPaths = listContexts ? [qualifiedPath(project.path)] : projectPaths
+                    task.projectDirectories = listContexts ? [project.projectDir.canonicalPath] : listProjects ? projectDirectories : []
                     task.sourceRoots = project.files()
                     task.binaryPath = project.files()
                     task.processorPath = project.files()
-                    if (listProjects) {
+                    if (listProjects && project.path == ':') {
                         // Task references let Gradle configure and execute each included
                         // build's discovery without sharing mutable state across builds.
                         if (gradleVersion < GradleVersion.version('4.0') && !gradle.includedBuilds.empty) {
                             throw new GradleException('Composite discovery requires Gradle 4.0 or later; this version does not apply init scripts to included builds')
                         }
                         task.dependsOn(gradle.includedBuilds.collect { it.task(':' + captureTaskName) })
-                        return
+                        if (listContexts) {
+                            task.dependsOn(projectDescriptors.findAll { it.path != ':' }.collect { it.path + ':' + captureTaskName })
+                        } else {
+                            return
+                        }
                     }
                     def sourceSets = project.extensions.findByName('sourceSets')
                     if (sourceSets == null && project.hasProperty('sourceSets')) {
                         sourceSets = project.property('sourceSets')
                     }
                     task.sourceSetNames = sourceSets == null ? [] : sourceSets.names.toList().sort()
-                    if (listSourceSets) {
+                    if (listSourceSets || listContexts) {
                         return
                     }
                     def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)

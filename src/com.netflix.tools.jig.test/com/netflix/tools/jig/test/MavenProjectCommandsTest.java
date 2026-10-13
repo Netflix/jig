@@ -574,6 +574,68 @@ class MavenProjectCommandsTest {
         assertFalse(result.error().contains("Exception"), result.error());
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void projectListingIncludesNativeScopesWithDirectoriesFirst() throws Exception {
+        var fixture = fixture(false);
+        var expected = new ArrayList<String>();
+        for (String project : List.of("example:app", "example:root")) {
+            Path location = project.endsWith(":app") ? fixture.project().resolve("app") : fixture.project();
+            for (String scope : List.of("compile", "runtime", "test")) {
+                expected.add(location + "\t" + project + "\t" + scope);
+            }
+        }
+        var result = discover(fixture, "--format", "tsv-contexts");
+        assertEquals(0, result.status(), result.error());
+        assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
+        assertTrue(result.error().contains("Maven build output"), result.error());
+        var invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+        assertEquals("validate", invocation.getLast());
+        assertFalse(invocation.contains("--also-make"));
+        assertFalse(invocation.stream().anyMatch(argument -> argument.startsWith("-Djig.maven.scope=")));
+        assertFalse(Files.exists(fixture.project().resolve("target")));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void contextListingRejectsInvalidCapturesWithoutPartialOutput() throws Exception {
+        var fixture = fixture(false);
+        Path capture = fixture.project().resolve("capture.properties");
+        var original = new Properties();
+        try (var input = Files.newInputStream(capture)) {
+            original.load(input);
+        }
+        for (String directory : List.of("relative", "", fixture.project() + "\tpart", fixture.project() + "\npart")) {
+            var values = new Properties();
+            values.putAll(original);
+            values.setProperty("project-directories.1", directory);
+            try (var output = Files.newOutputStream(capture)) {
+                values.store(output, null);
+            }
+            var result = discover(fixture, "--format", "tsv-contexts");
+            assertEquals(1, result.status(), result.error());
+            assertEquals("", result.output());
+        }
+        original.remove("project-directories.1");
+        try (var output = Files.newOutputStream(capture)) {
+            original.store(output, null);
+        }
+        var incomplete = discover(fixture, "--format", "tsv-contexts");
+        assertEquals(1, incomplete.status(), incomplete.error());
+        assertEquals("", incomplete.output());
+    }
+
+    @Test
+    void richerListingDoesNotAddDefaultScopesOrCombinedSelectors() throws Exception {
+        Path root = Files.createDirectories(temporaryDirectory.resolve("contexts"));
+        Files.writeString(root.resolve("pom.xml"), "<project/>\n");
+        assertInvalid("--scope", "maven", "--project-base-dir", root.toString(), "--project", "example:app", "-r", "source-path");
+        assertInvalid("selector", "maven", "--project-base-dir", root.toString(), "--project", "example:app/test", "--scope", "test", "-r", "source-path");
+        assertInvalid("only to project listing", "maven", "--project-base-dir", root.toString(), "--project", "example:app",
+                "--scope", "compile", "-r", "source-path", "--format", "tsv-contexts");
+        assertTrue(run("maven", "--help").output().contains("tsv-contexts"));
+    }
+
     private Fixture fixture(boolean lifecycleInterface) throws Exception {
         Path project = Files.createDirectories(temporaryDirectory.resolve("project with spaces")).toRealPath();
         Files.createDirectories(project.resolve("app"));
