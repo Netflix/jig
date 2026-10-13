@@ -20,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -131,7 +132,8 @@ class GradleCommandsTest {
         var fixture = fixture();
         var result = discoverTsv(fixture);
         assertEquals(0, result.exitCode(), result.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project() + "\n", result.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", fixture.project()),
+                Map.of(":app", List.of("main", "test", "integrationTest"))), result.output());
         assertTrue(result.error().contains("Gradle build output"), result.error());
         var text = run("gradle", "--root-project-dir", fixture.root().toString(),
                 "--list-project-paths", "--format", "text");
@@ -181,7 +183,8 @@ class GradleCommandsTest {
         storeCapture(fixture, values);
         var valid = discoverTsv(fixture);
         assertEquals(0, valid.exitCode(), valid.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + directory + "\n", valid.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", Path.of(directory)),
+                Map.of(":app", List.of("main", "test", "integrationTest"))), valid.output());
         for (String selector : List.of("", ":app\tpart", ":app\npart", ":app\rpart")) {
             values.setProperty("project-paths.1", selector);
             storeCapture(fixture, values);
@@ -210,6 +213,8 @@ class GradleCommandsTest {
         putList(included, "project-paths", List.of(":tools", ":tools:plugin"));
         Path tools = temporaryDirectory.resolve("included tools");
         putList(included, "project-directories", List.of(tools.toString(), tools.resolve("plugin").toString()));
+        putList(included, "source-set-projects", List.of(":tools:plugin", ":tools:plugin"));
+        putList(included, "source-sets", List.of("main", "test"));
         var rootCapture = capture(fixture);
         rootCapture.setProperty("kind", "projects");
         storeCapture(fixture, rootCapture);
@@ -229,8 +234,9 @@ class GradleCommandsTest {
         assertEquals(":\n:app\n:tools\n:tools:plugin\n", result.output());
         var tsv = discoverTsv(fixture);
         assertEquals(0, tsv.exitCode(), tsv.error());
-        assertEquals(":\t" + fixture.root() + "\n:app\t" + fixture.project()
-                + "\n:tools\t" + tools + "\n:tools:plugin\t" + tools.resolve("plugin") + "\n", tsv.output());
+        assertEquals(projectTsv(Map.of(":", fixture.root(), ":app", fixture.project(), ":tools", tools,
+                ":tools:plugin", tools.resolve("plugin")), Map.of(":app", List.of("main", "test", "integrationTest"),
+                ":tools:plugin", List.of("main", "test"))), tsv.output());
         putList(included, "project-paths", List.of(":app"));
         putList(included, "project-directories", List.of(tools.toString()));
         try (var output = Files.newOutputStream(fixture.root().resolve("included.properties"))) {
@@ -836,7 +842,7 @@ class GradleCommandsTest {
                 expected.add(fixture.project() + "\t:app\t" + sourceSet + "\t" + classpath);
             }
         }
-        var result = discoverContexts(fixture);
+        var result = discoverTsv(fixture);
         assertEquals(0, result.exitCode(), result.error());
         assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
         assertTrue(result.error().contains("Gradle build output"), result.error());
@@ -854,14 +860,14 @@ class GradleCommandsTest {
         putList(values, "source-set-projects", List.of(":app"));
         putList(values, "source-sets", List.of("custom/test set"));
         storeCapture(fixture, values);
-        var custom = discoverContexts(fixture);
+        var custom = discoverTsv(fixture);
         assertEquals(0, custom.exitCode(), custom.error());
         assertTrue(custom.output().contains(fixture.project() + "\t:app\tcustom/test set\tcompile\n"), custom.output());
         assertFalse(custom.output().contains("\tmain\t"), custom.output());
         putList(values, "source-set-projects", List.of());
         putList(values, "source-sets", List.of());
         storeCapture(fixture, values);
-        var empty = discoverContexts(fixture);
+        var empty = discoverTsv(fixture);
         assertEquals(0, empty.exitCode(), empty.error());
         assertEquals(List.of(fixture.root() + "\t:\t\t", fixture.project() + "\t:app\t\t").stream().sorted().toList(),
                 empty.output().lines().toList());
@@ -877,7 +883,7 @@ class GradleCommandsTest {
             values.putAll(original);
             values.remove(field);
             storeCapture(fixture, values);
-            var result = discoverContexts(fixture);
+            var result = discoverTsv(fixture);
             assertEquals(1, result.exitCode(), field + ": " + result.error());
             assertEquals("", result.output());
         }
@@ -886,7 +892,7 @@ class GradleCommandsTest {
             values.putAll(original);
             values.setProperty("source-sets.0", sourceSet);
             storeCapture(fixture, values);
-            var result = discoverContexts(fixture);
+            var result = discoverTsv(fixture);
             assertEquals(1, result.exitCode(), result.error());
             assertEquals("", result.output());
         }
@@ -895,13 +901,13 @@ class GradleCommandsTest {
             values.putAll(original);
             values.setProperty("source-set-projects.0", project);
             storeCapture(fixture, values);
-            var result = discoverContexts(fixture);
+            var result = discoverTsv(fixture);
             assertEquals(1, result.exitCode(), result.error());
             assertEquals("", result.output());
         }
         original.setProperty("source-set-projects.count", "2");
         storeCapture(fixture, original);
-        var mismatched = discoverContexts(fixture);
+        var mismatched = discoverTsv(fixture);
         assertEquals(1, mismatched.exitCode(), mismatched.error());
         assertEquals("", mismatched.output());
     }
@@ -935,7 +941,7 @@ class GradleCommandsTest {
                     printf '\\n'
                 done
                 """);
-        var result = discoverContexts(fixture);
+        var result = discoverTsv(fixture);
         assertEquals(0, result.exitCode(), result.error());
         assertEquals(12, result.output().lines().count());
         assertTrue(result.output().contains(tools.resolve("plugin") + "\t:tools:plugin\ttest\truntime\n"), result.output());
@@ -946,12 +952,12 @@ class GradleCommandsTest {
         try (var output = Files.newOutputStream(capture)) {
             included.store(output, null);
         }
-        var conflicting = discoverContexts(fixture);
+        var conflicting = discoverTsv(fixture);
         assertEquals(1, conflicting.exitCode(), conflicting.error());
         assertEquals("", conflicting.output());
         assertTrue(conflicting.error().contains("Conflicting Gradle source sets"), conflicting.error());
         Files.writeString(wrapper, Files.readString(wrapper) + "exit 7\n");
-        var failed = discoverContexts(fixture);
+        var failed = discoverTsv(fixture);
         assertEquals(7, failed.exitCode(), failed.error());
         assertEquals("", failed.output());
     }
@@ -964,8 +970,9 @@ class GradleCommandsTest {
         assertInvalid("--classpath", "gradle", "--root-project-dir", root.toString(), "--project-path", ":app",
                 "--source-set", "main", "-r", "source-path");
         assertInvalid("only to project listing", "gradle", "--root-project-dir", root.toString(), "--project-path", ":app",
-                "--list-source-sets", "--format", "tsv-contexts");
-        assertTrue(run("gradle", "--help").output().contains("tsv-contexts"));
+                "--list-source-sets", "--format", "tsv");
+        assertFalse(run("gradle", "--help").output().contains("tsv-contexts"));
+        assertInvalid("text or tsv", "gradle", "--root-project-dir", root.toString(), "--list-project-paths", "--format", "tsv-contexts");
     }
 
     private Fixture fixture() throws Exception {
@@ -1047,8 +1054,21 @@ class GradleCommandsTest {
         }
     }
 
-    private static Result discoverContexts(Fixture fixture) {
-        return run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv-contexts");
+    private static String projectTsv(Map<String, Path> projects, Map<String, List<String>> sourceSets) {
+        var rows = new ArrayList<String>();
+        projects.forEach((selector, directory) -> {
+            var names = sourceSets.getOrDefault(selector, List.of());
+            if (names.isEmpty()) {
+                rows.add(directory + "\t" + selector + "\t\t");
+            } else {
+                for (String name : names) {
+                    for (String classpath : List.of("compile", "runtime")) {
+                        rows.add(directory + "\t" + selector + "\t" + name + "\t" + classpath);
+                    }
+                }
+            }
+        });
+        return String.join("\n", rows.stream().sorted().toList()) + "\n";
     }
 
     private static Result discoverTsv(Fixture fixture) {

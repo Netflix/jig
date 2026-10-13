@@ -65,10 +65,6 @@ final class GradleCapture {
     }
 
     String tabSeparatedProjects() throws IOException {
-        return ProjectListing.tsv(discoveries, "project-paths");
-    }
-
-    String projectContexts() throws IOException {
         return ProjectListing.gradleContexts(discoveries, GradleCommandLine.CLASSPATHS);
     }
 

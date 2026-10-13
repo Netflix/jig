@@ -26,36 +26,22 @@ import java.util.TreeSet;
 import com.netflix.tools.jig.CommandLine.ToolOption;
 
 final class ProjectListing {
-    static final ToolOption FORMAT = ToolOption.option("--format", "text|tsv|tsv-contexts",
-            "Project listing format; tsv includes directories, tsv-contexts puts directories first and includes native contexts");
-
-    enum Format {
-        TEXT,
-        TSV,
-        TSV_CONTEXTS
-    }
+    static final ToolOption FORMAT = ToolOption.option("--format", "text|tsv",
+            "Project listing format; tsv includes directories first and native context fields");
 
     private ProjectListing() {}
 
-    static Format format(String value, boolean listProjects) {
+    static boolean tabSeparated(String value, boolean listProjects) {
         if (value == null) {
-            return Format.TEXT;
+            return false;
         }
         if (!listProjects) {
             throw new IllegalArgumentException("--format applies only to project listing");
         }
-        return switch (value) {
-            case "text" -> Format.TEXT;
-            case "tsv" -> Format.TSV;
-            case "tsv-contexts" -> Format.TSV_CONTEXTS;
-            default -> throw new IllegalArgumentException("--format must be text or tsv or tsv-contexts");
-        };
-    }
-
-    static String tsv(List<BuildCapture> captures, String selectorKey) throws IOException {
-        var output = new StringBuilder();
-        projects(captures, selectorKey).forEach((selector, directory) -> output.append(selector).append('\t').append(directory).append('\n'));
-        return output.toString();
+        if (!value.equals("text") && !value.equals("tsv")) {
+            throw new IllegalArgumentException("--format must be text or tsv");
+        }
+        return value.equals("tsv");
     }
 
     static String mavenContexts(List<BuildCapture> captures, List<String> scopes) throws IOException {

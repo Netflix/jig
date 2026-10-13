@@ -94,10 +94,10 @@ class MavenIntegrationTest {
                 expected.add(project + "\tfixture:" + artifact + "\t" + scope);
             }
         }
-        var result = discover(root, "--format", "tsv-contexts");
+        var result = discover(root, "--format", "tsv");
         assertEquals(0, result.status(), result.error());
         assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
-        var selected = discover(root, "--project", ":app", "--format", "tsv-contexts");
+        var selected = discover(root, "--project", ":app", "--format", "tsv");
         assertEquals(0, selected.status(), selected.error());
         assertEquals(List.of(root.resolve("app") + "\tfixture:app\tcompile",
                 root.resolve("app") + "\tfixture:app\truntime",
@@ -113,15 +113,17 @@ class MavenIntegrationTest {
         Files.writeString(pom, Files.readString(pom).replace("<module>app</module>", "<module>../relocated app</module>"));
         var result = discover(root, "--format", "tsv");
         assertEquals(0, result.status(), result.error());
-        assertEquals("fixture:app\t" + relocated + "\nfixture:extra\t" + root.resolve("extra")
-                + "\nfixture:root\t" + root + "\n", result.output());
+        var expected = new ArrayList<String>();
+        for (String scope : List.of("compile", "runtime", "test")) {
+            expected.add(relocated + "\tfixture:app\t" + scope);
+            expected.add(root.resolve("extra") + "\tfixture:extra\t" + scope);
+            expected.add(root + "\tfixture:root\t" + scope);
+        }
+        assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
         var selected = discover(root, "--project", ":app", "--format", "tsv");
         assertEquals(0, selected.status(), selected.error());
-        assertEquals("fixture:app\t" + relocated + "\n", selected.output());
-        var contexts = discover(root, "--project", ":app", "--format", "tsv-contexts");
-        assertEquals(0, contexts.status(), contexts.error());
         assertEquals(List.of(relocated + "\tfixture:app\tcompile", relocated + "\tfixture:app\truntime",
-                relocated + "\tfixture:app\ttest"), contexts.output().lines().toList());
+                relocated + "\tfixture:app\ttest"), selected.output().lines().toList());
         assertNoBuildOutputs();
     }
 

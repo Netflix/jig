@@ -57,7 +57,7 @@ final class MavenProjectCommands {
         return COMMAND_LINE.help("jig maven")
                 + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
                 + "Discovery includes active modules and does not execute build goals.\n"
-                + "The tsv-contexts listing contains absolute directory, project selector and scope.\n"
+                + "The TSV listing contains absolute directory, project selector and scope.\n"
                 + "Argument resolution requires --project and --scope.\n"
                 + "Resolve options: class-path, source-path, module-path, module-source-path, module, add-modules, describe-module.\n"
                 + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
@@ -133,10 +133,10 @@ final class MavenProjectCommands {
             capture.expect("kind", request.listProjects() ? "projects" : "arguments");
             List<String> projects = capture.list("projects");
             if (request.listProjects()) {
-                switch (request.format()) {
-                    case TEXT -> projects.stream().distinct().sorted().forEach(out::println);
-                    case TSV -> out.print(ProjectListing.tsv(List.of(capture), "projects"));
-                    case TSV_CONTEXTS -> out.print(ProjectListing.mavenContexts(List.of(capture), SCOPES));
+                if (request.tabSeparated()) {
+                    out.print(ProjectListing.mavenContexts(List.of(capture), SCOPES));
+                } else {
+                    projects.stream().distinct().sorted().forEach(out::println);
                 }
             } else {
                 String selected = capture.require("project");
@@ -176,7 +176,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--project-base-dir may only be specified once");
         }
         boolean listProjects = parsed.contains(LIST);
-        var format = ProjectListing.format(single(parsed, ProjectListing.FORMAT), listProjects);
+        boolean tabSeparated = ProjectListing.tabSeparated(single(parsed, ProjectListing.FORMAT), listProjects);
         String project = single(parsed, PROJECT);
         String scope = single(parsed, SCOPE);
         String resolve = single(parsed, RESOLVE);
@@ -236,7 +236,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, format, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
@@ -262,5 +262,5 @@ final class MavenProjectCommands {
         return line.replaceAll("\u001b\\[[0-9;]*m", "");
     }
 
-    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, ProjectListing.Format format, boolean verbose) {}
+    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean tabSeparated, boolean verbose) {}
 }

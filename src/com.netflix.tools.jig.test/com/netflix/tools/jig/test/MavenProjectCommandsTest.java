@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -266,8 +267,7 @@ class MavenProjectCommandsTest {
         var fixture = fixture(false);
         var result = discover(fixture, "--format", "tsv");
         assertEquals(0, result.status(), result.error());
-        assertEquals("example:app\t" + fixture.project().resolve("app")
-                + "\nexample:root\t" + fixture.project() + "\n", result.output());
+        assertEquals(projectTsv(Map.of("example:app", fixture.project().resolve("app"), "example:root", fixture.project())), result.output());
         assertTrue(result.error().contains("Maven build output"), result.error());
         var text = discover(fixture, "--format", "text");
         assertEquals(0, text.status(), text.error());
@@ -585,7 +585,7 @@ class MavenProjectCommandsTest {
                 expected.add(location + "\t" + project + "\t" + scope);
             }
         }
-        var result = discover(fixture, "--format", "tsv-contexts");
+        var result = discover(fixture, "--format", "tsv");
         assertEquals(0, result.status(), result.error());
         assertEquals(expected.stream().sorted().toList(), result.output().lines().toList());
         assertTrue(result.error().contains("Maven build output"), result.error());
@@ -612,7 +612,7 @@ class MavenProjectCommandsTest {
             try (var output = Files.newOutputStream(capture)) {
                 values.store(output, null);
             }
-            var result = discover(fixture, "--format", "tsv-contexts");
+            var result = discover(fixture, "--format", "tsv");
             assertEquals(1, result.status(), result.error());
             assertEquals("", result.output());
         }
@@ -620,7 +620,7 @@ class MavenProjectCommandsTest {
         try (var output = Files.newOutputStream(capture)) {
             original.store(output, null);
         }
-        var incomplete = discover(fixture, "--format", "tsv-contexts");
+        var incomplete = discover(fixture, "--format", "tsv");
         assertEquals(1, incomplete.status(), incomplete.error());
         assertEquals("", incomplete.output());
     }
@@ -632,8 +632,9 @@ class MavenProjectCommandsTest {
         assertInvalid("--scope", "maven", "--project-base-dir", root.toString(), "--project", "example:app", "-r", "source-path");
         assertInvalid("selector", "maven", "--project-base-dir", root.toString(), "--project", "example:app/test", "--scope", "test", "-r", "source-path");
         assertInvalid("only to project listing", "maven", "--project-base-dir", root.toString(), "--project", "example:app",
-                "--scope", "compile", "-r", "source-path", "--format", "tsv-contexts");
-        assertTrue(run("maven", "--help").output().contains("tsv-contexts"));
+                "--scope", "compile", "-r", "source-path", "--format", "tsv");
+        assertFalse(run("maven", "--help").output().contains("tsv-contexts"));
+        assertInvalid("text or tsv", "maven", "--project-base-dir", root.toString(), "--list-projects", "--format", "tsv-contexts");
     }
 
     private Fixture fixture(boolean lifecycleInterface) throws Exception {
@@ -760,6 +761,16 @@ class MavenProjectCommandsTest {
         return Files.readAllLines(fixture.project().resolve("invocation.txt")).stream()
                 .filter(argument -> argument.startsWith("-Dmaven.ext.class.path="))
                 .map(argument -> Path.of(argument.substring("-Dmaven.ext.class.path=".length()))).findFirst().orElseThrow();
+    }
+
+    private static String projectTsv(Map<String, Path> projects) {
+        var rows = new ArrayList<String>();
+        projects.forEach((selector, directory) -> {
+            for (String scope : List.of("compile", "runtime", "test")) {
+                rows.add(directory + "\t" + selector + "\t" + scope);
+            }
+        });
+        return String.join("\n", rows.stream().sorted().toList()) + "\n";
     }
 
     private static Result discover(Fixture fixture, String... options) {

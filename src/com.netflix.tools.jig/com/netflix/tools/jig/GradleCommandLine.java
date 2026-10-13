@@ -56,7 +56,7 @@ final class GradleCommandLine {
             String sourceSet,
             String classpath,
             boolean listProjects,
-            ProjectListing.Format format,
+            boolean tabSeparated,
             boolean listSourceSets,
             boolean compiler,
             Set<String> options,
@@ -74,7 +74,7 @@ final class GradleCommandLine {
         return COMMAND_LINE.help("jig gradle")
                 + "\nUses the root project's wrapper, or gradle on PATH.\n"
                 + "Project paths and source-set names are obtained from the build.\n"
-                + "The tsv-contexts listing contains absolute directory, project path, source set and classpath.\n"
+                + "The TSV listing contains absolute directory, project path, source set and classpath.\n"
                 + "Projects without Java source sets have empty source-set and classpath fields, not defaults.\n"
                 + "Included-build discovery and selection require Gradle 4.0 or later.\n"
                 + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
@@ -102,7 +102,7 @@ final class GradleCommandLine {
         String resolve = single(parsed, RESOLVE);
         String write = single(parsed, WRITE);
         boolean listProjects = parsed.contains(LIST_PROJECTS);
-        var format = ProjectListing.format(single(parsed, ProjectListing.FORMAT), listProjects);
+        boolean tabSeparated = ProjectListing.tabSeparated(single(parsed, ProjectListing.FORMAT), listProjects);
         boolean listSourceSets = parsed.contains(LIST_SOURCE_SETS);
         if (root == null) {
             throw new IllegalArgumentException("--root-project-dir is required");
@@ -171,7 +171,7 @@ final class GradleCommandLine {
                 sourceSet,
                 classpath,
                 listProjects,
-                format,
+                tabSeparated,
                 listSourceSets,
                 compiler,
                 Set.copyOf(options),
