@@ -250,6 +250,23 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void sourceOptionsChooseThePathForTheSelectedProject() throws Exception {
+        var fixture = fixture();
+        var classpath = resolve(fixture, "compile", "source-path,module-source-path");
+        assertEquals(0, classpath.exitCode(), classpath.error());
+        var sources = fixture.project().resolve("custom sources");
+        assertEquals(List.of("--source-path", sources.toString()), arguments(classpath));
+        var values = capture(fixture);
+        values.setProperty("modular", "true");
+        values.setProperty("module-name", "example.app");
+        storeCapture(fixture, values);
+        var modular = resolve(fixture, "compile", "source-path,module-source-path");
+        assertEquals(0, modular.exitCode(), modular.error());
+        assertEquals(List.of("--module-source-path", "example.app=" + sources), arguments(modular));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void resolutionUsesProjectPathsFromDiscoveryAndProjectsRequestedOptions() throws Exception {
         var fixture = fixture();
         var result = resolve(fixture, "compile", "source-path,class-path,release");

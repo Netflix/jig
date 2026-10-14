@@ -75,10 +75,11 @@ final class MavenArguments {
         var arguments = new ArrayList<String>();
         path(arguments, options.contains("class-path"), "--class-path", List.copyOf(classpath));
         path(arguments, options.contains("module-path"), "--module-path", List.copyOf(modulePath));
-        path(arguments, options.contains("source-path"), "--source-path", sources);
+        boolean moduleSources = options.contains("module-source-path") && sourceModule != null;
+        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sources);
         if (module != null) {
             String name = module.name();
-            path(arguments, options.contains("module-source-path") && sourceModule != null, "--module-source-path",
+            path(arguments, moduleSources, "--module-source-path",
                     List.of(name + "=" + String.join(System.getProperty("path.separator"), sources)));
             if (options.contains("add-modules") && !(options.contains("module") && moduleForm == ModuleForm.ROOTS)) {
                 arguments.addAll(List.of("--add-modules", name));
