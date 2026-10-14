@@ -17,7 +17,6 @@ package com.netflix.tools.jig;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -25,14 +24,11 @@ import com.netflix.tools.jig.CommandLine.Completion;
 import com.netflix.tools.jig.CommandLine.CompletionRequest;
 import com.netflix.tools.jig.CommandLine.ParsedArguments;
 import com.netflix.tools.jig.CommandLine.ToolOption;
-import com.netflix.tools.jig.Jig.Options;
 import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
 /** Explicit build locations, project paths, and source-set argument projections for Gradle. */
 final class GradleCommandLine {
     static final List<String> CLASSPATHS = List.of("compile", "runtime");
-    private static final Set<String> EXTRA_OPTIONS = Set.of("class-path", "processor-path", "source", "target", "encoding", "system",
-            "add-reads");
     private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Gradle root project directory");
     private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "A build-tree-qualified Gradle project path, such as :app or :build-logic:plugin");
     private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List Gradle project paths, including included builds");
@@ -84,7 +80,8 @@ final class GradleCommandLine {
                 + "Compiler resolution implies compile and uses Gradle's compiler argument builder.\n"
                 + "It excludes source filenames and launcher options; the caller owns the invocation.\n"
                 + "\nResolve options include native jig options and class-path, processor-path,\n"
-                + "source, target, encoding, system and add-reads. Unconfigured options are omitted.\n";
+                + "source, target, encoding, system and add-reads. Unconfigured options are omitted.\n"
+                + "Known standard options not supported by Gradle are omitted.\n";
     }
 
     static Request parse(String[] arguments) {
@@ -148,23 +145,7 @@ final class GradleCommandLine {
         if (classpath != null && !CLASSPATHS.contains(classpath)) {
             throw new IllegalArgumentException("--classpath must be compile or runtime");
         }
-        var options = new LinkedHashSet<String>();
-        var nativeOptions = new Options();
-        if (resolve != null) {
-            var nativeSpecifications = new LinkedHashSet<String>();
-            for (String specification : resolve.split(",", -1)) {
-                specification = specification.trim();
-                if (EXTRA_OPTIONS.contains(specification)) {
-                    options.add(specification);
-                } else {
-                    nativeSpecifications.add(specification);
-                }
-            }
-            if (!nativeSpecifications.isEmpty()) {
-                nativeOptions.setResolveOptions(String.join(",", nativeSpecifications));
-                options.addAll(nativeOptions.resolveOptions);
-            }
-        }
+        var selection = resolve == null ? ResolveOptions.NONE : ResolveOptions.parse(resolve);
         return new Request(
                 directory(root),
                 project,
@@ -174,8 +155,8 @@ final class GradleCommandLine {
                 tabSeparated,
                 listSourceSets,
                 compiler,
-                Set.copyOf(options),
-                nativeOptions.moduleForm,
+                selection.forProvider(ResolveOptions.Provider.GRADLE),
+                selection.moduleForm(),
                 write == null ? null : Path.of(write),
                 parsed.contains(VERBOSE));
     }

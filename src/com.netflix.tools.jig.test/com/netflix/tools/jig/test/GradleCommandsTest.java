@@ -335,6 +335,38 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void portableRequestsOmitOptionsNotSupportedByGradle() throws Exception {
+        var fixture = fixture();
+        var expected = resolve(fixture, "compile", "class-path,source-path,release");
+        var result = resolve(fixture, "compile", "class-path,source-path,release,d");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(expected.output(), result.output());
+        String invocation = Files.readString(fixture.root().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Pjig.gradle.options=class-path,release,source-path"), invocation);
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void unsupportedOnlyRequestsProduceNoArguments() throws Exception {
+        var fixture = fixture();
+        var result = resolve(fixture, "compile", "d");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals("", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void unsupportedOptionsDoNotHideInvalidRequests() throws Exception {
+        var fixture = fixture();
+        for (String options : List.of("d,source-paht", "d,", "d,module=unknown", "d,module=list,module=main", "d,module=roots")) {
+            var result = resolve(fixture, "compile", options);
+            assertEquals(2, result.exitCode(), result.error());
+            assertFalse(Files.exists(fixture.root().resolve("invocation.txt")));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void rejectsUnknownOptionsBeforeInvokingGradle() throws Exception {
         var fixture = fixture();
         var result = resolve(fixture, "compile", "not-a-java-option");

@@ -20,13 +20,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
 import com.netflix.tools.jig.CommandLine.ParsedArguments;
 import com.netflix.tools.jig.CommandLine.ToolOption;
-import com.netflix.tools.jig.Jig.Options;
 import com.netflix.tools.jig.Jig.Options.ModuleForm;
 
 /** On-demand queries hosted by the explicitly selected Maven build. */
@@ -39,7 +37,6 @@ final class MavenProjectCommands {
     private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final Set<String> RESOLVE_OPTIONS = Set.of("class-path", "source-path", "module-path", "module-source-path", "module", "add-modules", "describe-module");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
@@ -59,7 +56,8 @@ final class MavenProjectCommands {
                 + "Discovery includes active modules and does not execute build goals.\n"
                 + "The TSV listing contains absolute directory, project selector and scope.\n"
                 + "Argument resolution requires --project and --scope.\n"
-                + "Resolve options: class-path, source-path, module-path, module-source-path, module, add-modules, describe-module.\n"
+                + "Maven provides class-path, source-path, module-path, module-source-path, module, add-modules and describe-module.\n"
+                + "Known standard options not supported by Maven are omitted.\n"
                 + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
                 + "Binary paths prepare native compile outputs; requesting source paths leaves selected sources to the caller.\n";
     }
@@ -205,29 +203,8 @@ final class MavenProjectCommands {
         if (scope != null && !SCOPES.contains(scope)) {
             throw new IllegalArgumentException("--scope must be compile, runtime or test");
         }
-        var options = new LinkedHashSet<String>();
-        var nativeOptions = new Options();
-        if (resolve != null) {
-            var nativeSpecifications = new LinkedHashSet<String>();
-            for (String option : resolve.split(",", -1)) {
-                option = option.trim();
-                if (option.isEmpty()) {
-                    throw new IllegalArgumentException("resolve options must not be empty");
-                }
-                if (!RESOLVE_OPTIONS.contains(option) && !option.startsWith("module=")) {
-                    throw new IllegalArgumentException("unknown resolve options: " + option);
-                }
-                if (option.equals("class-path")) {
-                    options.add(option);
-                } else {
-                    nativeSpecifications.add(option);
-                }
-            }
-            if (!nativeSpecifications.isEmpty()) {
-                nativeOptions.setResolveOptions(String.join(",", nativeSpecifications));
-                options.addAll(nativeOptions.resolveOptions);
-            }
-        }
+        var selection = resolve == null ? ResolveOptions.NONE : ResolveOptions.parse(resolve);
+        var options = selection.forProvider(ResolveOptions.Provider.MAVEN);
         Path base = Path.of(bases.getFirst()).toAbsolutePath().normalize();
         if (!Files.isDirectory(base)) {
             throw new IllegalArgumentException("Project base directory does not exist: " + base);
@@ -236,7 +213,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, scope, Set.copyOf(options), nativeOptions.moduleForm, write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, options, selection.moduleForm(), write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }

@@ -44,6 +44,9 @@ final class MavenArguments {
     private MavenArguments() {}
 
     static String render(Set<String> options, ModuleForm moduleForm, View view) throws IOException {
+        if (options.isEmpty()) {
+            return "";
+        }
         List<String> sources = view.sources();
         List<String> supplied = view.classpath();
         Path output = view.output();
