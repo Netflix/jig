@@ -1363,6 +1363,17 @@ public class JigTest {
     }
 
     @Test
+    void moduleSourcePathsTakePrecedenceWhenBothSourceOptionsAreRequested(@TempDir Path directory) throws Exception {
+        var sources = directory.resolve("src");
+        var application = Files.createDirectories(sources.resolve("example.app"));
+        Files.writeString(application.resolve("module-info.java"), "module example.app {}\n");
+        var arguments = runJig("--module-source-path", sources.toString(), "-m", "example.app", "--resolve-options",
+                "module-source-path,source-path,module=list");
+        assertTrue(arguments.contains("--module-source-path"), arguments);
+        assertFalse(arguments.contains("--source-path"), arguments);
+    }
+
+    @Test
     void sourcePathsUseResolvedSourceDirectories(@TempDir Path directory) throws Exception {
         Path sources = directory.resolve("source trees");
         Path application = sources.resolve("com.example.application");
@@ -1388,7 +1399,7 @@ public class JigTest {
                     "-m",
                     "com.example.library",
                     "--resolve-options",
-                    "module-source-path,source-path,release,module=list");
+                    "source-path,release,module=list");
         } finally {
             if (previousHome == null) {
                 System.clearProperty("user.home");
@@ -1401,8 +1412,7 @@ public class JigTest {
         var lines = out.toString()
                        .lines()
                        .toList();
-        assertTrue(lines.contains("\"com.example.application=" + application + "\""));
-        assertTrue(lines.contains("\"com.example.library=" + library + "\""));
+        assertFalse(lines.contains("--module-source-path"));
         var sourcePath = lines.get(lines.indexOf("--source-path") + 1);
         var archives = Arrays.stream(sourcePath.split(Pattern.quote(System.getProperty("path.separator"))))
                 .map(value -> value.startsWith("\"") ? value.substring(1) : value)

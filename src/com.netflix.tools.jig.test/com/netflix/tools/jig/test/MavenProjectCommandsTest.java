@@ -148,6 +148,22 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void sourceOptionsChooseThePathForTheSelectedProject() throws Exception {
+        var fixture = fixture(false);
+        var sources = Files.createDirectories(fixture.project().resolve("sources"));
+        var arguments = new String[] {"maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app",
+                "--scope", "compile", "-r", "source-path,module-source-path"};
+        var classpath = run(arguments);
+        assertEquals(0, classpath.status(), classpath.error());
+        assertEquals("\"--source-path\"\n\"" + sources + "\"\n", classpath.output());
+        Files.writeString(sources.resolve("module-info.java"), "module example.app {}\n");
+        var modular = run(arguments);
+        assertEquals(0, modular.status(), modular.error());
+        assertEquals("\"--module-source-path\"\n\"example.app=" + sources + "\"\n", modular.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void formatterRequestsPreserveSupportedModuleOptionsAndTheModuleForm() throws Exception {
         var fixture = fixture(false);
         Path source = Files.createDirectories(fixture.project().resolve("sources"));

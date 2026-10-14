@@ -452,7 +452,7 @@ public class Jig implements ToolProvider, OptionChecker {
                 .map(entry -> moduleSourcePathArgument(entry.getKey(), entry.getValue()))
                 .toList()
                 : List.of();
-        String sourcePath = resolveOptions.contains("source-path") ? sourcePaths.entrySet().stream()
+        String sourcePath = resolveOptions.contains("source-path") && moduleSourcePath.isEmpty() ? sourcePaths.entrySet().stream()
                 .filter(entry -> !excludedModules.contains(entry.getKey()))
                 .sorted(Entry.comparingByKey())
                 .map(Entry::getValue)

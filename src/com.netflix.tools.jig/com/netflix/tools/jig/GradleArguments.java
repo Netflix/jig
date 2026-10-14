@@ -59,7 +59,10 @@ final class GradleArguments {
         boolean release = metadata.containsKey("release") || additional.stream().anyMatch(argument -> argument.equals("--release") || argument.startsWith("--release="));
         path(arguments, options.contains("class-path"), "--class-path", view.classpath());
         path(arguments, options.contains("module-path"), "--module-path", view.modulePath());
-        path(arguments, options.contains("source-path"), "--source-path", sources);
+        String module = view.modular() && (options.contains("module") || options.contains("add-modules")
+                || options.contains("module-source-path") || options.contains("describe-module")) ? moduleName(sources, metadata) : null;
+        boolean moduleSources = options.contains("module-source-path") && module != null;
+        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sources);
         path(arguments, options.contains("processor-path"), "--processor-path", view.processors());
         for (String name : List.of("release", "source", "target", "encoding", "module-version", "main-class")) {
             boolean selected = options.contains(name) && !(release && (name.equals("source") || name.equals("target")));
@@ -73,24 +76,17 @@ final class GradleArguments {
         }
         value(arguments, options.contains("system") && !release, "--system",
                 metadata.get("system"));
-        boolean needsModule = options.contains("module")
-                || options.contains("add-modules")
-                || options.contains("module-source-path")
-                || options.contains("describe-module");
-        if (view.modular() && needsModule) {
-            String module = moduleName(sources, metadata);
-            if (module != null) {
-                path(arguments, options.contains("module-source-path"), "--module-source-path",
-                        List.of(module + "=" + String.join(System.getProperty("path.separator"), sources)));
-                value(arguments, options.contains("add-modules") && !(options.contains("module") && request.moduleForm() == ModuleForm.ROOTS),
-                        "--add-modules", module);
-                if (options.contains("module")) {
-                    String main = metadata.get("main-class");
-                    value(arguments, request.moduleForm() != ModuleForm.MAIN || main != null, "--module",
-                            request.moduleForm() == ModuleForm.MAIN ? module + "/" + main : module);
-                }
-                value(arguments, options.contains("describe-module"), "--describe-module", module);
+        if (module != null) {
+            path(arguments, moduleSources, "--module-source-path",
+                    List.of(module + "=" + String.join(System.getProperty("path.separator"), sources)));
+            value(arguments, options.contains("add-modules") && !(options.contains("module") && request.moduleForm() == ModuleForm.ROOTS),
+                    "--add-modules", module);
+            if (options.contains("module")) {
+                String main = metadata.get("main-class");
+                value(arguments, request.moduleForm() != ModuleForm.MAIN || main != null, "--module",
+                        request.moduleForm() == ModuleForm.MAIN ? module + "/" + main : module);
             }
+            value(arguments, options.contains("describe-module"), "--describe-module", module);
         }
         additional(arguments, request, additional);
         return JavaArgumentFile.render(arguments);
