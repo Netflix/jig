@@ -31,7 +31,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -100,25 +99,6 @@ public class Jig implements ToolProvider, OptionChecker {
             "add-exports");
     private static final Set<String> COMPILER_OPTIONS = Set.of("module-path", "processor-module-path", "upgrade-module-path",
             "module-source-path", "module", "module-version", "patch-module", "release", "enable-preview", "add-exports");
-    private static final Set<String> RESOLVE_OPTIONS = Set.of(
-            "module-path",
-            "processor-module-path",
-            "upgrade-module-path",
-            "module-source-path",
-            "source-path",
-            "module",
-            "add-modules",
-            "describe-module",
-            "main-class",
-            "module-version",
-            "patch-module",
-            "release",
-            "multi-release",
-            "enable-preview",
-            "enable-native-access",
-            "enable-final-field-mutation",
-            "add-opens",
-            "add-exports");
 
     @Override
     public String name() {
@@ -1480,46 +1460,9 @@ public class Jig implements ToolProvider, OptionChecker {
             if (resolveOptions != null) {
                 throw new IllegalArgumentException("--resolve-options may only be specified once");
             }
-            var parsed = new LinkedHashSet<String>();
-            ModuleForm parsedModuleForm = null;
-            for (String element : value.split(",", -1)) {
-                String option = element.trim();
-                if (option.isEmpty()) {
-                    throw new IllegalArgumentException("resolve options must not be empty");
-                }
-                ModuleForm form = switch (option) {
-                    case "module", "module=single" -> ModuleForm.SINGLE;
-                    case "module=list" -> ModuleForm.LIST;
-                    case "module=main" -> ModuleForm.MAIN;
-                    case "module=roots" -> ModuleForm.ROOTS;
-                    default -> null;
-                };
-                if (option.startsWith("module=") && form == null) {
-                    throw new IllegalArgumentException("unknown module form: " + option.substring("module=".length()));
-                }
-                if (form != null) {
-                    if (parsedModuleForm != null && parsedModuleForm != form) {
-                        throw new IllegalArgumentException("module option has conflicting forms");
-                    }
-                    parsedModuleForm = form;
-                    parsed.add("module");
-                } else {
-                    parsed.add(option);
-                }
-            }
-            var unknown = parsed.stream()
-                    .filter(option -> !RESOLVE_OPTIONS.contains(option))
-                    .toList();
-            if (!unknown.isEmpty()) {
-                throw new IllegalArgumentException("unknown resolve options: " + unknown);
-            }
-            if (parsedModuleForm == ModuleForm.ROOTS && !parsed.contains("add-modules")) {
-                throw new IllegalArgumentException("module=roots requires add-modules");
-            }
-            resolveOptions = Collections.unmodifiableSet(parsed);
-            if (parsedModuleForm != null) {
-                moduleForm = parsedModuleForm;
-            }
+            var parsed = ResolveOptions.parse(value);
+            resolveOptions = parsed.forProvider(ResolveOptions.Provider.MODULE);
+            moduleForm = parsed.moduleForm();
         }
 
         void setArgumentFile(String value) {

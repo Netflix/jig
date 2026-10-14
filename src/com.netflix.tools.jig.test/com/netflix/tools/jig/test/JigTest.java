@@ -2367,6 +2367,33 @@ public class JigTest {
     }
 
     @Test
+    void portableRequestsOmitOptionsNotSupportedByModuleProjects() {
+        var options = Options.parse(new String[] {"--resolve-options",
+                "module-path,module=list,class-path,processor-path,source,target,encoding,system,add-reads,d", "-m", "app"});
+        assertEquals(Set.of("module-path", "module"), options.resolveOptions);
+        assertEquals(Options.ModuleForm.LIST, options.moduleForm);
+    }
+
+    @Test
+    void unsupportedOnlyRequestsWriteAnEmptyArgumentFileWithoutRequiringARoot(@TempDir Path directory) throws Exception {
+        Path file = directory.resolve("unsupported.args");
+        var output = new StringWriter();
+        var errors = new StringWriter();
+        int status = new Jig().run(new PrintWriter(output), new PrintWriter(errors), "--resolve-options",
+                "class-path,processor-path,source,target,encoding,system,add-reads,d", "--write-argfile", file.toString());
+        assertEquals(0, status, errors.toString());
+        assertEquals("", output.toString());
+        assertEquals("", Files.readString(file));
+    }
+
+    @Test
+    void unsupportedOptionsDoNotHideUnknownOptionNames() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> Options.parse(new String[] {"--resolve-options", "class-path,source-paht"}));
+        assertTrue(failure.getMessage().contains("source-paht"), failure.getMessage());
+    }
+
+    @Test
     void oldOutputOptionNamesAreRejected() {
         assertThrows(IllegalArgumentException.class,
                 () -> Options.parse(new String[] {"--options", "module-path", "-m", "app"}));

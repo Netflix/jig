@@ -117,6 +117,61 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void portableRequestsOmitOptionsNotSupportedByMaven() throws Exception {
+        var fixture = fixture(false);
+        String supported = "class-path,source-path";
+        String portable = supported + ",upgrade-module-path,processor-module-path,patch-module,release,enable-preview,add-exports,processor-path,source,target,encoding,system,add-reads,d";
+        var expected = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", supported);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", portable);
+        assertEquals(0, result.status(), result.error());
+        assertEquals(expected.output(), result.output());
+        var invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Djig.maven.options=class-path,source-path"), invocation.toString());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void unsupportedOnlyRequestsWriteAnEmptyArgumentFileWithoutPreparingBinaries() throws Exception {
+        var fixture = fixture(false);
+        Path file = fixture.project().resolve("unsupported.args");
+        Path source = Files.createDirectories(fixture.project().resolve("sources"));
+        Files.writeString(source.resolve("module-info.java"), "not a module declaration\n");
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
+                "-r", "release,encoding,d", "-w", file.toString());
+        assertEquals(0, result.status(), result.error());
+        assertEquals("", result.output());
+        assertEquals("", Files.readString(file));
+        var invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+        assertFalse(invocation.contains("--also-make"), invocation.toString());
+        assertEquals("validate", invocation.getLast());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void formatterRequestsPreserveSupportedModuleOptionsAndTheModuleForm() throws Exception {
+        var fixture = fixture(false);
+        Path source = Files.createDirectories(fixture.project().resolve("sources"));
+        Files.writeString(source.resolve("module-info.java"), "module example.app {}\n");
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
+                "-r", "module-source-path,module=list,upgrade-module-path,patch-module,release,enable-preview,add-exports");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("\"--module-source-path\"\n\"example.app=" + source + "\"\n\"--module\"\n\"example.app\"\n", result.output());
+        assertTrue(Files.readAllLines(fixture.project().resolve("invocation.txt")).contains("-Djig.maven.options=module,module-source-path"));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void unknownOptionsInPortableRequestsFailBeforeLaunchingMaven() throws Exception {
+        var fixture = fixture(false);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
+                "-r", "release,source-paht");
+        assertEquals(2, result.status(), result.error());
+        assertTrue(result.error().contains("unknown resolve options"), result.error());
+        assertFalse(Files.exists(fixture.project().resolve("invocation.txt")));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void binaryPathRequestsUseNativeBuildPreparationButSourceOnlyRequestsDoNot() throws Exception {
         var fixture = fixture(false);
         for (String scope : List.of("compile", "runtime", "test")) {
