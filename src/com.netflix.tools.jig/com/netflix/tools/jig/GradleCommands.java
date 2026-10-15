@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.TreeSet;
 
 import com.netflix.module.compile.internal.ContentHash;
 import com.netflix.tools.jig.GradleCommandLine.Request;
@@ -47,6 +48,43 @@ final class GradleCommands {
             return 2;
         }
         try {
+            var launcher = BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat");
+            var cache = new ProjectDiscoveryCache("Gradle", request.root(), "", launcher, "gradle-init.gradle");
+            if (request.refresh()) {
+                cache.clear();
+            }
+            var cached = cache.read();
+            if (!cached.isEmpty()) {
+                var projects = ProjectListing.projects(cached, "project-paths");
+                if (request.listProjects()) {
+                    if (request.tabSeparated()) {
+                        out.print(ProjectListing.gradleContexts(cached, GradleCommandLine.CLASSPATHS));
+                    } else {
+                        projects.keySet().forEach(out::println);
+                    }
+                    return 0;
+                }
+                if (!projects.containsKey(request.projectPath())) {
+                    throw new IllegalArgumentException("Unknown project path in this build: " + request.projectPath());
+                }
+                var names = new TreeSet<String>();
+                for (var capture : cached) {
+                    var owners = capture.list("source-set-projects");
+                    var sets = capture.list("source-sets");
+                    for (int index = 0; index < owners.size(); index++) {
+                        if (owners.get(index).equals(request.projectPath())) {
+                            names.add(sets.get(index));
+                        }
+                    }
+                }
+                if (request.listSourceSets()) {
+                    names.forEach(out::println);
+                    return 0;
+                }
+                if (!names.contains(request.sourceSet())) {
+                    throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
+                }
+            }
             var captures = new GradleCapture(request);
             int status = capture(request, initScript(), captures, err);
             if (status != 0) {
@@ -54,6 +92,7 @@ final class GradleCommands {
             }
             List<String> projects = captures.projects();
             if (request.listProjects()) {
+                cache.store(captures.discoveries());
                 if (request.tabSeparated()) {
                     out.print(captures.tabSeparatedProjects());
                 } else {
@@ -104,8 +143,7 @@ final class GradleCommands {
             }
             script = resource.readAllBytes();
         }
-        // Only the bundled script is cached. Its content-addressed path stays
-        // stable for Gradle's configuration cache; requests and results are not stored.
+        // The content-addressed script path stays stable for Gradle's configuration cache.
         Path directory = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
                 .resolve("gradle").toAbsolutePath().normalize();
         Files.createDirectories(directory);
@@ -137,7 +175,7 @@ final class GradleCommands {
                         "-Dorg.gradle.unsafe.isolated-projects=false",
                         "-Pjig.gradle.root=" + request.root(),
                         "-Pjig.gradle.list=" + request.listProjects(),
-                        "-Pjig.gradle.list-contexts=" + request.tabSeparated(),
+                        "-Pjig.gradle.list-contexts=" + request.listProjects(),
                         "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
         if (!request.listProjects()) {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());

@@ -38,12 +38,13 @@ final class GradleCommandLine {
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve the selected source set's effective compiler options");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Refresh cached project discovery");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show the Gradle invocation and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments from a Gradle source set")
             .options(ROOT, PROJECT, LIST_PROJECTS, ProjectListing.FORMAT, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, COMPILER, WRITE,
-                    VERBOSE, HELP)
+                    REFRESH, VERBOSE, HELP)
             .build();
 
     record Request(
@@ -58,7 +59,8 @@ final class GradleCommandLine {
             Set<String> options,
             ModuleForm moduleForm,
             Path argumentFile,
-            boolean verbose) {}
+            boolean verbose,
+            boolean refresh) {}
 
     private GradleCommandLine() {}
 
@@ -158,7 +160,7 @@ final class GradleCommandLine {
                 selection.forProvider(ResolveOptions.Provider.GRADLE),
                 selection.moduleForm(),
                 write == null ? null : Path.of(write),
-                parsed.contains(VERBOSE));
+                parsed.contains(VERBOSE), parsed.contains(REFRESH));
     }
 
     private static String single(ParsedArguments parsed, ToolOption option) {

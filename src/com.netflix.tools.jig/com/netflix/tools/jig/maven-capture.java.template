@@ -29,6 +29,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.TreeSet;
 
 import org.apache.maven.artifact.resolver.filter.CumulativeScopeArtifactFilter;
 import org.apache.maven.AbstractMavenLifecycleParticipant;
@@ -62,6 +63,32 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             }
             values.setProperty("projects.count", Integer.toString(index));
             values.setProperty("project-directories.count", Integer.toString(index));
+            TreeSet<String> files = new TreeSet<String>();
+            for (MavenProject project : session.getProjects()) {
+                for (MavenProject model = project; model != null; model = model.getParent()) {
+                    if (model.getFile() != null) {
+                        files.add(model.getFile().getCanonicalPath());
+                    }
+                }
+            }
+            // Maven introduced this request property after the earliest supported runtime.
+            try {
+                File directory = (File) session.getRequest().getClass().getMethod("getMultiModuleProjectDirectory").invoke(session.getRequest());
+                if (directory != null) {
+                    files.add(new File(directory, ".mvn/maven.config").getCanonicalPath());
+                    files.add(new File(directory, ".mvn/jvm.config").getCanonicalPath());
+                    files.add(new File(directory, ".mvn/extensions.xml").getCanonicalPath());
+                }
+            } catch (NoSuchMethodException unsupported) {
+                // Older Maven versions do not load .mvn/maven.config.
+            }
+            File userSettings = session.getRequest().getUserSettingsFile();
+            File globalSettings = session.getRequest().getGlobalSettingsFile();
+            if (userSettings != null) files.add(userSettings.getCanonicalPath());
+            if (globalSettings != null) files.add(globalSettings.getCanonicalPath());
+            values.setProperty("build-files.count", Integer.toString(files.size()));
+            int fileIndex = 0;
+            for (String file : files) values.setProperty("build-files." + fileIndex++, file);
             if (session.getUserProperties().getProperty("jig.maven.scope") != null) {
                 resolve(session, values, preparedSources);
             }

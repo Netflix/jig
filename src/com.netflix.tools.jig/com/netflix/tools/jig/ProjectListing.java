@@ -116,7 +116,7 @@ final class ProjectListing {
         return rows.isEmpty() ? "" : String.join("\n", rows) + '\n';
     }
 
-    private static Map<String, String> projects(List<BuildCapture> captures, String selectorKey) throws IOException {
+    static Map<String, String> projects(List<BuildCapture> captures, String selectorKey) throws IOException {
         var projects = new TreeMap<String, String>();
         for (var capture : captures) {
             List<String> selectors = capture.list(selectorKey);

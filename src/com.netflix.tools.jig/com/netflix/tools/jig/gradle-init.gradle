@@ -181,6 +181,7 @@ class JigCaptureTask extends DefaultTask {
     @Input String buildPath = ':'
     @Input String projectPath = ''
     @Input String sourceSet = ''
+    @Input List<String> buildFiles = []
     @Input List<String> projectPaths = []
     @Input List<String> projectDirectories = []
     @Input List<String> sourceSetNames = []
@@ -204,6 +205,7 @@ class JigCaptureTask extends DefaultTask {
         values.setProperty('build-path', buildPath)
         values.setProperty('project-path', projectPath)
         values.setProperty('source-set', sourceSet)
+        putList(values, 'build-files', buildFiles.unique().sort())
         putList(values, 'project-paths', projectPaths)
         putList(values, 'project-directories', projectDirectories)
         putList(values, 'source-sets', sourceSetNames)
@@ -258,6 +260,44 @@ class JigCaptureTask extends DefaultTask {
 
 def gradleVersion = GradleVersion.current().baseVersion
 def lazyTasks = gradleVersion >= GradleVersion.version('4.9')
+def discoveryFiles = Collections.synchronizedList(new ArrayList<String>())
+def observeScript = { source ->
+    def file = source.resource.file
+    if (file != null) {
+        discoveryFiles.add(file.canonicalPath)
+    }
+}
+// Gradle has no public enumeration of applied scripts. Observe only script
+// filenames; other configuration inputs remain the responsibility of --refresh.
+def executionType = Class.forName(gradleVersion < GradleVersion.version('6.0')
+        ? 'org.gradle.groovy.scripts.ScriptExecutionListener' : 'org.gradle.internal.scripts.ScriptExecutionListener')
+def executionMethod = gradleVersion < GradleVersion.version('6.0') ? 'scriptClassLoaded' : 'onScriptClassLoaded'
+gradle.services.get(org.gradle.internal.event.ListenerManager).addListener([(executionMethod): { source, type -> observeScript(source) }].asType(executionType))
+if (gradleVersion >= GradleVersion.version('8.5')) {
+    def sourceType = Class.forName('org.gradle.groovy.scripts.internal.ScriptSourceListener')
+    gradle.services.get(org.gradle.internal.event.ListenerManager).addListener([scriptSourceObserved: { source -> observeScript(source) }].asType(sourceType))
+}
+
+
+if (gradleVersion >= GradleVersion.version('9.0')) {
+    def manager = gradle.services.get(org.gradle.internal.operations.BuildOperationListenerManager)
+    def scriptDetails = Class.forName('org.gradle.configuration.ApplyScriptPluginBuildOperationType$Details')
+    def listener = new Object[1]
+    listener[0] = [
+        started: { operation, event ->
+            if (scriptDetails.isInstance(operation.details) && operation.details.file != null) {
+                discoveryFiles.add(new File(operation.details.file).canonicalPath)
+            }
+        },
+        progress: { operation, event -> },
+        finished: { operation, event ->
+            if (operation.parentId == null) {
+                manager.removeListener(listener[0])
+            }
+        }
+    ].asType(org.gradle.internal.operations.BuildOperationListener)
+    manager.addListener(listener[0])
+}
 
 // Settings define project identities and directories. Root dispatchers route
 // requests using native task references, including on older composite builds.
@@ -309,6 +349,11 @@ gradle.settingsEvaluated { settings ->
         descriptor.children.each { visit(it) }
     }
     visit(settings.rootProject)
+    def settingsFile = settings.metaClass.respondsTo(settings, 'getBuildscript') ? settings.buildscript.sourceFile : null
+    if (settingsFile != null) {
+        discoveryFiles.add(settingsFile.canonicalPath)
+    }
+    descriptors.each { discoveryFiles.add(it.buildFile.canonicalPath) }
     // Older Gradle versions cannot determine buildSrc's identity until projects
     // have been attached. Use Gradle's identity, not names inferred from directories.
     gradle.projectsLoaded {
@@ -329,6 +374,7 @@ gradle.settingsEvaluated { settings ->
             project.afterEvaluate {
                 def configure = { task ->
                     task.description = 'Capture the Java argument view requested by jig'
+                    task.buildFiles = new ArrayList<String>(discoveryFiles)
                     task.buildPath = buildPath
                     task.projectPaths = projectPaths
                     task.sourceRoots = project.files()

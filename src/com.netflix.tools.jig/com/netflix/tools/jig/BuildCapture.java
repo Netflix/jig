@@ -15,6 +15,7 @@
 package com.netflix.tools.jig;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -44,6 +45,12 @@ final class BuildCapture {
         var capture = new BuildCapture(tool, values);
         capture.require("kind");
         return capture;
+    }
+
+    String encoded() throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        values.store(bytes, null);
+        return Base64.getEncoder().encodeToString(bytes.toByteArray());
     }
 
     String require(String name) throws IOException {

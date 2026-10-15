@@ -80,6 +80,71 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void discoveryCacheTracksAppliedScriptsAndRefreshesOnRequest() throws Exception {
+        var fixture = fixture(false);
+        Path applied = fixture.root().resolve("shared.gradle");
+        Files.writeString(applied, "sourceSets { custom }\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), "\napply from: rootProject.file('shared.gradle')\n", StandardOpenOption.APPEND);
+        Path evaluations = fixture.root().resolve("evaluations.txt");
+        Files.writeString(fixture.root().resolve("build.gradle"), "\nfile('evaluations.txt') << 'evaluated\\n'\n", StandardOpenOption.APPEND);
+        String[] arguments = {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv"};
+        String first = run(arguments);
+        assertTrue(first.contains("\tcustom\t"), first);
+        assertEquals(first, run(arguments));
+        assertEquals(1, Files.readAllLines(evaluations).size());
+        Files.writeString(applied, "sourceSets { changed }\n");
+        String changed = run(arguments);
+        assertTrue(changed.contains("\tchanged\t"), changed);
+        assertFalse(changed.contains("\tcustom\t"), changed);
+        assertEquals(2, Files.readAllLines(evaluations).size());
+        var refreshed = new ArrayList<>(List.of(arguments));
+        refreshed.add("--refresh");
+        assertEquals(changed, run(refreshed.toArray(String[]::new)));
+        assertEquals(3, Files.readAllLines(evaluations).size());
+    }
+
+    @Test
+    @EnabledIf("kotlinCacheCoverage")
+    void discoveryCacheTracksAppliedKotlinScripts() throws Exception {
+        var fixture = fixture(false);
+        Files.delete(fixture.app().resolve("build.gradle"));
+        Files.writeString(fixture.app().resolve("build.gradle.kts"), "plugins { java }\napply(from = rootProject.file(\"shared.gradle.kts\"))\n");
+        Path applied = fixture.root().resolve("shared.gradle.kts");
+        Files.writeString(applied, "extensions.configure<org.gradle.api.tasks.SourceSetContainer> { create(\"custom\") }\n");
+        String[] arguments = {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv"};
+        String first = run(arguments);
+        assertTrue(first.contains("\tcustom\t"), first);
+        assertEquals(first, run(arguments));
+        Files.writeString(applied, "extensions.configure<org.gradle.api.tasks.SourceSetContainer> { create(\"changed\") }\n");
+        String changed = run(arguments);
+        assertTrue(changed.contains("\tchanged\t"), changed);
+        assertFalse(changed.contains("\tcustom\t"), changed);
+    }
+
+    @Test
+    @EnabledIf("supportsCompositeCapture")
+    void discoveryCacheTracksIncludedBuildConfiguration() throws Exception {
+        var fixture = fixture(false);
+        Path included = Files.createDirectories(fixture.root().resolve("included"));
+        Files.writeString(included.resolve("settings.gradle"), "rootProject.name = 'included'\n");
+        Path build = included.resolve("build.gradle");
+        Files.writeString(build, "apply plugin: 'java'\nsourceSets { custom }\n");
+        Files.writeString(fixture.root().resolve("settings.gradle"), "\nincludeBuild 'included'\n", StandardOpenOption.APPEND);
+        String[] arguments = {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv"};
+        String first = run(arguments);
+        assertTrue(first.contains("\t:included\tcustom\t"), first);
+        assertEquals(first, run(arguments));
+        Files.writeString(build, "apply plugin: 'java'\nsourceSets { changed }\n");
+        String changed = run(arguments);
+        assertTrue(changed.contains("\t:included\tchanged\t"), changed);
+        assertFalse(changed.contains("\t:included\tcustom\t"), changed);
+    }
+
+    private boolean kotlinCacheCoverage() {
+        return gradle.version().equals("7.6.6") || detailedCoverage();
+    }
+
+    @Test
     void quietBuildsDoNotAddDiagnosticsToSuccessfulQueries() throws Exception {
         var fixture = fixture(false);
         var output = new StringWriter();
@@ -551,7 +616,7 @@ class GradleIntegrationTest {
             }
         }
         Path evaluations = fixture.root().resolve("evaluations.txt");
-        int expectedEvaluations = discoveries.size() + sourceSets.size() * classpaths.size();
+        int expectedEvaluations = 1 + sourceSets.size() * classpaths.size();
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
         Files.delete(compiled);
@@ -573,6 +638,7 @@ class GradleIntegrationTest {
         Files.writeString(fixture.root().resolve("plain/build.gradle"), "throw new GradleException('unrelated project was evaluated')\n");
         String capture = resolve(fixture, "compile", "class-path");
         assertTrue(capture.contains("library/" + classesDirectory()), capture);
+        Files.delete(fixture.root().resolve("plain/build.gradle"));
         String projects = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
         assertTrue(projects.contains(":plain"), projects);
     }
