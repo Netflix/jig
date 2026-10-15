@@ -61,7 +61,7 @@ final class GradleCommands {
                 }
             } else {
                 if (!projects.contains(request.projectPath())) {
-                    throw new IllegalArgumentException("Project path is not part of the selected Gradle build: " + request.projectPath());
+                    throw new IllegalArgumentException("Unknown project path in this build: " + request.projectPath());
                 }
                 BuildCapture metadata = captures.metadata();
                 metadata.expect("project-path", request.projectPath());
@@ -153,8 +153,13 @@ final class GradleCommands {
             err.println("jig gradle: " + arguments);
         }
         return BuildProcess.run(request.root(), arguments, line -> {
-            if (line.startsWith(CAPTURE_PREFIX)) {
-                captures.accept(BuildCapture.decode("Gradle", line.substring(CAPTURE_PREFIX.length())));
+            int captureStart = line.indexOf(CAPTURE_PREFIX);
+            if (captureStart >= 0) {
+                if (captureStart > 0) {
+                    err.println(line.substring(0, captureStart));
+                    err.flush();
+                }
+                captures.accept(BuildCapture.decode("Gradle", line.substring(captureStart + CAPTURE_PREFIX.length())));
             } else {
                 err.println(line);
                 err.flush();
