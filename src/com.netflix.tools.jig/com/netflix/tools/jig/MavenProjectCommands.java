@@ -37,11 +37,12 @@ final class MavenProjectCommands {
     private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Refresh cached project discovery");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments using the Maven build runtime")
-            .options(BASE, PROJECT, LIST, ProjectListing.FORMAT, SCOPE, RESOLVE, WRITE, VERBOSE, HELP)
+            .options(BASE, PROJECT, LIST, ProjectListing.FORMAT, SCOPE, RESOLVE, WRITE, REFRESH, VERBOSE, HELP)
             .build();
 
     private MavenProjectCommands() {}
@@ -76,6 +77,31 @@ final class MavenProjectCommands {
         }
         try {
             var launcher = BuildProcess.launcher(request.base(), "mvn", "mvnw", "mvn.cmd", "mvnw.cmd");
+            var cache = new ProjectDiscoveryCache("Maven", request.base(), request.listProjects() && request.project() != null ? request.project() : "",
+                    launcher, "maven-capture.java.template");
+            if (request.refresh()) {
+                cache.clear();
+            }
+            var cached = cache.read();
+            if (!cached.isEmpty()) {
+                var projects = ProjectListing.projects(cached, "projects");
+                if (request.listProjects()) {
+                    if (request.tabSeparated()) {
+                        out.print(ProjectListing.mavenContexts(cached, SCOPES));
+                    } else {
+                        projects.keySet().forEach(out::println);
+                    }
+                    return 0;
+                }
+                var matches = projects.keySet().stream().filter(project -> project.equals(request.project())
+                        || request.project().startsWith(":") && project.endsWith(request.project())).toList();
+                if (matches.isEmpty()) {
+                    throw new IllegalArgumentException("Unknown Maven project: " + request.project());
+                }
+                if (matches.size() > 1) {
+                    throw new IllegalArgumentException("Ambiguous Maven project: " + request.project() + " (" + String.join(", ", matches) + ")");
+                }
+            }
             var versionArguments = new ArrayList<>(launcher);
             versionArguments.addAll(List.of("--batch-mode", "-Dstyle.color=never", "--version"));
             var versionLines = new ArrayList<String>();
@@ -131,6 +157,7 @@ final class MavenProjectCommands {
             capture.expect("kind", request.listProjects() ? "projects" : "arguments");
             List<String> projects = capture.list("projects");
             if (request.listProjects()) {
+                cache.store(List.of(capture));
                 if (request.tabSeparated()) {
                     out.print(ProjectListing.mavenContexts(List.of(capture), SCOPES));
                 } else {
@@ -213,7 +240,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("Project base directory has no pom.xml: " + base);
         }
         try {
-            return new Request(base.toRealPath(), project, scope, options, selection.moduleForm(), write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE));
+            return new Request(base.toRealPath(), project, scope, options, selection.moduleForm(), write == null ? null : Path.of(write), listProjects, tabSeparated, parsed.contains(VERBOSE), parsed.contains(REFRESH));
         } catch (IOException failure) {
             throw new IllegalArgumentException("Cannot access project base directory: " + base, failure);
         }
@@ -239,5 +266,5 @@ final class MavenProjectCommands {
         return line.replaceAll("\u001b\\[[0-9;]*m", "");
     }
 
-    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean tabSeparated, boolean verbose) {}
+    private record Request(Path base, String project, String scope, Set<String> options, ModuleForm moduleForm, Path argumentFile, boolean listProjects, boolean tabSeparated, boolean verbose, boolean refresh) {}
 }

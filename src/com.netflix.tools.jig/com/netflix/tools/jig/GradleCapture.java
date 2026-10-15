@@ -63,6 +63,10 @@ final class GradleCapture {
         return List.copyOf(projects);
     }
 
+    List<BuildCapture> discoveries() {
+        return List.copyOf(discoveries);
+    }
+
     String tabSeparatedProjects() throws IOException {
         return ProjectListing.gradleContexts(discoveries, GradleCommandLine.CLASSPATHS);
     }

@@ -151,13 +151,13 @@ class MavenIntegrationTest {
 
     @Test
     @EnabledIf("detailedCoverage")
-    void everyRequestReflectsCurrentProfilesAndProjectModels() throws Exception {
+    void refreshReflectsUntrackedProfileActivationAndPomEditsInvalidateDiscovery() throws Exception {
         Path root = fixture();
         var initial = discover(root);
         assertEquals(0, initial.status(), initial.error());
         assertTrue(initial.output().contains("fixture:extra"), initial.output());
         Files.delete(root.resolve("extra.enabled"));
-        var profileDisabled = discover(root);
+        var profileDisabled = discover(root, "--refresh");
         assertEquals(0, profileDisabled.status(), profileDisabled.error());
         assertEquals(List.of("fixture:app", "fixture:root"), profileDisabled.output().lines().toList());
         Path pom = root.resolve("pom.xml");

@@ -47,11 +47,12 @@ class GradleCommandsTest {
         var result = run("gradle", "--help");
         assertEquals(0, result.exitCode(), result.error());
         for (String option : List.of("--root-project-dir", "--list-project-paths", "--project-path", "--list-source-sets",
-                "--source-set", "--classpath", "--resolve-options", "--resolve-compiler-options", "--write-argfile")) {
+                "--source-set", "--classpath", "--resolve-options", "--resolve-compiler-options", "--write-argfile", "--refresh")) {
             assertTrue(result.output().contains(option), option);
         }
         assertFalse(result.output().contains("--scope"));
         assertEquals("", result.error());
+        assertTrue(run("__complete", "gradle", "--ref").output().contains("--refresh\t"));
     }
 
     @Test
@@ -148,6 +149,110 @@ class GradleCommandsTest {
         assertEquals(2, result.exitCode(), result.error());
         assertEquals("", result.output());
         assertEquals("jig gradle: Unknown project path in this build: :missing\n", result.error());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryCacheServesListingsAndRejectsInvalidSelectionsWithoutLaunchingGradle() throws Exception {
+        var fixture = cacheFixture();
+        var first = discoverTsv(fixture);
+        assertEquals(0, first.exitCode(), first.error());
+        var text = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths");
+        assertEquals(":\n:app\n", text.output());
+        assertEquals("", text.error());
+        var sourceSets = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets");
+        assertEquals("integrationTest\nmain\ntest\n", sourceSets.output());
+        assertEquals("", sourceSets.error());
+        assertInvalid("Unknown project path", "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":missing", "--list-source-sets");
+        assertInvalid("Unknown source set", "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "missing", "--classpath", "compile", "-r", "class-path");
+        assertEquals(1, launches(fixture));
+        var resolved = resolve(fixture, "compile", "class-path");
+        assertEquals(0, resolved.exitCode(), resolved.error());
+        assertEquals(2, launches(fixture));
+        var values = capture(fixture);
+        putList(values, "classpath", List.of(fixture.root().resolve("changed.jar").toString()));
+        storeCapture(fixture, values);
+        var changed = resolve(fixture, "compile", "class-path");
+        assertEquals(List.of("--class-path", fixture.root().resolve("changed.jar").toString()), arguments(changed));
+        assertEquals(3, launches(fixture));
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(3, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryCacheTracksReportedBuildFilesAndRefreshReplacesUntrackedFacts() throws Exception {
+        var fixture = cacheFixture();
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        int expected = 1;
+        for (Path file : List.of(fixture.root().resolve("settings.gradle"), fixture.project().resolve("build.gradle"),
+                fixture.root().resolve("included/settings.gradle"), fixture.root().resolve("applied.gradle"))) {
+            var modified = Files.getLastModifiedTime(file);
+            Files.writeString(file, Files.readString(file) + "\n");
+            Files.setLastModifiedTime(file, modified);
+            assertEquals(0, discoverTsv(fixture).exitCode());
+            assertEquals(++expected, launches(fixture));
+        }
+        Path missing = fixture.root().resolve("included/build.gradle");
+        Files.writeString(missing, "apply plugin: 'java'\n");
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertEquals(++expected, launches(fixture));
+        Files.delete(missing);
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertEquals(++expected, launches(fixture));
+        var values = capture(fixture);
+        putList(values, "source-sets", List.of("custom"));
+        putList(values, "source-set-projects", List.of(":app"));
+        storeCapture(fixture, values);
+        assertFalse(discoverTsv(fixture).output().contains("\tcustom\t"));
+        assertEquals(expected, launches(fixture));
+        var refreshed = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv", "--refresh");
+        assertEquals(0, refreshed.exitCode(), refreshed.error());
+        assertTrue(refreshed.output().contains("\tcustom\t"), refreshed.output());
+        assertEquals(++expected, launches(fixture));
+        assertEquals(refreshed.output(), discoverTsv(fixture).output());
+        assertEquals(expected, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void failedRefreshDoesNotReuseOrReplaceTheOldDiscovery() throws Exception {
+        var fixture = cacheFixture();
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper) + "if [ -f fail ]; then exit 7; fi\n");
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        Files.writeString(fixture.root().resolve("fail"), "");
+        var refreshed = run("gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--refresh");
+        assertEquals(7, refreshed.exitCode(), refreshed.error());
+        assertEquals("", refreshed.output());
+        assertEquals(7, discoverTsv(fixture).exitCode());
+        assertEquals(3, launches(fixture));
+        Files.delete(fixture.root().resolve("fail"));
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertEquals(4, launches(fixture));
+    }
+
+    private Fixture cacheFixture() throws Exception {
+        var fixture = fixture();
+        Path included = Files.createDirectories(fixture.root().resolve("included"));
+        var files = List.of(fixture.root().resolve("settings.gradle"), fixture.project().resolve("build.gradle"),
+                included.resolve("settings.gradle"), fixture.root().resolve("applied.gradle"));
+        for (Path file : files) {
+            Files.writeString(file, "// build configuration\n");
+        }
+        var values = capture(fixture);
+        var inputs = new ArrayList<>(files);
+        inputs.add(included.resolve("build.gradle"));
+        putList(values, "build-files", inputs.stream().map(Path::toString).toList());
+        storeCapture(fixture, values);
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Gradle build output'", "echo capture >> launches.txt\necho 'Gradle build output'"));
+        return fixture;
+    }
+
+    private static int launches(Fixture fixture) throws Exception {
+        return Files.readAllLines(fixture.root().resolve("launches.txt")).size();
     }
 
     @Test

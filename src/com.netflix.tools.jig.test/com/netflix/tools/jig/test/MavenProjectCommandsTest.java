@@ -51,7 +51,7 @@ class MavenProjectCommandsTest {
     void helpAndCompletionIncludeDiscoveryAndPreserveRepositoryOperations() {
         var help = run("maven", "--help");
         assertEquals(0, help.status(), help.error());
-        for (String option : List.of("--project-base-dir", "--project", "--list-projects", "--scope", "--resolve-options", "--write-argfile", "--verbose", "maven install", "maven deploy", "maven deploy-central")) {
+        for (String option : List.of("--project-base-dir", "--project", "--list-projects", "--scope", "--resolve-options", "--write-argfile", "--verbose", "--refresh", "maven install", "maven deploy", "maven deploy-central")) {
             assertTrue(help.output().contains(option), help.output());
         }
         assertTrue(run("__complete", "maven", "--project-b").output().contains("--project-base-dir\t"));
@@ -61,6 +61,96 @@ class MavenProjectCommandsTest {
         assertFalse(help.output().contains("relative path"));
         assertTrue(run("__complete", "maven", "ins").output().contains("install\t"));
         assertTrue(run("__complete", "maven", "--sc").output().contains("--scope\t"));
+        assertTrue(run("__complete", "maven", "--ref").output().contains("--refresh\t"));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryCacheServesListingFormatsAndValidationButNotResolvedPaths() throws Exception {
+        var fixture = cacheFixture();
+        var first = discover(fixture, "--format", "tsv");
+        assertEquals(0, first.status(), first.error());
+        var text = discover(fixture);
+        assertEquals("example:app\nexample:root\n", text.output());
+        assertEquals("", text.error());
+        assertEquals(1, launches(fixture));
+        assertInvalid("Unknown Maven project", "maven", "--project-base-dir", fixture.project().toString(),
+                "--project", "example:missing", "--scope", "compile", "-r", "class-path");
+        assertEquals(1, launches(fixture));
+        String[] resolve = {"maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile", "-r", "class-path"};
+        assertEquals(0, run(resolve).status());
+        assertEquals(2, launches(fixture));
+        var values = cacheCapture(fixture);
+        values.setProperty("classpath.0", fixture.project().resolve("changed.jar").toString());
+        storeCacheCapture(fixture, values);
+        var changed = run(resolve);
+        assertEquals(0, changed.status(), changed.error());
+        assertEquals("\"--class-path\"\n\"" + fixture.project().resolve("changed.jar") + "\"\n", changed.output());
+        assertEquals(3, launches(fixture));
+        assertEquals(first.output(), discover(fixture, "--format", "tsv").output());
+        assertEquals(3, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryCacheTracksPomsParentsAndSettingsAndSupportsRefresh() throws Exception {
+        var fixture = cacheFixture();
+        assertEquals(0, discover(fixture).status());
+        int expected = 1;
+        for (String name : List.of("pom.xml", "app/pom.xml", "parent.xml", "settings.xml")) {
+            Path file = fixture.project().resolve(name);
+            var modified = Files.getLastModifiedTime(file);
+            Files.writeString(file, Files.readString(file) + "\n");
+            Files.setLastModifiedTime(file, modified);
+            assertEquals(0, discover(fixture).status());
+            assertEquals(++expected, launches(fixture));
+        }
+        var values = cacheCapture(fixture);
+        values.setProperty("projects.0", "example:changed");
+        values.setProperty("projects.2", "example:changed");
+        storeCacheCapture(fixture, values);
+        assertFalse(discover(fixture).output().contains("example:changed"));
+        assertEquals(expected, launches(fixture));
+        var refreshed = discover(fixture, "--refresh");
+        assertEquals(0, refreshed.status(), refreshed.error());
+        assertTrue(refreshed.output().contains("example:changed"), refreshed.output());
+        assertEquals(++expected, launches(fixture));
+        assertEquals(refreshed.output(), discover(fixture).output());
+        assertEquals(expected, launches(fixture));
+    }
+
+    private Fixture cacheFixture() throws Exception {
+        var fixture = fixture(false);
+        var files = List.of("pom.xml", "app/pom.xml", "parent.xml", "settings.xml");
+        var values = cacheCapture(fixture);
+        values.setProperty("build-files.count", Integer.toString(files.size()));
+        for (int index = 0; index < files.size(); index++) {
+            Path file = fixture.project().resolve(files.get(index));
+            Files.writeString(file, "<project/>\n");
+            values.setProperty("build-files." + index, file.toString());
+        }
+        storeCacheCapture(fixture, values);
+        Path wrapper = fixture.project().resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Maven build output'", "echo capture >> launches.txt\necho 'Maven build output'"));
+        return fixture;
+    }
+
+    private static Properties cacheCapture(Fixture fixture) throws Exception {
+        var values = new Properties();
+        try (var input = Files.newInputStream(fixture.project().resolve("capture.properties"))) {
+            values.load(input);
+        }
+        return values;
+    }
+
+    private static void storeCacheCapture(Fixture fixture, Properties values) throws Exception {
+        try (var output = Files.newOutputStream(fixture.project().resolve("capture.properties"))) {
+            values.store(output, null);
+        }
+    }
+
+    private static int launches(Fixture fixture) throws Exception {
+        return Files.readAllLines(fixture.project().resolve("launches.txt")).size();
     }
 
     @Test
@@ -786,12 +876,14 @@ class MavenProjectCommandsTest {
         Files.writeString(session, "package org.apache.maven.execution; public class MavenSession { public java.util.List<org.apache.maven.project.MavenProject> getProjects() { return java.util.Collections.emptyList(); } public void setProjects(java.util.List<org.apache.maven.project.MavenProject> projects) {} public MavenExecutionResult getResult() { return new MavenExecutionResult(); } public MavenSession clone() { return this; } public MavenExecutionRequest getRequest() { return new MavenExecutionRequest(); } public java.util.Properties getUserProperties() { return new java.util.Properties(); } public void setCurrentProject(org.apache.maven.project.MavenProject project) {} }\n");
         Files.writeString(lifecycleParticipant, "package org.apache.maven; public abstract class AbstractMavenLifecycleParticipant { public void afterProjectsRead(org.apache.maven.execution.MavenSession session) {} }\n");
         Files.writeString(listener, "package org.apache.maven.execution; public interface ExecutionListener {}\n");
-        Files.writeString(request, "package org.apache.maven.execution; public class MavenExecutionRequest { public ExecutionListener getExecutionListener() { return null; } public MavenExecutionRequest setExecutionListener(ExecutionListener listener) { return this; } public MavenExecutionRequest setGoals(java.util.List<String> goals) { return this; } }\n");
+        Files.writeString(request, "package org.apache.maven.execution; public class MavenExecutionRequest { public java.io.File getUserSettingsFile() { return null; } public java.io.File getGlobalSettingsFile() { return null; } public ExecutionListener getExecutionListener() { return null; } public MavenExecutionRequest setExecutionListener(ExecutionListener listener) { return this; } public MavenExecutionRequest setGoals(java.util.List<String> goals) { return this; } }\n");
         Files.writeString(event, "package org.apache.maven.execution; public interface ExecutionEvent { enum Type { SessionStarted, SessionEnded } Type getType(); MavenSession getSession(); }\n");
         Files.writeString(result, "package org.apache.maven.execution; public class MavenExecutionResult { public boolean hasExceptions() { return false; } }\n");
         Files.writeString(project, """
                 package org.apache.maven.project;
                 public class MavenProject {
+                    public java.io.File getFile() { return null; }
+                    public MavenProject getParent() { return null; }
                     public String getGroupId() { return null; }
                     public String getArtifactId() { return null; }
                     public java.io.File getBasedir() { return null; }
