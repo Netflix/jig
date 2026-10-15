@@ -82,7 +82,7 @@ class JigToolProviderTest {
         values.setProperty("source-sets.0", "main");
         values.setProperty("sources.count", "1");
         values.setProperty("sources.0", source.toString());
-        for (String name : List.of("classpath", "module-path", "processors", "additional")) {
+        for (String name : List.of("dependency-sources", "classpath", "module-path", "processors", "additional")) {
             values.setProperty(name + ".count", "0");
         }
         values.setProperty("modular", "false");

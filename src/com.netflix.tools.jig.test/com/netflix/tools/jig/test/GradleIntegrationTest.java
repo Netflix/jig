@@ -56,7 +56,7 @@ class GradleIntegrationTest {
     Path temporaryDirectory;
 
     @Test
-    void discoversProjectsAndResolvesSourcesWithoutResolvingDependencies() throws Exception {
+    void discoveryDoesNotResolveDependenciesAndSourceQueriesDoNotCompile() throws Exception {
         var fixture = fixture(false);
         Files.writeString(fixture.root()
                 .resolve("prevent-resolution"),
@@ -64,6 +64,8 @@ class GradleIntegrationTest {
         String projects = run("gradle", "--root-project-dir",
                 fixture.root().toString(), "--list-project-paths");
         assertEquals(List.of(":", ":app", ":library", ":plain"), projects.lines().toList());
+        assertEquals("", run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":plain", "--list-source-sets"));
+        Files.delete(fixture.root().resolve("prevent-resolution"));
         String source = resolve(fixture, "compile", "source-path,release");
         assertTrue(source.contains(fixture.app()
                 .resolve("sources/java")
@@ -74,7 +76,20 @@ class GradleIntegrationTest {
         }
         assertFalse(Files.exists(fixture.app()
                 .resolve("build")));
-        assertEquals("", run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":plain", "--list-source-sets"));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
+    void quietBuildsDoNotAddDiagnosticsToSuccessfulQueries() throws Exception {
+        var fixture = fixture(false);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int status = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true),
+                "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "source-path");
+        assertEquals(0, status, error.toString());
+        assertEquals("", error.toString());
+        assertTrue(output.toString().contains(fixture.app().resolve("sources/java").toString()), output.toString());
     }
 
     @Test
@@ -488,10 +503,24 @@ class GradleIntegrationTest {
         Files.writeString(fixture.app().resolve("build.gradle"), """
                 tasks.named('compileJava').configure { throw new GradleException('compileJava was realized') }
                 tasks.register('unrelated') { throw new GradleException('unrelated task was realized') }
+                """ + (atLeast(5, 0) ? "tasks.named('run').configure { throw new GradleException('run was realized') }\n" : ""), StandardOpenOption.APPEND);
+        assertEquals("main\ntest\n", run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets"));
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+    }
+
+    @Test
+    @EnabledIf("detailedLazyTaskCoverage")
+    void sourceQueriesReadLateSourceDirectoriesWithoutCompilingOrRealizingUnrelatedTasks() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                tasks.named('compileJava').configure { doFirst { throw new GradleException('compileJava was executed') } }
+                tasks.register('unrelated') { throw new GradleException('unrelated task was realized') }
                 afterEvaluate { sourceSets.main.java.srcDirs = ['late/sources'] }
                 """ + (atLeast(5, 0) ? "tasks.named('run').configure { throw new GradleException('run was realized') }\n" : ""), StandardOpenOption.APPEND);
         String capture = resolve(fixture, "compile", "source-path");
         assertTrue(capture.contains(fixture.app().resolve("late/sources").toString()), capture);
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
     }
 
     @Test
@@ -664,10 +693,14 @@ class GradleIntegrationTest {
                     destination = layout.buildDirectory.dir('generated/custom')
                 }
                 sourceSets.test.java.srcDir(generator.flatMap { it.destination })
-                tasks.named('compileTestJava').configure { throw new GradleException('test compiler was realized') }
+                tasks.named('compileTestJava').configure {
+                    rootProject.file('test-compiler-realized').text = ''
+                    doFirst { throw new GradleException('test compiler was executed') }
+                }
                 """, StandardOpenOption.APPEND);
         run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--list-source-sets");
         Path generated = fixture.app().resolve("build/generated/custom/Generated.java");
+        assertFalse(Files.exists(fixture.root().resolve("test-compiler-realized")));
         assertFalse(Files.exists(generated));
         String first = resolve(fixture, "test", "compile", "source-path");
         assertTrue(first.contains(generated.getParent().toString()), first);
@@ -726,21 +759,113 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("detailedCoverage")
     void rejectsUnknownProjectPathsAndSourceSetsWithoutReturningArguments() throws Exception {
         var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("prevent-resolution"), "");
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"),
+                    "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\n"
+                            + "org.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
         for (String[] selection : List.of(
                 new String[] {"--project-path", ":missing", "--list-source-sets"},
-                new String[] {"--project-path", ":app", "--source-set", "missing", "--classpath", "compile", "-r", "source-path"})) {
+                new String[] {"--project-path", ":missing", "--source-set", "main", "--classpath", "runtime", "-r", "class-path"},
+                new String[] {"--project-path", ":app", "--source-set", "missing", "--classpath", "compile", "-r", "source-path"},
+                new String[] {"--project-path", ":app", "--source-set", "missing", "--resolve-compiler-options"})) {
             var arguments = new ArrayList<>(List.of("gradle", "--root-project-dir", fixture.root().toString()));
             arguments.addAll(List.of(selection));
             var output = new StringWriter();
             var error = new StringWriter();
             int code = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true), arguments.toArray(String[]::new));
-            assertEquals(1, code, error.toString());
+            assertEquals(2, code, error.toString());
             assertEquals("", output.toString());
-            assertTrue(error.toString().contains(selection.length == 3 ? "Unknown project path" : "Unknown source set"), error.toString());
+            assertEquals(selection[1].equals(":missing")
+                    ? "jig gradle: Unknown project path in this build: :missing\n"
+                    : "jig gradle: Unknown source set in project :app: missing\n", error.toString());
         }
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
+    void sourcePathsIncludeAvailableSourcesForTheSelectedDependencyVersionsAndClasspath() throws Exception {
+        var fixture = fixture(false);
+        Path repository = Files.createDirectories(fixture.root().resolve("repository"));
+        publish(repository, "shared", "1.0", true, "");
+        publish(repository, "shared", "2.0", true, "");
+        publish(repository, "compile-only", "1.0", true,
+                "<dependencies><dependency><groupId>fixture</groupId><artifactId>shared</artifactId><version>2.0</version></dependency></dependencies>");
+        publish(repository, "runtime-only", "1.0", true, "");
+        publish(repository, "no-sources", "1.0", false, "");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                repositories { maven { url rootProject.file('repository').toURI() } }
+                dependencies {
+                    implementation 'fixture:shared:1.0'
+                    implementation 'fixture:no-sources:1.0'
+                    compileOnly 'fixture:compile-only:1.0'
+                    runtimeOnly 'fixture:runtime-only:1.0'
+                }
+                """, StandardOpenOption.APPEND);
+        if (supportsConfigurationCache()) {
+            Files.writeString(fixture.root().resolve("gradle.properties"),
+                    "org.gradle.configuration-cache=true\norg.gradle.unsafe.configuration-cache=true\n"
+                            + "org.gradle.configuration-cache.problems=fail\norg.gradle.unsafe.configuration-cache-problems=fail\n");
+        }
+        for (String classpath : List.of("compile", "runtime")) {
+            String sources = resolve(fixture, classpath, "source-path");
+            assertTrue(sources.contains(fixture.app().resolve("sources/java").toString()), sources);
+            assertTrue(sources.contains(classpath.equals("compile") ? "shared-2.0-sources.jar" : "shared-1.0-sources.jar"), sources);
+            assertTrue(sources.contains(classpath + "-only-1.0-sources.jar"), sources);
+            assertFalse(sources.contains(classpath.equals("compile") ? "runtime-only" : "compile-only"), sources);
+            assertFalse(sources.contains("no-sources-1.0-sources.jar"), sources);
+            assertEquals(sources, resolve(fixture, classpath, "source-path"));
+        }
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/build")));
+    }
+
+    @Test
+    @EnabledIf("supportsSourceVariantReselection")
+    void sourceViewsSelectPublishedVariantsAndRetainProjectSourceProducers() throws Exception {
+        var fixture = fixture(false);
+        Path repository = Files.createDirectories(fixture.root().resolve("repository"));
+        publish(repository, "variant", "1.0", false, "");
+        Path artifact = repository.resolve("fixture/variant/1.0");
+        Path pom = artifact.resolve("variant-1.0.pom");
+        Files.writeString(pom, Files.readString(pom).replace("<project>", "<project><!-- do_not_remove: published-with-gradle-metadata -->"));
+        jar(artifact.resolve("source-bundle.jar"), null);
+        Files.writeString(artifact.resolve("variant-1.0.module"), """
+                {
+                  "formatVersion": "1.1",
+                  "component": {"group": "fixture", "module": "variant", "version": "1.0"},
+                  "variants": [
+                    {
+                      "name": "runtimeElements",
+                      "attributes": {"org.gradle.category": "library", "org.gradle.usage": "java-runtime", "org.gradle.libraryelements": "jar"},
+                      "files": [{"name": "variant-1.0.jar", "url": "variant-1.0.jar"}]
+                    },
+                    {
+                      "name": "sourcesElements",
+                      "attributes": {"org.gradle.category": "documentation", "org.gradle.docstype": "sources", "org.gradle.dependency.bundling": "external", "org.gradle.usage": "java-runtime"},
+                      "files": [{"name": "source-bundle.jar", "url": "source-bundle.jar"}]
+                    }
+                  ]
+                }
+                """);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                repositories { maven { url rootProject.file('repository').toURI() } }
+                dependencies { implementation 'fixture:variant:1.0' }
+                """, StandardOpenOption.APPEND);
+        Files.writeString(fixture.root().resolve("library/build.gradle"), "\njava.withSourcesJar()\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.root().resolve("gradle.properties"),
+                "org.gradle.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\n");
+        String sources = resolve(fixture, "runtime", "source-path");
+        assertTrue(sources.contains("source-bundle.jar"), sources);
+        assertTrue(sources.contains(fixture.root().resolve("library/build/libs/library-sources.jar").toString()), sources);
+        assertTrue(Files.isRegularFile(fixture.root().resolve("library/build/libs/library-sources.jar")));
+        assertFalse(Files.exists(fixture.app().resolve("build")));
+        assertFalse(Files.exists(fixture.root().resolve("library/" + classesDirectory())));
+        assertEquals(sources, resolve(fixture, "runtime", "source-path"));
     }
 
     @Test
@@ -1211,6 +1336,10 @@ class GradleIntegrationTest {
         return atLeast(6, 6);
     }
 
+    private boolean supportsSourceVariantReselection() {
+        return atLeast(7, 5);
+    }
+
     private boolean supportsModules() {
         return atLeast(6, 6) && javaRelease() >= 9;
     }
@@ -1234,6 +1363,18 @@ class GradleIntegrationTest {
 
     private boolean supportsNamedCompositeCapture() {
         return atLeast(6, 0);
+    }
+
+    private static void publish(Path repository, String artifact, String version, boolean sources, String dependencies) throws Exception {
+        Path directory = Files.createDirectories(repository.resolve("fixture/" + artifact + "/" + version));
+        String name = artifact + "-" + version;
+        Files.writeString(directory.resolve(name + ".pom"),
+                "<project><modelVersion>4.0.0</modelVersion><groupId>fixture</groupId><artifactId>" + artifact
+                        + "</artifactId><version>" + version + "</version>" + dependencies + "</project>\n");
+        jar(directory.resolve(name + ".jar"), null);
+        if (sources) {
+            jar(directory.resolve(name + "-sources.jar"), null);
+        }
     }
 
     private static void jar(Path path, String module) throws Exception {

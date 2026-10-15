@@ -17,7 +17,12 @@ import java.lang.reflect.InvocationTargetException
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Task
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedArtifactResult
 import org.gradle.api.file.FileCollection
+import org.gradle.jvm.JvmLibrary
+import org.gradle.language.base.artifact.SourcesArtifact
 import org.gradle.api.specs.Spec
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
@@ -110,6 +115,46 @@ class JigGradleModulePaths {
     }
 }
 
+class JigGradleSourceVariants {
+    static FileCollection files(def project, def configuration) {
+        // These attribute types are newer than the oldest supported Gradle.
+        // Load them only when variant reselection is available.
+        def usage = Class.forName('org.gradle.api.attributes.Usage')
+        def category = Class.forName('org.gradle.api.attributes.Category')
+        def bundling = Class.forName('org.gradle.api.attributes.Bundling')
+        def docsType = Class.forName('org.gradle.api.attributes.DocsType')
+        def objects = project.objects
+        return configuration.incoming.artifactView {
+            withVariantReselection()
+            lenient = true
+            componentFilter { it instanceof ModuleComponentIdentifier || it instanceof ProjectComponentIdentifier }
+            attributes {
+                attribute(usage.USAGE_ATTRIBUTE, objects.named(usage, usage.JAVA_RUNTIME))
+                attribute(category.CATEGORY_ATTRIBUTE, objects.named(category, category.DOCUMENTATION))
+                attribute(bundling.BUNDLING_ATTRIBUTE, objects.named(bundling, bundling.EXTERNAL))
+                attribute(docsType.DOCS_TYPE_ATTRIBUTE, objects.named(docsType, docsType.SOURCES))
+            }
+        }.files
+    }
+}
+
+class JigGradleSourceQuery {
+    static FileCollection files(def project, def configuration) {
+        def components = configuration.incoming.resolutionResult.allComponents.collect { it.id }
+                .findAll { it instanceof ModuleComponentIdentifier }
+        if (components.empty) {
+            return project.files()
+        }
+        // The older query API cannot be retained in configuration-cache task state.
+        // Store its resolved files, not the query or its project services.
+        def result = project.dependencies.createArtifactResolutionQuery()
+                .forComponents(components).withArtifacts(JvmLibrary, SourcesArtifact).execute()
+        return project.files(result.resolvedComponents.collectMany { component ->
+            component.getArtifacts(SourcesArtifact).findAll { it instanceof ResolvedArtifactResult }.collect { it.file }
+        })
+    }
+}
+
 // Resolve the source representation after producers have run, not while the
 // build is being configured. Preserve the build's existing compile predicates.
 class JigCompilationRequired implements Spec<Task> {
@@ -140,6 +185,7 @@ class JigCaptureTask extends DefaultTask {
     @Input List<String> projectDirectories = []
     @Input List<String> sourceSetNames = []
     @Internal FileCollection sourceRoots
+    @Internal FileCollection dependencySources
     @Input Map<String, String> metadata = [:]
     @Input List<String> additionalArguments = []
     @Nested List argumentProviders = []
@@ -164,6 +210,7 @@ class JigCaptureTask extends DefaultTask {
         putList(values, 'source-set-projects', sourceSetNames.collect { projectPath })
         def roots = sourceRoots.files
         putList(values, 'sources', roots.collect { it.canonicalPath })
+        putList(values, 'dependency-sources', dependencySources.files.collect { it.canonicalPath }.sort())
         def modular = false
         def sourceView = JigCompilationRequired.sourceView(sourceRoots, sourcePathRequested, moduleSourcePathRequested)
         def selectedPath = sourceView && sourceOutput != null ? binaryPath - sourceOutput : binaryPath
@@ -200,8 +247,7 @@ class JigCaptureTask extends DefaultTask {
     static void emit(Properties values) {
         def bytes = new ByteArrayOutputStream()
         values.store(bytes, null)
-        // A framed line keeps arbitrary build output separate from capture data.
-        println('\njig-gradle:' + Base64.encoder.encodeToString(bytes.toByteArray()))
+        println('jig-gradle:' + Base64.encoder.encodeToString(bytes.toByteArray()))
     }
 
     static void putList(Properties values, String name, List entries) {
@@ -283,7 +329,14 @@ gradle.settingsEvaluated { settings ->
             project.afterEvaluate {
                 def configure = { task ->
                     task.description = 'Capture the Java argument view requested by jig'
+                    task.buildPath = buildPath
+                    task.projectPaths = projectPaths
+                    task.sourceRoots = project.files()
+                    task.dependencySources = project.files()
+                    task.binaryPath = project.files()
+                    task.processorPath = project.files()
                     if (dispatch) {
+                        task.captureKind = 'projects'
                         if (projectPath != null) {
                             task.dependsOn(projectPath + ':' + captureTaskName)
                         } else {
@@ -302,8 +355,6 @@ gradle.settingsEvaluated { settings ->
                                 // Gradle 6/7 flatten nested build identities. Traverse
                                 // native references; only the owning build emits a capture.
                                 task.dependsOn(gradle.includedBuilds.collect { it.task(':' + captureTaskName) })
-                            } else if (buildPath == ':') {
-                                throw new GradleException('Unknown project path in this build: ' + selectedPath)
                             }
                         }
                         return
@@ -314,9 +365,6 @@ gradle.settingsEvaluated { settings ->
                     task.sourceSet = sourceSetName ?: ''
                     task.projectPaths = listContexts ? [qualifiedPath(project.path)] : projectPaths
                     task.projectDirectories = listContexts ? [project.projectDir.canonicalPath] : listProjects ? projectDirectories : []
-                    task.sourceRoots = project.files()
-                    task.binaryPath = project.files()
-                    task.processorPath = project.files()
                     if (listProjects && project.path == ':') {
                         // Task references let Gradle configure and execute each included
                         // build's discovery without sharing mutable state across builds.
@@ -340,7 +388,7 @@ gradle.settingsEvaluated { settings ->
                     }
                     def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)
                     if (sourceSet == null) {
-                        throw new GradleException('Unknown source set in project ' + projectPath + ': ' + sourceSetName)
+                        return
                     }
                     if (compilerRequest) {
                         def compile = project.tasks.getByName(sourceSet.compileJavaTaskName)
@@ -357,6 +405,14 @@ gradle.settingsEvaluated { settings ->
                         return
                     }
                     task.sourceRoots = sourceSet.allJava.sourceDirectories
+                    if (requested.contains('source-path')) {
+                        def configurationName = classpath == 'runtime' ? sourceSet.runtimeClasspathConfigurationName : sourceSet.compileClasspathConfigurationName
+                        def configuration = project.configurations.getByName(configurationName)
+                        task.dependencySources = gradleVersion >= GradleVersion.version('7.5')
+                                ? JigGradleSourceVariants.files(project, configuration)
+                                : JigGradleSourceQuery.files(project, configuration)
+                        task.dependsOn(task.dependencySources)
+                    }
                     def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
                     def run = needsRun ? project.tasks.findByName('run') : null
                     def needsCompilerArguments = classpath == 'compile' && needsArguments
@@ -444,11 +500,10 @@ gradle.settingsEvaluated { settings ->
                         }
                     }
                 }
-                def taskType = dispatch ? DefaultTask : JigCaptureTask
                 if (lazyTasks) {
-                    project.tasks.register(captureTaskName, taskType, configure)
+                    project.tasks.register(captureTaskName, JigCaptureTask, configure)
                 } else {
-                    project.tasks.create(captureTaskName, taskType, configure)
+                    project.tasks.create(captureTaskName, JigCaptureTask, configure)
                 }
             }
         }

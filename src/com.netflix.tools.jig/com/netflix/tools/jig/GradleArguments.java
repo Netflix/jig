@@ -33,7 +33,7 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
  * dependencies.
  */
 final class GradleArguments {
-    record View(List<String> sources, List<String> classpath, List<String> modulePath, List<String> processors,
+    record View(List<String> sources, List<String> dependencySources, List<String> classpath, List<String> modulePath, List<String> processors,
                 List<String> additional, boolean modular, Map<String, String> metadata) {
         static View read(BuildCapture capture) throws IOException {
             var metadata = new LinkedHashMap<String, String>();
@@ -43,7 +43,7 @@ final class GradleArguments {
                     metadata.put(name, value);
                 }
             }
-            return new View(capture.list("sources"), capture.list("classpath"), capture.list("module-path"),
+            return new View(capture.list("sources"), capture.list("dependency-sources"), capture.list("classpath"), capture.list("module-path"),
                     capture.list("processors"), capture.list("additional"), capture.flag("modular"), Map.copyOf(metadata));
         }
     }
@@ -62,7 +62,9 @@ final class GradleArguments {
         String module = view.modular() && (options.contains("module") || options.contains("add-modules")
                 || options.contains("module-source-path") || options.contains("describe-module")) ? moduleName(sources, metadata) : null;
         boolean moduleSources = options.contains("module-source-path") && module != null;
-        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sources);
+        var sourcePath = new ArrayList<>(sources);
+        sourcePath.addAll(view.dependencySources());
+        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sourcePath);
         path(arguments, options.contains("processor-path"), "--processor-path", view.processors());
         for (String name : List.of("release", "source", "target", "encoding", "module-version", "main-class")) {
             boolean selected = options.contains(name) && !(release && (name.equals("source") || name.equals("target")));

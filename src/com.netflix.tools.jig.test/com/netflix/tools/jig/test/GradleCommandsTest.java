@@ -115,6 +115,42 @@ class GradleCommandsTest {
     }
 
     @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void captureDoesNotAddBlankDiagnosticsOrSwallowUnterminatedBuildOutput() throws Exception {
+        var fixture = fixture();
+        Path wrapper = fixture.root().resolve("gradlew");
+        String script = Files.readString(wrapper);
+        for (String diagnostic : List.of("", "build output", "build output\n", "\n\nbuild output\n\n")) {
+            Files.writeString(fixture.root().resolve("diagnostic.txt"), diagnostic);
+            Files.writeString(wrapper, script.replace("echo 'Gradle build output'", "cat diagnostic.txt"));
+            var result = resolve(fixture, "compile", "source-path");
+            assertEquals(0, result.exitCode(), result.error());
+            assertEquals(diagnostic.isEmpty() || diagnostic.endsWith("\n") ? diagnostic : diagnostic + "\n", result.error());
+            assertEquals(List.of("--source-path", fixture.project().resolve("custom sources").toString()), arguments(result));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void projectDiscoveryRecordsValidateSelectionsWithoutRequiringArgumentMetadata() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        values.setProperty("kind", "projects");
+        storeCapture(fixture, values);
+        Files.writeString(fixture.root().resolve("gradlew"), """
+                #!/bin/sh
+                printf 'jig-gradle:'
+                base64 < compile.properties | tr -d '\\n'
+                printf '\\n'
+                """);
+        var result = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":missing",
+                "--source-set", "main", "--classpath", "runtime", "-r", "class-path");
+        assertEquals(2, result.exitCode(), result.error());
+        assertEquals("", result.output());
+        assertEquals("jig gradle: Unknown project path in this build: :missing\n", result.error());
+    }
+
+    @Test
     void validatesProjectListingFormatsBeforeLaunchingGradle() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root"));
         assertInvalid("text or tsv", "gradle", "--root-project-dir", root.toString(),
@@ -263,6 +299,26 @@ class GradleCommandsTest {
         var modular = resolve(fixture, "compile", "source-path,module-source-path");
         assertEquals(0, modular.exitCode(), modular.error());
         assertEquals(List.of("--module-source-path", "example.app=" + sources), arguments(modular));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void sourceArchivesExtendTheSourcePathWithoutBecomingModuleSourceRoots() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        Path archive = fixture.root().resolve("dependency-sources.jar");
+        putList(values, "dependency-sources", List.of(archive.toString()));
+        storeCapture(fixture, values);
+        var classpath = resolve(fixture, "compile", "source-path");
+        assertEquals(0, classpath.exitCode(), classpath.error());
+        assertEquals(List.of("--source-path", fixture.project().resolve("custom sources")
+                + System.getProperty("path.separator") + archive), arguments(classpath));
+        values.setProperty("modular", "true");
+        values.setProperty("module-name", "example.app");
+        storeCapture(fixture, values);
+        var modular = resolve(fixture, "compile", "source-path,module-source-path");
+        assertEquals(0, modular.exitCode(), modular.error());
+        assertEquals(List.of("--module-source-path", "example.app=" + fixture.project().resolve("custom sources")), arguments(modular));
     }
 
     @Test
@@ -532,7 +588,7 @@ class GradleCommandsTest {
                 printf '\\n'
                 """);
         for (String field : List.of("version", "kind", "project-path", "source-set", "project-paths.count", "source-sets.count",
-                "sources.count", "classpath.count", "module-path.count", "processors.count", "additional.count", "modular")) {
+                "sources.count", "dependency-sources.count", "classpath.count", "module-path.count", "processors.count", "additional.count", "modular")) {
             var values = new Properties();
             values.putAll(original);
             values.remove(field);
@@ -569,7 +625,7 @@ class GradleCommandsTest {
                 base64 < compile.properties | tr -d '\\n'
                 printf '\\n'
                 """);
-        for (var mismatch : List.of(List.of("kind", "projects"), List.of("kind", "compiler-options"),
+        for (var mismatch : List.of(List.of("kind", "compiler-options"),
                 List.of("project-path", ":other"), List.of("source-set", "other"))) {
             var values = new Properties();
             values.putAll(original);
@@ -1085,6 +1141,7 @@ class GradleCommandsTest {
         putList(values, "classpath",
                 present ? List.of(root.resolve(runtime ? "runtime only.jar" : "compile only.jar").toString()) : List.of());
         putList(values, "module-path", List.of());
+        putList(values, "dependency-sources", List.of());
         putList(values, "processors", List.of());
         putList(values, "additional", List.of());
         values.setProperty("modular", "false");

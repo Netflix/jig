@@ -34,7 +34,7 @@ final class GradleCapture {
     }
 
     void accept(BuildCapture capture) throws IOException {
-        if (request.listProjects()) {
+        if (request.listProjects() || capture.require("kind").equals("projects")) {
             capture.expect("kind", "projects");
             capture.require("build-path");
             projects.addAll(capture.list("project-paths"));
@@ -47,6 +47,8 @@ final class GradleCapture {
             compiler = capture;
         } else {
             capture.expect("kind", request.compiler() ? "compiler-metadata" : request.listSourceSets() ? "source-sets" : "arguments");
+            projects.addAll(capture.list("project-paths"));
+            discovered = true;
             if (metadata != null) {
                 throw new IOException("Duplicate Gradle project capture");
             }
@@ -55,13 +57,10 @@ final class GradleCapture {
     }
 
     List<String> projects() throws IOException {
-        if (request.listProjects()) {
-            if (!discovered) {
-                throw new IOException("Gradle did not return a capture");
-            }
-            return List.copyOf(projects);
+        if (!discovered) {
+            throw new IOException("Gradle did not return a capture");
         }
-        return metadata().list("project-paths");
+        return List.copyOf(projects);
     }
 
     String tabSeparatedProjects() throws IOException {
