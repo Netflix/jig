@@ -87,14 +87,7 @@ Launches the JUnit Platform for test discovery and execution.
 
 ### Gradle
 
-Discover projects and source sets from the build root. Project paths also address included builds, such as `:build-logic:plugin`:
-
-```sh
-jig gradle --root-project-dir . --list-project-paths
-
-jig gradle --root-project-dir . \
-  --project-path :app --list-source-sets
-```
+Resolve arguments from Gradle projects and source sets, including composite builds. Use `--list-project-paths` and `--list-source-sets` to discover selections.
 
 For a project `:app` with a source set `main`, resolve runtime arguments and launch your main class:
 
@@ -107,35 +100,11 @@ jig gradle --root-project-dir . \
 java @runtime.args com.example.Main
 ```
 
-For compilation, resolve compiler options separately:
-
-```sh
-jig gradle --root-project-dir . \
-  --project-path :app --source-set main \
-  --resolve-compiler-options --write-argfile compile.args
-
-javac @compile.args @sources.args
-```
-
-Replace the project, source set and main class with those of your application. Prepare `sources.args` with the source filenames to compile, including generated sources and `module-info.java` where applicable, and use a `javac` matching the build's configured toolchain.
-
-`--resolve-options` requires `--project-path`, `--source-set` and `--classpath`. `--resolve-compiler-options` requires the project and source set and implies the compile classpath. Choose one operation per invocation: project discovery, source-set discovery, option resolution or compiler-option resolution.
-
-Discovery does not execute source producers. Resolution can run generators and prepare binary outputs; requesting the corresponding source paths leaves compilation to the caller. Unknown projects and source sets are errors. Empty source sets return only configured arguments. Included-build discovery and selection require Gradle 4.0 or later.
-
-Use `--list-project-paths --format tsv` for tab-separated rows containing absolute directory, project path, source set and classpath. Projects without Java source sets have empty source-set and classpath fields.
-
-Gradle accepts these resolve-option names: `add-exports`, `add-modules`, `add-opens`, `add-reads`, `class-path`, `describe-module`, `enable-final-field-mutation`, `enable-native-access`, `enable-preview`, `encoding`, `main-class`, `module`, `module-path`, `module-source-path`, `module-version`, `multi-release`, `patch-module`, `processor-module-path`, `processor-path`, `release`, `source`, `source-path`, `system`, `target` and `upgrade-module-path`. Unconfigured options and known standard options unsupported by Gradle are omitted.
+Use `--resolve-compiler-options` for the source set's effective compiler arguments. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects) for compilation examples and supported options.
 
 ### Maven
 
-Discover projects from the Maven project base directory:
-
-```sh
-jig maven --project-base-dir . --list-projects
-```
-
-Select a project by `groupId:artifactId` or the shorter `:artifactId` form, then request its `compile`, `runtime` or `test` scope. For an application project with artifact ID `app`:
+Resolve arguments from a Maven project's `compile`, `runtime` or `test` scope. Use `--list-projects` to discover project selectors. For an application with artifact ID `app`:
 
 ```sh
 jig maven --project-base-dir . \
@@ -146,31 +115,13 @@ jig maven --project-base-dir . \
 java @runtime.args com.example.Main
 ```
 
-`--resolve-options` requires `--project` and `--scope`. Discovery lists active modules without executing build goals. Resolving binary paths prepares Maven compile outputs. Requesting source paths leaves the selected sources to the caller; prerequisite projects may still compile.
-
-Use `--list-projects --format tsv` for tab-separated rows containing absolute directory, project selector and scope.
-
-Maven provides `class-path`, `source-path`, `module-path`, `module-source-path`, `module`, `add-modules` and `describe-module`. Known standard options unsupported by Maven are omitted. Module options use jig's module identities. For both Maven and Gradle, `module=main` requests the `module/main-class` form.
-
 ### Cached build queries
 
-Gradle and Maven discovery and argument resolution use the same persistent cache. Matching build inputs can reuse results across branch switches and worktrees; paths inside the project are resolved against the current project root. Arguments containing project-specific values that jig cannot relocate safely remain local to that project directory.
-
-A cache hit skips the build-tool invocation, including any tasks that would prepare outputs. Changes to reported build inputs invalidate the answer. Use `--refresh` to query the build again after other changes, such as environment changes or updated dynamic dependencies. Use `--verbose` to see cache hits and build invocations.
-
-Entries unused for seven days are pruned, with cleanup checked at most once daily. Files explicitly written with `--write-argfile` belong to the caller and are not pruned.
+Discovery and resolved arguments are cached across branches and worktrees. Cache hits skip the build tool and output preparation; use `--refresh` to query the build again. Unused entries are pruned automatically. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects#caching) for details.
 
 ### Publishing module artifacts
 
-The Maven publishing commands operate on flat, module-named artifacts, not Maven project builds:
-
-```text
-jig maven install [--module-version <version>] <artifact-directory>
-jig maven deploy [--module-version <version>] --repository <id=uri|path> [--sign] <artifact-directory>
-jig maven deploy-central [--module-version <version>] [--name <name>] [--manual] <artifact-directory>
-```
-
-See [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules) for details.
+Install module artifacts locally or publish them to Maven repositories and Maven Central with `jig maven install`, `deploy` and `deploy-central`. See [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules).
 
 ### Module proxy
 
@@ -188,6 +139,7 @@ The [wiki](https://github.com/Netflix/jig/wiki) covers:
 
 - [Getting Started](https://github.com/Netflix/jig/wiki/Getting-Started)
 - [Tool Arguments](https://github.com/Netflix/jig/wiki/Tool-Arguments)
+- [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects)
 - [Source Modules](https://github.com/Netflix/jig/wiki/Source-Modules)
 - [Maven Modules](https://github.com/Netflix/jig/wiki/Maven-Modules)
 - [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules)
