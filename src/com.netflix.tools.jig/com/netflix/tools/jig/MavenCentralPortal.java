@@ -35,6 +35,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
+import com.netflix.tools.jig.module.Trace;
+
 /** Uploads deployment bundles to the Maven Central Publisher Portal. */
 public final class MavenCentralPortal implements AutoCloseable {
     public enum Approval {
@@ -48,7 +50,8 @@ public final class MavenCentralPortal implements AutoCloseable {
     private static final URI UPLOAD = URI.create("https://central.sonatype.com/api/v1/publisher/upload");
     private static final Pattern DEPLOYMENT_STATE = Pattern.compile("\\\"deploymentState\\\"\\s*:\\s*\\\"([A-Z_]+)\\\"");
     private static final Duration PUBLICATION_TIMEOUT = Duration.ofMinutes(30);
-    private static final Duration POLL_INTERVAL = Duration.ofSeconds(1);
+    // Match the Central publishing plugin's documented minimum polling interval.
+    private static final Duration POLL_INTERVAL = Duration.ofSeconds(5);
     private static final Executor VIRTUAL_THREADS = Thread::startVirtualThread;
 
     private final HttpClient client;
@@ -107,6 +110,7 @@ public final class MavenCentralPortal implements AutoCloseable {
     public String publish(Path bundle, String deploymentName, Approval approval) throws IOException {
         Objects.requireNonNull(approval);
         String deployment = upload(bundle, deploymentName, approval);
+        Trace.trace("Maven Central deployment %s uploaded", deployment);
         awaitPublication(deployment, approval);
         return deployment;
     }
@@ -148,7 +152,9 @@ public final class MavenCentralPortal implements AutoCloseable {
     }
 
     private void awaitPublication(String deployment, Approval approval) throws IOException {
-        long deadline = System.nanoTime() + PUBLICATION_TIMEOUT.toNanos();
+        long start = System.nanoTime();
+        long deadline = start + PUBLICATION_TIMEOUT.toNanos();
+        String lastState = null;
         while (System.nanoTime() < deadline) {
             String response = status(deployment);
             var matcher = DEPLOYMENT_STATE.matcher(response);
@@ -156,6 +162,11 @@ public final class MavenCentralPortal implements AutoCloseable {
                 throw new IOException("Maven Central status response has no deploymentState: " + response);
             }
             String state = matcher.group(1);
+            if (!state.equals(lastState)) {
+                Trace.trace("Maven Central deployment %s: %s (%ds elapsed)", deployment, state,
+                        Duration.ofNanos(System.nanoTime() - start).toSeconds());
+                lastState = state;
+            }
             if (state.equals("PUBLISHED") || approval == Approval.MANUAL && state.equals("VALIDATED")) {
                 return;
             }
@@ -175,7 +186,9 @@ public final class MavenCentralPortal implements AutoCloseable {
                 throw new IOException("Maven Central publication was interrupted", e);
             }
         }
-        throw new IOException("Timed out waiting for Maven Central deployment " + deployment);
+        throw new IOException("Timed out waiting for Maven Central deployment " + deployment
+                + " after " + Duration.ofNanos(System.nanoTime() - start).toSeconds()
+                + "s (last state: " + lastState + ")");
     }
 
     private String status(String deployment) throws IOException {
