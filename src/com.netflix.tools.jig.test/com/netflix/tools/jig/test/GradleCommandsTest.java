@@ -56,6 +56,28 @@ class GradleCommandsTest {
     }
 
     @Test
+    void helpStartsWithExamplesAndGroupsOptionsByPurpose() {
+        var help = run("gradle", "--help");
+        String text = help.output();
+        assertEquals(0, help.exitCode(), help.error());
+        assertEquals("", help.error());
+        assertEquals(text, run("gradle").output());
+        int previous = -1;
+        for (String heading : List.of("Usage: jig gradle", "Examples:", "Selection:", "Discovery:", "Resolution:", "Output and cache:", "Resolve options:")) {
+            int index = text.indexOf(heading);
+            assertTrue(index > previous, heading + "\n" + text);
+            previous = index;
+        }
+        assertTrue(text.contains("--project-path, --source-set and --classpath"), text);
+        assertTrue(text.contains("source filenames"), text);
+        assertTrue(text.contains("--refresh"), text);
+        assertFalse(text.contains("native jig options"), text);
+        assertFalse(text.contains("Gradle 4.0"), text);
+        assertTrue(text.contains("processor-module-path"), text);
+        assertTrue(text.contains("module=main"), text);
+    }
+
+    @Test
     void requiresExplicitLocationsSourceSetAndClasspath() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root"));
         Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'fixture'\n");

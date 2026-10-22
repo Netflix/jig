@@ -308,7 +308,11 @@ public final class CommandLine implements OptionChecker {
         if (!hasVisibleOptions()) {
             return "";
         }
-        var help = new StringBuilder("Options:\n");
+        return optionsHelp("Options", options.toArray(ToolOption[]::new));
+    }
+
+    static String optionsHelp(String heading, ToolOption... options) {
+        var help = new StringBuilder(heading).append(":\n");
         for (ToolOption option : options) {
             if (option.hidden()) {
                 continue;

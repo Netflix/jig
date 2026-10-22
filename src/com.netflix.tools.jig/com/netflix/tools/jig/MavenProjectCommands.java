@@ -38,7 +38,7 @@ final class MavenProjectCommands {
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
     private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Maven again instead of using cached results");
-    private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
+    private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show cache hits, Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments using the Maven build runtime")
@@ -52,19 +52,45 @@ final class MavenProjectCommands {
     }
 
     static String help() {
-        return COMMAND_LINE.help("jig maven")
-                + "\nDiscovery and resolved arguments are cached across branches and worktrees.\n"
-                + "Cache hits do not invoke Maven or prepare build outputs; use --refresh to query again.\n"
-                + "Inputs reported by the build invalidate cached results; other changes require --refresh.\n"
-                + "Entries unused for seven days are pruned.\n"
-                + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
-                + "Discovery includes active modules and does not execute build goals.\n"
-                + "The TSV listing contains absolute directory, project selector and scope.\n"
-                + "Argument resolution requires --project and --scope.\n"
-                + "Maven provides class-path, source-path, module-path, module-source-path, module, add-modules and describe-module.\n"
-                + "Known standard options not supported by Maven are omitted.\n"
-                + "Module options use jig's module identities; module supports the standard jig forms, including module=main.\n"
-                + "Binary paths prepare native compile outputs; requesting source paths leaves selected sources to the caller.\n";
+        return """
+                Usage: jig maven --project-base-dir <DIR> [SELECTION] OPERATION [OPTIONS]
+
+                Resolve Java tool arguments using the build's mvnw, or mvn on PATH.
+
+                Examples:
+                  List projects:
+                    jig maven --project-base-dir . --list-projects
+                  Resolve runtime arguments:
+                    jig maven --project-base-dir . --project :app --scope runtime \\
+                      -r class-path,module-path,add-modules -w runtime.args
+
+                """
+                + CommandLine.optionsHelp("Selection", BASE, PROJECT, SCOPE)
+                + "\n" + CommandLine.optionsHelp("Discovery", LIST, ProjectListing.FORMAT)
+                + """
+
+                  Lists active projects without executing build goals.
+                  TSV columns: directory, project selector, scope.
+
+                """
+                + CommandLine.optionsHelp("Resolution", RESOLVE)
+                + """
+
+                  --resolve-options requires --project and --scope.
+                  Binary paths prepare Maven compile outputs. Request source paths to leave
+                  the selected sources to the caller; prerequisite projects may still compile.
+
+                """
+                + CommandLine.optionsHelp("Output and cache", WRITE, REFRESH, VERBOSE, HELP)
+                + """
+
+                  Arguments go to stdout unless --write-argfile is given.
+                  Cached answers skip Maven and build goals. Use --refresh after changes not
+                  covered by reported build inputs. Entries unused for seven days are pruned.
+
+                """
+                + ResolveOptions.help(ResolveOptions.Provider.MAVEN)
+                + "\nMore: https://github.com/Netflix/jig#interoperability\n";
     }
 
     static int run(PrintWriter out, PrintWriter err, String[] arguments) {

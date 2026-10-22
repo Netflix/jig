@@ -65,6 +65,28 @@ class MavenProjectCommandsTest {
     }
 
     @Test
+    void helpPutsProjectQueriesFirstAndSeparatesPublishing() {
+        var help = run("maven", "--help");
+        String text = help.output();
+        assertEquals(0, help.status(), help.error());
+        assertEquals("", help.error());
+        var bare = run("maven");
+        assertEquals(0, bare.status(), bare.error());
+        assertEquals(text, bare.output());
+        int previous = -1;
+        for (String heading : List.of("Usage: jig maven", "Examples:", "Selection:", "Discovery:", "Resolution:", "Output and cache:", "Resolve options:", "Publishing:")) {
+            int index = text.indexOf(heading);
+            assertTrue(index > previous, heading + "\n" + text);
+            previous = index;
+        }
+        assertTrue(text.contains("--project and --scope"), text);
+        assertTrue(text.contains("module=main"), text);
+        assertFalse(text.contains("native context fields"), text);
+        assertEquals(text.substring(0, text.indexOf("Publishing:")).stripTrailing(),
+                run("maven", "--project-base-dir", ".", "--help").output().stripTrailing());
+    }
+
+    @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void discoveryAndResolutionCachesServeAnswersUntilRefresh() throws Exception {
         var fixture = cacheFixture();

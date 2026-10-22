@@ -109,6 +109,26 @@ record ResolveOptions(Set<String> options, ModuleForm moduleForm) {
                 .collect(Collectors.toUnmodifiableSet());
     }
 
+    static String help(Provider provider) {
+        var names = OPTIONS.keySet().stream().filter(name -> OPTIONS.get(name).contains(provider)).sorted().toList();
+        var help = new StringBuilder("Resolve options:\n  ");
+        int width = 2;
+        for (int index = 0; index < names.size(); index++) {
+            String name = names.get(index) + (index + 1 < names.size() ? "," : "");
+            if (width + name.length() > 80) {
+                help.append("\n  ");
+                width = 2;
+            } else if (index > 0) {
+                help.append(' ');
+                width++;
+            }
+            help.append(name);
+            width += name.length();
+        }
+        return help.append("\n\n  module=main selects the module/main-class form.\n")
+                .append("  Unconfigured or unsupported standard options are omitted.\n").toString();
+    }
+
     private static Map.Entry<String, Set<Provider>> option(String name, Provider... providers) {
         return Map.entry(name, Set.of(providers));
     }
