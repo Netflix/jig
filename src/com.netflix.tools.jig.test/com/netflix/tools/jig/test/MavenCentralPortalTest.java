@@ -15,6 +15,8 @@
 package com.netflix.tools.jig.test;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
@@ -24,13 +26,17 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.netflix.tools.jig.MavenCentralPortal;
 import com.netflix.tools.jig.MavenCentralPortal.Approval;
+import com.netflix.tools.jig.module.Trace;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +53,10 @@ class MavenCentralPortalTest {
         var query = new AtomicReference<String>();
         var body = new AtomicReference<String>();
         var statusRequests = new AtomicInteger();
+        var requestTimes = new CopyOnWriteArrayList<Long>();
+        var progress = new StringWriter();
+        var firstStatusProgress = new AtomicReference<String>();
+        var states = List.of("PENDING", "VALIDATING", "VALIDATING", "VALIDATED", "PUBLISHING", "PUBLISHED");
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext(
                 "/upload",
@@ -62,9 +72,11 @@ class MavenCentralPortalTest {
         server.createContext(
                 "/status",
                 exchange -> {
-                    statusRequests.incrementAndGet();
+                    requestTimes.add(System.nanoTime());
+                    firstStatusProgress.compareAndSet(null, progress.toString());
+                    String state = states.get(statusRequests.getAndIncrement());
                     assertEquals("id=deployment-id", exchange.getRequestURI().getQuery());
-                    byte[] response = "{\"deploymentState\":\"PUBLISHED\"}".getBytes(StandardCharsets.UTF_8);
+                    byte[] response = ("{\"deploymentState\":\"" + state + "\"}").getBytes(StandardCharsets.UTF_8);
                     exchange.sendResponseHeaders(200, response.length);
                     exchange.getResponseBody().write(response);
                     exchange.close();
@@ -75,7 +87,8 @@ class MavenCentralPortalTest {
             var portal = MavenCentralPortal.fromEnvironment(Map.of(MavenCentralPortal.USERNAME, "token-user", MavenCentralPortal.PASSWORD, "token-password"),
                     client, endpoint);
 
-            String deployment = portal.publish(bundle, "Example release", Approval.AUTOMATIC);
+            String deployment = Trace.callWithOutput(new PrintWriter(progress),
+                    () -> portal.publish(bundle, "Example release", Approval.AUTOMATIC));
 
             assertEquals("deployment-id", deployment);
             assertEquals(
@@ -86,7 +99,23 @@ class MavenCentralPortalTest {
                     body.get());
             assertTrue(body.get().contains("bundle"),
                     body.get());
-            assertEquals(1, statusRequests.get());
+            assertEquals(states.size(), statusRequests.get());
+            assertEquals("[Maven Central deployment deployment-id uploaded]" + System.lineSeparator(), firstStatusProgress.get());
+            assertEquals(List.of(
+                    "[Maven Central deployment deployment-id uploaded]",
+                    "[Maven Central deployment deployment-id: PENDING]",
+                    "[Maven Central deployment deployment-id: VALIDATING]",
+                    "[Maven Central deployment deployment-id: VALIDATED]",
+                    "[Maven Central deployment deployment-id: PUBLISHING]",
+                    "[Maven Central deployment deployment-id: PUBLISHED]"),
+                    progress.toString().lines()
+                            .map(line -> line.replaceAll(" \\(\\d+s elapsed\\)", ""))
+                            .toList());
+            for (int i = 1; i < requestTimes.size(); i++) {
+                Duration interval = Duration.ofNanos(requestTimes.get(i) - requestTimes.get(i - 1));
+                assertTrue(interval.compareTo(Duration.ofSeconds(5)) >= 0,
+                        "Maven Central status requests must be at least five seconds apart: " + interval);
+            }
         } finally {
             server.stop(0);
         }

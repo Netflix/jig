@@ -30,6 +30,7 @@ import com.netflix.tools.jig.internal.org.eclipse.aether.repository.RemoteReposi
 import com.netflix.tools.jig.module.MavenCentralBundle;
 import com.netflix.tools.jig.module.MavenDeployment;
 import com.netflix.tools.jig.module.ModuleRepositorySession;
+import com.netflix.tools.jig.module.Trace;
 
 /** Maven deployment operations over flat, module-named artifacts. */
 final class MavenCommands {
@@ -59,7 +60,7 @@ final class MavenCommands {
                 } else if (operation.equals("deploy")) {
                     deploy(deployment, request, session);
                 } else {
-                    deployCentral(out, deployment, request, session);
+                    Trace.withOutput(err, () -> deployCentral(out, deployment, request, session));
                 }
             }
             return 0;
