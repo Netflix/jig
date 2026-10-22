@@ -34,8 +34,8 @@ final class MavenProjectCommands {
     private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Set the Maven project base directory (required)");
     private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId or :artifactId");
     private static final ToolOption LIST = ToolOption.flag("--list-projects", "List active projects as groupId:artifactId selectors");
-    private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
-    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project and --scope", "-r");
+    private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the classpath and source roots (default: compile)");
+    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file instead of stdout", "-w");
     private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Maven again; cached answers skip Maven and build goals");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show cache hits, Maven invocations and version diagnostics");
@@ -266,7 +266,7 @@ final class MavenProjectCommands {
             throw new IllegalArgumentException("--project requires a selector in the form groupId:artifactId or :artifactId");
         }
         if (resolve != null && scope == null) {
-            throw new IllegalArgumentException("--scope is required for argument resolution");
+            scope = "compile";
         }
         if (scope != null && !SCOPES.contains(scope)) {
             throw new IllegalArgumentException("--scope must be compile, runtime or test");

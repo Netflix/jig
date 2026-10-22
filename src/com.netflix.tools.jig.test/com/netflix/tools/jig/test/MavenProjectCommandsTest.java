@@ -75,7 +75,8 @@ class MavenProjectCommandsTest {
         assertEquals(text, bare.output());
         assertTrue(text.startsWith("Usage: jig maven --project-base-dir <DIRECTORY> [OPTIONS]\n"), text);
         assertTrue(text.indexOf("Publishing commands:") < text.indexOf("Options:"), text);
-        assertTrue(text.contains("--project and --scope"), text);
+        assertTrue(text.contains("requires --project"), text);
+        assertTrue(text.contains("default: compile"), text);
         assertTrue(text.contains("build goals"), text);
         assertTrue(text.endsWith("        Print this help message\n"), text);
         assertTrue(text.lines().count() <= 45, text);
@@ -196,6 +197,34 @@ class MavenProjectCommandsTest {
         assertEquals(3, Files.readAllLines(other.resolve("launches.txt")).size());
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionDefaultsToCompileScope() throws Exception {
+        var fixture = fixture(false);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "-r", "class-path,source-path");
+        assertEquals(0, result.status(), result.error());
+        var invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Djig.maven.scope=compile"), invocation.toString());
+        var explicit = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
+                "-r", "class-path,source-path", "--refresh");
+        assertEquals(0, explicit.status(), explicit.error());
+        assertEquals(explicit.output(), result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void defaultAndExplicitScopesShareTheResolutionCache() throws Exception {
+        var fixture = cacheFixture();
+        var defaults = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "-r", "class-path");
+        assertEquals(0, defaults.status(), defaults.error());
+        assertEquals(1, launches(fixture));
+        var explicit = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path");
+        assertEquals(0, explicit.status(), explicit.error());
+        assertEquals(defaults.output(), explicit.output());
+        assertEquals("", explicit.error());
+        assertEquals(1, launches(fixture));
+    }
+
     private Fixture cacheFixture() throws Exception {
         var fixture = fixture(false);
         var files = List.of("pom.xml", "app/pom.xml", "parent.xml", "settings.xml");
@@ -251,7 +280,7 @@ class MavenProjectCommandsTest {
         Path project = Files.createDirectories(temporaryDirectory.resolve("project"));
         Files.writeString(project.resolve("pom.xml"), "<project/>\n");
         assertInvalid("--project", "maven", "--project-base-dir", project.toString(), "--scope", "compile", "-r", "class-path");
-        assertInvalid("--scope", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "-r", "class-path");
+        assertInvalid("requires compile|runtime|test", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "-r", "class-path", "--scope");
         assertInvalid("compile, runtime or test", "maven", "--project-base-dir", project.toString(), "--project", "example:app", "--scope", "provided", "-r", "class-path");
         assertInvalid("mutually exclusive", "maven", "--project-base-dir", project.toString(), "--list-projects", "-r", "class-path");
         assertInvalid("argument resolution", "maven", "--project-base-dir", project.toString(), "--list-projects", "--scope", "compile");
@@ -864,10 +893,9 @@ class MavenProjectCommandsTest {
     }
 
     @Test
-    void richerListingDoesNotAddDefaultScopesOrCombinedSelectors() throws Exception {
+    void listingFormatAndProjectSelectorsRemainSeparate() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("contexts"));
         Files.writeString(root.resolve("pom.xml"), "<project/>\n");
-        assertInvalid("--scope", "maven", "--project-base-dir", root.toString(), "--project", "example:app", "-r", "source-path");
         assertInvalid("selector", "maven", "--project-base-dir", root.toString(), "--project", "example:app/test", "--scope", "test", "-r", "source-path");
         assertInvalid("only to project listing", "maven", "--project-base-dir", root.toString(), "--project", "example:app",
                 "--scope", "compile", "-r", "source-path", "--format", "tsv");

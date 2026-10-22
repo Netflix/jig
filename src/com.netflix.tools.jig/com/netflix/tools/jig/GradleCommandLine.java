@@ -33,10 +33,10 @@ final class GradleCommandLine {
     private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "Select a project, such as :app or :build-logic:plugin");
     private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List Gradle project paths, including included builds");
     private static final ToolOption LIST_SOURCE_SETS = ToolOption.flag("--list-source-sets", "List source sets; requires --project-path");
-    private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "A source set from --list-source-sets");
-    private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath");
-    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project-path, --source-set and --classpath", "-r");
-    private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve compiler options; requires --project-path and --source-set.\n"
+    private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "Select a source set (default: main)");
+    private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath (default: compile)");
+    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project-path", "-r");
+    private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve compiler options; requires --project-path.\n"
             + "Uses compile; excludes source filenames and launcher options.");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file instead of stdout", "-w");
     private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Gradle again; cached answers skip Gradle and build tasks");
@@ -127,18 +127,16 @@ final class GradleCommandLine {
             throw new IllegalArgumentException("--project-path must be an absolute Gradle project path, such as : or :app");
         }
         if (resolution && sourceSet == null) {
-            throw new IllegalArgumentException("--source-set is required for argument resolution");
+            sourceSet = "main";
         }
         if (sourceSet != null && sourceSet.isBlank()) {
             throw new IllegalArgumentException("--source-set must not be empty");
         }
-        if (compiler) {
-            if (classpath != null && !classpath.equals("compile")) {
-                throw new IllegalArgumentException("--resolve-compiler-options implies the compile classpath");
-            }
+        if (resolution && classpath == null) {
             classpath = "compile";
-        } else if (resolve != null && classpath == null) {
-            throw new IllegalArgumentException("--classpath is required for argument resolution");
+        }
+        if (compiler && !classpath.equals("compile")) {
+            throw new IllegalArgumentException("--resolve-compiler-options implies the compile classpath");
         }
         if (classpath != null && !CLASSPATHS.contains(classpath)) {
             throw new IllegalArgumentException("--classpath must be compile or runtime");
