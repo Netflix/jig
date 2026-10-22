@@ -65,6 +65,30 @@ class MavenProjectCommandsTest {
     }
 
     @Test
+    void helpPutsProjectQueriesFirstAndSeparatesPublishing() {
+        var help = run("maven", "--help");
+        String text = help.output();
+        assertEquals(0, help.status(), help.error());
+        assertEquals("", help.error());
+        var bare = run("maven");
+        assertEquals(0, bare.status(), bare.error());
+        assertEquals(text, bare.output());
+        assertTrue(text.startsWith("Usage: jig maven --project-base-dir <DIRECTORY> [OPTIONS]\n"), text);
+        assertTrue(text.indexOf("Publishing commands:") < text.indexOf("Options:"), text);
+        assertTrue(text.contains("--project and --scope"), text);
+        assertTrue(text.contains("build goals"), text);
+        assertTrue(text.endsWith("        Print this help message\n"), text);
+        assertTrue(text.lines().count() <= 45, text);
+        assertTrue(text.lines().allMatch(line -> line.length() <= 88), text);
+        assertFalse(text.contains("Examples:"), text);
+        assertFalse(text.contains("Resolve options:"), text);
+        var queryHelp = run("maven", "--project-base-dir", ".", "--help");
+        assertEquals(0, queryHelp.status(), queryHelp.error());
+        assertEquals(text.substring(text.indexOf("Options:")),
+                queryHelp.output().substring(queryHelp.output().indexOf("Options:")));
+    }
+
+    @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void discoveryAndResolutionCachesServeAnswersUntilRefresh() throws Exception {
         var fixture = cacheFixture();

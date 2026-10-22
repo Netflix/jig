@@ -322,6 +322,35 @@ public final class CommandLine implements OptionChecker {
         return help.toString();
     }
 
+    static String optionsReference(ToolOption... options) {
+        var help = new StringBuilder("Options:\n");
+        for (ToolOption option : options) {
+            if (option.hidden()) {
+                continue;
+            }
+            help.append("  ").append(display(option)).append('\n');
+            for (String paragraph : option.description().split("\n")) {
+                help.append("        ");
+                int width = 8;
+                for (String word : paragraph.split(" ")) {
+                    if (width > 8) {
+                        if (width + 1 + word.length() > 80) {
+                            help.append("\n        ");
+                            width = 8;
+                        } else {
+                            help.append(' ');
+                            width++;
+                        }
+                    }
+                    help.append(word);
+                    width += word.length();
+                }
+                help.append('\n');
+            }
+        }
+        return help.toString();
+    }
+
     public List<Completion> complete(CompletionRequest request) {
         Objects.requireNonNull(request);
         var arguments = new ArrayList<>(request.invocation()

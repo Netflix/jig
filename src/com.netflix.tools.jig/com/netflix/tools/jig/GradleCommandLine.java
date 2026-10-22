@@ -29,17 +29,18 @@ import com.netflix.tools.jig.Jig.Options.ModuleForm;
 /** Explicit build locations, project paths, and source-set argument projections for Gradle. */
 final class GradleCommandLine {
     static final List<String> CLASSPATHS = List.of("compile", "runtime");
-    private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Gradle root project directory");
-    private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "A build-tree-qualified Gradle project path, such as :app or :build-logic:plugin");
+    private static final ToolOption ROOT = ToolOption.option("--root-project-dir", "DIRECTORY", "Set the Gradle root project directory (required)");
+    private static final ToolOption PROJECT = ToolOption.option("--project-path", "PATH", "Select a project, such as :app or :build-logic:plugin");
     private static final ToolOption LIST_PROJECTS = ToolOption.flag("--list-project-paths", "List Gradle project paths, including included builds");
-    private static final ToolOption LIST_SOURCE_SETS = ToolOption.flag("--list-source-sets", "List source sets in the selected project");
+    private static final ToolOption LIST_SOURCE_SETS = ToolOption.flag("--list-source-sets", "List source sets; requires --project-path");
     private static final ToolOption SOURCE_SET = ToolOption.option("--source-set", "NAME", "A source set from --list-source-sets");
     private static final ToolOption CLASSPATH = ToolOption.option("--classpath", "compile|runtime", "Select the source set's classpath");
-    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
-    private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve the selected source set's effective compiler options");
-    private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Gradle again instead of using cached results");
-    private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show the Gradle invocation and build diagnostics");
+    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project-path, --source-set and --classpath", "-r");
+    private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve compiler options; requires --project-path and --source-set.\n"
+            + "Uses compile; excludes source filenames and launcher options.");
+    private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file instead of stdout", "-w");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Gradle again; cached answers skip Gradle and build tasks");
+    private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show cache hits, Gradle invocations and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments from a Gradle source set")
@@ -69,25 +70,16 @@ final class GradleCommandLine {
     }
 
     static String help() {
-        return COMMAND_LINE.help("jig gradle")
-                + "\nDiscovery and resolved arguments are cached across branches and worktrees.\n"
-                + "Cache hits do not invoke Gradle or prepare build outputs; use --refresh to query again.\n"
-                + "Inputs reported by the build invalidate cached results; other changes require --refresh.\n"
-                + "Entries unused for seven days are pruned.\n"
-                + "\nUses the root project's wrapper, or gradle on PATH.\n"
-                + "Project paths and source-set names are obtained from the build.\n"
-                + "The TSV listing contains absolute directory, project path, source set and classpath.\n"
-                + "Projects without Java source sets have empty source-set and classpath fields, not defaults.\n"
-                + "Included-build discovery and selection require Gradle 4.0 or later.\n"
-                + "Compile and runtime select the source set's compileClasspath and runtimeClasspath.\n"
-                + "Discovery does not execute source producers; source-path resolution retains their dependencies.\n"
-                + "Binary paths prepare selected outputs unless the corresponding source paths are requested.\n"
-                + "Unknown projects or source sets are errors; empty source sets produce only configured arguments.\n"
-                + "Compiler resolution implies compile and uses Gradle's compiler argument builder.\n"
-                + "It excludes source filenames and launcher options; the caller owns the invocation.\n"
-                + "\nResolve options include native jig options and class-path, processor-path,\n"
-                + "source, target, encoding, system and add-reads. Unconfigured options are omitted.\n"
-                + "Known standard options not supported by Gradle are omitted.\n";
+        return """
+                Usage: jig gradle --root-project-dir <DIRECTORY> [OPTIONS]
+
+                Resolve Java tool arguments using the build's wrapper, or gradle on PATH.
+                Choose --list-project-paths, --list-source-sets, --resolve-options or
+                --resolve-compiler-options.
+
+                """ + CommandLine.optionsReference(ROOT, PROJECT, SOURCE_SET, CLASSPATH,
+                        LIST_PROJECTS, LIST_SOURCE_SETS, ProjectListing.FORMAT, RESOLVE, COMPILER,
+                        WRITE, REFRESH, VERBOSE, HELP);
     }
 
     static Request parse(String[] arguments) {

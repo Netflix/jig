@@ -87,14 +87,7 @@ Launches the JUnit Platform for test discovery and execution.
 
 ### Gradle
 
-Discover projects and source sets from the build root. Project paths also address included builds, such as `:build-logic:plugin`:
-
-```sh
-jig gradle --root-project-dir . --list-project-paths
-
-jig gradle --root-project-dir . \
-  --project-path :app --list-source-sets
-```
+Resolve arguments from Gradle projects and source sets, including composite builds. Use `--list-project-paths` and `--list-source-sets` to discover selections.
 
 For a project `:app` with a source set `main`, resolve runtime arguments and launch your main class:
 
@@ -107,27 +100,11 @@ jig gradle --root-project-dir . \
 java @runtime.args com.example.Main
 ```
 
-For compilation, resolve compiler options separately:
-
-```sh
-jig gradle --root-project-dir . \
-  --project-path :app --source-set main \
-  --resolve-compiler-options --write-argfile compile.args
-
-javac @compile.args @sources.args
-```
-
-Replace the project, source set and main class with those of your application. Prepare `sources.args` with the source filenames to compile, including generated sources and `module-info.java` where applicable, and use a `javac` matching the build's configured toolchain.
+Use `--resolve-compiler-options` for the source set's effective compiler arguments. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects) for compilation examples and supported options.
 
 ### Maven
 
-Discover projects from the Maven project base directory:
-
-```sh
-jig maven --project-base-dir . --list-projects
-```
-
-Select a project by `groupId:artifactId` or the shorter `:artifactId` form, then request its `compile`, `runtime` or `test` scope. For an application project with artifact ID `app`:
+Resolve arguments from a Maven project's `compile`, `runtime` or `test` scope. Use `--list-projects` to discover project selectors. For an application with artifact ID `app`:
 
 ```sh
 jig maven --project-base-dir . \
@@ -140,11 +117,11 @@ java @runtime.args com.example.Main
 
 ### Cached build queries
 
-Gradle and Maven discovery and argument resolution use the same persistent cache. Matching build inputs can reuse results across branch switches and worktrees; paths inside the project are resolved against the current project root. Arguments containing project-specific values that jig cannot relocate safely remain local to that project directory.
+Discovery and resolved arguments are cached across branches and worktrees. Cache hits skip the build tool and output preparation; use `--refresh` to query the build again. Unused entries are pruned automatically. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects#caching) for details.
 
-A cache hit skips the build-tool invocation, including any tasks that would prepare outputs. Changes to reported build inputs invalidate the answer. Use `--refresh` to query the build again after other changes, such as environment changes or updated dynamic dependencies. Use `--verbose` to see cache hits and build invocations.
+### Publishing module artifacts
 
-Entries unused for seven days are pruned, with cleanup checked at most once daily. Files explicitly written with `--write-argfile` belong to the caller and are not pruned.
+Install module artifacts locally or publish them to Maven repositories and Maven Central with `jig maven install`, `deploy` and `deploy-central`. See [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules).
 
 ### Module proxy
 
@@ -162,6 +139,7 @@ The [wiki](https://github.com/Netflix/jig/wiki) covers:
 
 - [Getting Started](https://github.com/Netflix/jig/wiki/Getting-Started)
 - [Tool Arguments](https://github.com/Netflix/jig/wiki/Tool-Arguments)
+- [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects)
 - [Source Modules](https://github.com/Netflix/jig/wiki/Source-Modules)
 - [Maven Modules](https://github.com/Netflix/jig/wiki/Maven-Modules)
 - [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules)

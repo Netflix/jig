@@ -56,6 +56,25 @@ class GradleCommandsTest {
     }
 
     @Test
+    void helpUsesACompactOptionReferenceWithoutATextTail() {
+        var help = run("gradle", "--help");
+        String text = help.output();
+        assertEquals(0, help.exitCode(), help.error());
+        assertEquals("", help.error());
+        assertEquals(text, run("gradle").output());
+        assertTrue(text.startsWith("Usage: jig gradle --root-project-dir <DIRECTORY> [OPTIONS]\n"), text);
+        assertTrue(text.replaceAll("\\s+", " ").contains("--project-path, --source-set and --classpath"), text);
+        assertTrue(text.contains("source filenames"), text);
+        assertTrue(text.contains("build tasks"), text);
+        assertTrue(text.endsWith("        Print this help message\n"), text);
+        assertTrue(text.lines().count() <= 50, text);
+        assertTrue(text.lines().allMatch(line -> line.length() <= 88), text);
+        assertFalse(text.contains("Examples:"), text);
+        assertFalse(text.contains("Resolve options:"), text);
+        assertFalse(text.contains("native jig options"), text);
+    }
+
+    @Test
     void requiresExplicitLocationsSourceSetAndClasspath() throws Exception {
         Path root = Files.createDirectories(temporaryDirectory.resolve("root"));
         Files.writeString(root.resolve("settings.gradle"), "rootProject.name = 'fixture'\n");

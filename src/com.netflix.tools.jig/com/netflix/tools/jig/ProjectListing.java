@@ -27,7 +27,7 @@ import com.netflix.tools.jig.CommandLine.ToolOption;
 
 final class ProjectListing {
     static final ToolOption FORMAT = ToolOption.option("--format", "text|tsv",
-            "Project listing format; tsv includes directories first and native context fields");
+            "Set the project listing format: text (default) or tsv");
 
     private ProjectListing() {}
 
