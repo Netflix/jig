@@ -173,11 +173,15 @@ class GradleCommandsTest {
         var values = capture(fixture);
         putList(values, "classpath", List.of(fixture.root().resolve("changed.jar").toString()));
         storeCapture(fixture, values);
-        var changed = resolve(fixture, "compile", "class-path");
+        var cached = resolve(fixture, "compile", "class-path");
+        assertEquals(resolved.output(), cached.output());
+        assertEquals(2, launches(fixture));
+        var changed = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path", "--refresh");
         assertEquals(List.of("--class-path", fixture.root().resolve("changed.jar").toString()), arguments(changed));
         assertEquals(3, launches(fixture));
         assertEquals(first.output(), discoverTsv(fixture).output());
-        assertEquals(3, launches(fixture));
+        assertEquals(4, launches(fixture));
     }
 
     @Test
@@ -200,7 +204,7 @@ class GradleCommandsTest {
         assertEquals(++expected, launches(fixture));
         Files.delete(missing);
         assertEquals(0, discoverTsv(fixture).exitCode());
-        assertEquals(++expected, launches(fixture));
+        assertEquals(expected, launches(fixture));
         var values = capture(fixture);
         putList(values, "source-sets", List.of("custom"));
         putList(values, "source-set-projects", List.of(":app"));
@@ -233,13 +237,222 @@ class GradleCommandsTest {
         assertEquals(4, launches(fixture));
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionCacheReusesArgumentsAcrossWorktreesAndBuildStates() throws Exception {
+        var fixture = cacheFixture();
+        var first = resolve(fixture, "compile", "source-path,class-path");
+        assertEquals(0, first.exitCode(), first.error());
+        var second = resolve(fixture, "compile", "class-path,source-path");
+        assertEquals(first.output(), second.output());
+        assertEquals("", second.error());
+        assertEquals(1, launches(fixture));
+
+        Path settings = fixture.root().resolve("settings.gradle");
+        String original = Files.readString(settings);
+        Files.writeString(settings, original + "// another branch\n");
+        assertEquals(0, resolve(fixture, "compile", "source-path,class-path").exitCode());
+        assertEquals(2, launches(fixture));
+        Files.writeString(settings, original);
+        assertEquals(first.output(), resolve(fixture, "compile", "source-path,class-path").output());
+        assertEquals(2, launches(fixture));
+
+        Path other = temporaryDirectory.resolve("other worktree");
+        copyTree(fixture.root(), other);
+        other = other.toRealPath();
+        var worktree = new Fixture(other, other.resolve(fixture.root().relativize(fixture.project())));
+        Path argfile = other.resolve("cached.args");
+        var relocated = run("gradle", "--root-project-dir", other.toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path", "-w", argfile.toString());
+        assertEquals(0, relocated.exitCode(), relocated.error());
+        assertEquals("", relocated.output());
+        assertEquals("", relocated.error());
+        assertEquals(first.output().replace(fixture.root().toString(), other.toString()), Files.readString(argfile));
+        assertEquals(2, launches(worktree));
+
+        var refreshed = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path", "--refresh");
+        assertEquals(0, refreshed.exitCode(), refreshed.error());
+        assertEquals(3, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void discoveryCacheReusesResultsAcrossWorktreesAndBuildStates() throws Exception {
+        var fixture = cacheFixture();
+        var first = discoverTsv(fixture);
+        assertEquals(0, first.exitCode(), first.error());
+        Path settings = fixture.root().resolve("settings.gradle");
+        String original = Files.readString(settings);
+        Files.writeString(settings, original + "// another branch\n");
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        Files.writeString(settings, original);
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(2, launches(fixture));
+        Path other = temporaryDirectory.resolve("other worktree");
+        copyTree(fixture.root(), other);
+        other = other.toRealPath();
+        var worktree = new Fixture(other, other.resolve(fixture.root().relativize(fixture.project())));
+        var relocated = discoverTsv(worktree);
+        assertEquals(0, relocated.exitCode(), relocated.error());
+        assertEquals(first.output().replace(fixture.root().toString(), other.toString()), relocated.output());
+        assertEquals("", relocated.error());
+        assertEquals(2, launches(worktree));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void concurrentCachedQueriesPublishCompleteAnswers() throws Exception {
+        var fixture = cacheFixture();
+        try (var executor = Executors.newFixedThreadPool(8)) {
+            var start = new CountDownLatch(1);
+            var queries = new ArrayList<java.util.concurrent.Future<Result>>();
+            for (int index = 0; index < 8; index++) {
+                queries.add(executor.submit(() -> {
+                    start.await();
+                    return resolve(fixture, "compile", "class-path,source-path");
+                }));
+            }
+            start.countDown();
+            String expected = queries.getFirst().get().output();
+            for (var query : queries) {
+                var result = query.get();
+                assertEquals(0, result.exitCode(), result.error());
+                assertEquals(expected, result.output());
+            }
+            int launched = launches(fixture);
+            assertEquals(expected, resolve(fixture, "compile", "class-path,source-path").output());
+            assertEquals(launched, launches(fixture));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionCacheTracksModuleDescriptorsAndRetainsEarlierStates() throws Exception {
+        var fixture = cacheFixture();
+        var first = resolve(fixture, "compile", "source-path,module-path");
+        assertEquals(0, first.exitCode(), first.error());
+        Path sources = Files.createDirectories(fixture.project().resolve("custom sources"));
+        Path descriptor = sources.resolve("module-info.java");
+        Files.writeString(descriptor, "module fixture.app {}\n");
+        assertEquals(0, resolve(fixture, "compile", "source-path,module-path").exitCode());
+        assertEquals(2, launches(fixture));
+        Files.delete(descriptor);
+        assertEquals(first.output(), resolve(fixture, "compile", "source-path,module-path").output());
+        assertEquals(2, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void compilerCacheRelocatesKnownPathsButKeepsOpaqueOptionsLocal() throws Exception {
+        var fixture = cacheFixture();
+        Path external = temporaryDirectory.resolve("external dependency.jar").toAbsolutePath();
+        var values = capture(fixture);
+        putList(values, "compiler-options", List.of("--class-path", external + java.io.File.pathSeparator + fixture.root().resolve("classes"),
+                "--module-source-path=example.app=" + fixture.project().resolve("sources"), "--release", "17"));
+        storeCapture(fixture, values);
+        String[] request = {"gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "main",
+                "--resolve-compiler-options"};
+        var first = run(request);
+        assertEquals(0, first.exitCode(), first.error());
+        Path other = temporaryDirectory.resolve("other worktree");
+        copyTree(fixture.root(), other);
+        other = other.toRealPath();
+        request[2] = other.toString();
+        var relocated = run(request);
+        assertEquals(0, relocated.exitCode(), relocated.error());
+        assertEquals(first.output().replace(fixture.root().toString(), other.toString()), relocated.output());
+        assertTrue(relocated.output().contains(external.toString()), relocated.output());
+        assertEquals("", relocated.error());
+        assertEquals(1, Files.readAllLines(other.resolve("launches.txt")).size());
+
+        putList(values, "compiler-options", List.of("-Aplugin.location=" + fixture.root().resolve("plugin data")));
+        storeCapture(fixture, values);
+        request[2] = fixture.root().toString();
+        var refresh = new ArrayList<>(List.of(request));
+        refresh.add("--refresh");
+        assertEquals(0, run(refresh.toArray(String[]::new)).exitCode());
+        assertEquals(2, launches(fixture));
+        assertEquals(0, run(request).exitCode());
+        assertEquals(2, launches(fixture));
+        request[2] = other.toString();
+        // The opaque answer cannot be used in the other worktree.
+        assertEquals(0, run(request).exitCode());
+        assertEquals(2, Files.readAllLines(other.resolve("launches.txt")).size());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cachePrunesUnusedAnswersDailyAndTouchesHits() throws Exception {
+        var fixture = cacheFixture();
+        String name = java.util.UUID.randomUUID() + ".gradle";
+        Path input = fixture.root().resolve(name);
+        Files.writeString(input, "// tracked input\n");
+        var values = capture(fixture);
+        putList(values, "build-files", List.of(input.toString()));
+        storeCapture(fixture, values);
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertEquals(0, resolve(fixture, "compile", "class-path").exitCode());
+        Path cache = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
+                .resolve("projects");
+        List<Path> entries;
+        try (var paths = Files.walk(cache)) {
+            entries = paths.filter(path -> path.toString().endsWith(".properties"))
+                    .filter(path -> {
+                        try {
+                            return Files.readString(path).contains(name);
+                        } catch (java.io.IOException failure) {
+                            throw new java.io.UncheckedIOException(failure);
+                        }
+                    }).toList();
+        }
+        assertEquals(2, entries.size());
+        var old = java.nio.file.attribute.FileTime.from(java.time.Instant.now().minus(java.time.Duration.ofDays(8)));
+        for (Path entry : entries) {
+            Files.setLastModifiedTime(entry, old);
+        }
+        // A recent cleanup marker prevents another scan, even with old entries.
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertEquals(2, launches(fixture));
+        Path recent = entries.stream().filter(path -> {
+            try {
+                return !Files.getLastModifiedTime(path).equals(old);
+            } catch (java.io.IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+        }).findFirst().orElseThrow();
+        Path unused = entries.stream().filter(path -> !path.equals(recent)).findFirst().orElseThrow();
+        Files.setLastModifiedTime(cache.resolve(".pruned"), old);
+        assertEquals(0, discoverTsv(fixture).exitCode());
+        assertTrue(Files.exists(recent));
+        assertFalse(Files.exists(unused));
+        assertEquals(0, resolve(fixture, "compile", "class-path").exitCode());
+        assertEquals(3, launches(fixture));
+        Files.writeString(unused, "inputs=1\ninput.0=\\\\u00oops\n");
+        assertEquals(0, resolve(fixture, "compile", "class-path").exitCode());
+        assertEquals(4, launches(fixture));
+    }
+
+    private static void copyTree(Path source, Path target) throws Exception {
+        try (var paths = Files.walk(source)) {
+            for (Path path : paths.toList()) {
+                Path destination = target.resolve(source.relativize(path));
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(path, destination);
+                }
+            }
+        }
+    }
+
     private Fixture cacheFixture() throws Exception {
         var fixture = fixture();
         Path included = Files.createDirectories(fixture.root().resolve("included"));
         var files = List.of(fixture.root().resolve("settings.gradle"), fixture.project().resolve("build.gradle"),
                 included.resolve("settings.gradle"), fixture.root().resolve("applied.gradle"));
         for (Path file : files) {
-            Files.writeString(file, "// build configuration\n");
+            Files.writeString(file, "// build configuration " + java.util.UUID.randomUUID() + "\n");
         }
         var values = capture(fixture);
         var inputs = new ArrayList<>(files);

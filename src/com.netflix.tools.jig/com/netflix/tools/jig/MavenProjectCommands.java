@@ -37,7 +37,7 @@ final class MavenProjectCommands {
     private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Refresh cached project discovery");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Maven again instead of using cached results");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
@@ -53,6 +53,10 @@ final class MavenProjectCommands {
 
     static String help() {
         return COMMAND_LINE.help("jig maven")
+                + "\nDiscovery and resolved arguments are cached across branches and worktrees.\n"
+                + "Cache hits do not invoke Maven or prepare build outputs; use --refresh to query again.\n"
+                + "Inputs reported by the build invalidate cached results; other changes require --refresh.\n"
+                + "Entries unused for seven days are pruned.\n"
                 + "\nUses mvnw in the project base directory, or mvn on PATH.\n"
                 + "Discovery includes active modules and does not execute build goals.\n"
                 + "The TSV listing contains absolute directory, project selector and scope.\n"
@@ -77,13 +81,32 @@ final class MavenProjectCommands {
         }
         try {
             var launcher = BuildProcess.launcher(request.base(), "mvn", "mvnw", "mvn.cmd", "mvnw.cmd");
-            var cache = new ProjectDiscoveryCache("Maven", request.base(), request.listProjects() && request.project() != null ? request.project() : "",
+            var cache = new ProjectQueryCache("Maven", request.base(), "projects\n" + (request.listProjects() && request.project() != null ? request.project() : ""),
                     launcher, "maven-capture.java.template");
+            var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Maven", request.base(),
+                    "arguments\n" + request.project() + '\n' + request.scope() + '\n' + request.options().stream().sorted().toList()
+                            + '\n' + request.moduleForm(), launcher, "maven-capture.java.template");
+            if (!request.listProjects()) {
+                if (request.refresh()) {
+                    resultCache.clear();
+                }
+                var result = request.refresh() ? List.<BuildCapture>of() : resultCache.read();
+                if (!result.isEmpty()) {
+                    if (request.verbose()) {
+                        err.println("jig maven: cache hit");
+                    }
+                    write(out, request.argumentFile(), JavaArgumentFile.render(result.getFirst().list("arguments")));
+                    return 0;
+                }
+            }
             if (request.refresh()) {
                 cache.clear();
             }
-            var cached = cache.read();
+            var cached = request.refresh() ? List.<BuildCapture>of() : cache.read();
             if (!cached.isEmpty()) {
+                if (request.verbose() && request.listProjects()) {
+                    err.println("jig maven: cache hit");
+                }
                 var projects = ProjectListing.projects(cached, "projects");
                 if (request.listProjects()) {
                     if (request.tabSeparated()) {
@@ -101,6 +124,9 @@ final class MavenProjectCommands {
                 if (matches.size() > 1) {
                     throw new IllegalArgumentException("Ambiguous Maven project: " + request.project() + " (" + String.join(", ", matches) + ")");
                 }
+            }
+            if (request.verbose()) {
+                err.println("jig maven: cache miss");
             }
             var versionArguments = new ArrayList<>(launcher);
             versionArguments.addAll(List.of("--batch-mode", "-Dstyle.color=never", "--version"));
@@ -170,12 +196,9 @@ final class MavenProjectCommands {
                     throw new IOException("Unexpected Maven capture project: " + selected);
                 }
                 capture.expect("scope", request.scope());
-                String generated = MavenArguments.render(request.options(), request.moduleForm(), MavenArguments.View.read(capture));
-                if (request.argumentFile() == null) {
-                    out.print(generated);
-                } else {
-                    Files.writeString(request.argumentFile(), generated);
-                }
+                var resolved = MavenArguments.resolve(request.options(), request.moduleForm(), MavenArguments.View.read(capture));
+                resultCache.store(List.of(BuildCapture.arguments("Maven", resolved, List.of(capture))));
+                write(out, request.argumentFile(), JavaArgumentFile.render(resolved));
             }
             return 0;
         } catch (IOException failure) {
@@ -188,6 +211,14 @@ final class MavenProjectCommands {
         } catch (IllegalArgumentException failure) {
             err.println("jig maven: " + failure.getMessage());
             return 2;
+        }
+    }
+
+    private static void write(PrintWriter out, Path file, String arguments) throws IOException {
+        if (file == null) {
+            out.print(arguments);
+        } else {
+            Files.writeString(file, arguments);
         }
     }
 

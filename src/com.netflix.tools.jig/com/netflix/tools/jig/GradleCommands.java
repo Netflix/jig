@@ -49,12 +49,36 @@ final class GradleCommands {
         }
         try {
             var launcher = BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat");
-            var cache = new ProjectDiscoveryCache("Gradle", request.root(), "", launcher, "gradle-init.gradle");
+            var cache = new ProjectQueryCache("Gradle", request.root(), "projects", launcher, "gradle-init.gradle");
+            String query = request.listProjects() ? "projects" : request.listSourceSets() ? "source-sets\n" + request.projectPath()
+                    : "arguments\n" + request.projectPath() + '\n' + request.sourceSet() + '\n' + request.classpath() + '\n'
+                            + request.compiler() + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
+            var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Gradle", request.root(), query, launcher, "gradle-init.gradle");
+            if (!request.listProjects()) {
+                if (request.refresh()) {
+                    resultCache.clear();
+                }
+                var result = request.refresh() ? List.<BuildCapture>of() : resultCache.read();
+                if (!result.isEmpty()) {
+                    if (request.verbose()) {
+                        err.println("jig gradle: cache hit");
+                    }
+                    if (request.listSourceSets()) {
+                        result.getFirst().list("source-sets").stream().distinct().sorted().forEach(out::println);
+                    } else {
+                        write(out, request.argumentFile(), JavaArgumentFile.render(result.getFirst().list("arguments")));
+                    }
+                    return 0;
+                }
+            }
             if (request.refresh()) {
                 cache.clear();
             }
-            var cached = cache.read();
+            var cached = request.refresh() ? List.<BuildCapture>of() : cache.read();
             if (!cached.isEmpty()) {
+                if (request.verbose() && (request.listProjects() || request.listSourceSets())) {
+                    err.println("jig gradle: cache hit");
+                }
                 var projects = ProjectListing.projects(cached, "project-paths");
                 if (request.listProjects()) {
                     if (request.tabSeparated()) {
@@ -85,6 +109,9 @@ final class GradleCommands {
                     throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
                 }
             }
+            if (request.verbose()) {
+                err.println("jig gradle: cache miss");
+            }
             var captures = new GradleCapture(request);
             int status = capture(request, initScript(), captures, err);
             if (status != 0) {
@@ -106,19 +133,19 @@ final class GradleCommands {
                 metadata.expect("project-path", request.projectPath());
                 List<String> sourceSets = metadata.list("source-sets");
                 if (request.listSourceSets()) {
+                    resultCache.store(List.of(metadata));
                     sourceSets.stream().distinct().sorted().forEach(out::println);
                 } else {
                     if (!sourceSets.contains(request.sourceSet())) {
                         throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
                     }
                     metadata.expect("source-set", request.sourceSet());
-                    String generated = request.compiler() ? JavaArgumentFile.render(captures.compilerOptions())
-                            : GradleArguments.render(request, GradleArguments.View.read(metadata));
-                    if (request.argumentFile() == null) {
-                        out.print(generated);
-                    } else {
-                        Files.writeString(request.argumentFile(), generated);
-                    }
+                    var resolved = request.compiler() ? captures.compilerOptions()
+                            : GradleArguments.resolve(request, GradleArguments.View.read(metadata));
+                    var inputs = new ArrayList<>(captures.discoveries());
+                    inputs.add(metadata);
+                    resultCache.store(List.of(BuildCapture.arguments("Gradle", resolved, inputs)));
+                    write(out, request.argumentFile(), JavaArgumentFile.render(resolved));
                 }
             }
             return 0;
@@ -132,6 +159,14 @@ final class GradleCommands {
             Thread.currentThread().interrupt();
             err.println("jig gradle: interrupted");
             return 1;
+        }
+    }
+
+    private static void write(PrintWriter out, Path file, String arguments) throws IOException {
+        if (file == null) {
+            out.print(arguments);
+        } else {
+            Files.writeString(file, arguments);
         }
     }
 

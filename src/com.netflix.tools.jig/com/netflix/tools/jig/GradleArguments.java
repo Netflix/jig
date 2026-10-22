@@ -50,7 +50,7 @@ final class GradleArguments {
 
     private GradleArguments() {}
 
-    static String render(Request request, View view) {
+    static List<String> resolve(Request request, View view) {
         var arguments = new ArrayList<String>();
         var options = request.options();
         var metadata = view.metadata();
@@ -91,7 +91,7 @@ final class GradleArguments {
             value(arguments, options.contains("describe-module"), "--describe-module", module);
         }
         additional(arguments, request, additional);
-        return JavaArgumentFile.render(arguments);
+        return List.copyOf(arguments);
     }
 
     private static void path(List<String> arguments, boolean requested, String option,

@@ -66,7 +66,7 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void discoveryCacheServesListingFormatsAndValidationButNotResolvedPaths() throws Exception {
+    void discoveryAndResolutionCachesServeAnswersUntilRefresh() throws Exception {
         var fixture = cacheFixture();
         var first = discover(fixture, "--format", "tsv");
         assertEquals(0, first.status(), first.error());
@@ -83,12 +83,17 @@ class MavenProjectCommandsTest {
         var values = cacheCapture(fixture);
         values.setProperty("classpath.0", fixture.project().resolve("changed.jar").toString());
         storeCacheCapture(fixture, values);
-        var changed = run(resolve);
+        var cached = run(resolve);
+        assertTrue(cached.output().contains("dependency.jar"), cached.output());
+        assertEquals(2, launches(fixture));
+        var refresh = new ArrayList<>(List.of(resolve));
+        refresh.add("--refresh");
+        var changed = run(refresh.toArray(String[]::new));
         assertEquals(0, changed.status(), changed.error());
         assertEquals("\"--class-path\"\n\"" + fixture.project().resolve("changed.jar") + "\"\n", changed.output());
         assertEquals(3, launches(fixture));
         assertEquals(first.output(), discover(fixture, "--format", "tsv").output());
-        assertEquals(3, launches(fixture));
+        assertEquals(4, launches(fixture));
     }
 
     @Test
@@ -119,6 +124,54 @@ class MavenProjectCommandsTest {
         assertEquals(expected, launches(fixture));
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionAndDiscoveryCachesReuseAnswersAcrossWorktreesAndBuildStates() throws Exception {
+        var fixture = cacheFixture();
+        String[] request = {"maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
+                "-r", "class-path,source-path"};
+        var first = run(request);
+        assertEquals(0, first.status(), first.error());
+        var repeated = run(request);
+        assertEquals(first.output(), repeated.output());
+        assertEquals("", repeated.error());
+        assertEquals(1, launches(fixture));
+        var listing = discover(fixture, "--format", "tsv");
+        assertEquals(0, listing.status(), listing.error());
+        assertEquals(2, launches(fixture));
+        Path pom = fixture.project().resolve("pom.xml");
+        String original = Files.readString(pom);
+        Files.writeString(pom, original + "<!-- another branch -->\n");
+        assertEquals(0, run(request).status());
+        assertEquals(3, launches(fixture));
+        Files.writeString(pom, original);
+        assertEquals(first.output(), run(request).output());
+        assertEquals(3, launches(fixture));
+
+        Path other = temporaryDirectory.resolve("other worktree");
+        try (var paths = Files.walk(fixture.project())) {
+            for (Path path : paths.toList()) {
+                Path destination = other.resolve(fixture.project().relativize(path));
+                if (Files.isDirectory(path)) {
+                    Files.createDirectories(destination);
+                } else {
+                    Files.copy(path, destination);
+                }
+            }
+        }
+        other = other.toRealPath();
+        request[2] = other.toString();
+        var relocated = run(request);
+        assertEquals(0, relocated.status(), relocated.error());
+        assertEquals(first.output().replace(fixture.project().toString(), other.toString()), relocated.output());
+        assertEquals("", relocated.error());
+        var discovered = run("maven", "--project-base-dir", other.toString(), "--list-projects", "--format", "tsv");
+        assertEquals(0, discovered.status(), discovered.error());
+        assertEquals(listing.output().replace(fixture.project().toString(), other.toString()), discovered.output());
+        assertEquals("", discovered.error());
+        assertEquals(3, Files.readAllLines(other.resolve("launches.txt")).size());
+    }
+
     private Fixture cacheFixture() throws Exception {
         var fixture = fixture(false);
         var files = List.of("pom.xml", "app/pom.xml", "parent.xml", "settings.xml");
@@ -126,7 +179,7 @@ class MavenProjectCommandsTest {
         values.setProperty("build-files.count", Integer.toString(files.size()));
         for (int index = 0; index < files.size(); index++) {
             Path file = fixture.project().resolve(files.get(index));
-            Files.writeString(file, "<project/>\n");
+            Files.writeString(file, "<project><!-- " + java.util.UUID.randomUUID() + " --></project>\n");
             values.setProperty("build-files." + index, file.toString());
         }
         storeCacheCapture(fixture, values);
