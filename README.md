@@ -119,6 +119,14 @@ javac @compile.args @sources.args
 
 Replace the project, source set and main class with those of your application. Prepare `sources.args` with the source filenames to compile, including generated sources and `module-info.java` where applicable, and use a `javac` matching the build's configured toolchain.
 
+`--resolve-options` requires `--project-path`, `--source-set` and `--classpath`. `--resolve-compiler-options` requires the project and source set and implies the compile classpath. Choose one operation per invocation: project discovery, source-set discovery, option resolution or compiler-option resolution.
+
+Discovery does not execute source producers. Resolution can run generators and prepare binary outputs; requesting the corresponding source paths leaves compilation to the caller. Unknown projects and source sets are errors. Empty source sets return only configured arguments. Included-build discovery and selection require Gradle 4.0 or later.
+
+Use `--list-project-paths --format tsv` for tab-separated rows containing absolute directory, project path, source set and classpath. Projects without Java source sets have empty source-set and classpath fields.
+
+Gradle accepts these resolve-option names: `add-exports`, `add-modules`, `add-opens`, `add-reads`, `class-path`, `describe-module`, `enable-final-field-mutation`, `enable-native-access`, `enable-preview`, `encoding`, `main-class`, `module`, `module-path`, `module-source-path`, `module-version`, `multi-release`, `patch-module`, `processor-module-path`, `processor-path`, `release`, `source`, `source-path`, `system`, `target` and `upgrade-module-path`. Unconfigured options and known standard options unsupported by Gradle are omitted.
+
 ### Maven
 
 Discover projects from the Maven project base directory:
@@ -138,6 +146,12 @@ jig maven --project-base-dir . \
 java @runtime.args com.example.Main
 ```
 
+`--resolve-options` requires `--project` and `--scope`. Discovery lists active modules without executing build goals. Resolving binary paths prepares Maven compile outputs. Requesting source paths leaves the selected sources to the caller; prerequisite projects may still compile.
+
+Use `--list-projects --format tsv` for tab-separated rows containing absolute directory, project selector and scope.
+
+Maven provides `class-path`, `source-path`, `module-path`, `module-source-path`, `module`, `add-modules` and `describe-module`. Known standard options unsupported by Maven are omitted. Module options use jig's module identities. For both Maven and Gradle, `module=main` requests the `module/main-class` form.
+
 ### Cached build queries
 
 Gradle and Maven discovery and argument resolution use the same persistent cache. Matching build inputs can reuse results across branch switches and worktrees; paths inside the project are resolved against the current project root. Arguments containing project-specific values that jig cannot relocate safely remain local to that project directory.
@@ -145,6 +159,18 @@ Gradle and Maven discovery and argument resolution use the same persistent cache
 A cache hit skips the build-tool invocation, including any tasks that would prepare outputs. Changes to reported build inputs invalidate the answer. Use `--refresh` to query the build again after other changes, such as environment changes or updated dynamic dependencies. Use `--verbose` to see cache hits and build invocations.
 
 Entries unused for seven days are pruned, with cleanup checked at most once daily. Files explicitly written with `--write-argfile` belong to the caller and are not pruned.
+
+### Publishing module artifacts
+
+The Maven publishing commands operate on flat, module-named artifacts, not Maven project builds:
+
+```text
+jig maven install [--module-version <version>] <artifact-directory>
+jig maven deploy [--module-version <version>] --repository <id=uri|path> [--sign] <artifact-directory>
+jig maven deploy-central [--module-version <version>] [--name <name>] [--manual] <artifact-directory>
+```
+
+See [Publishing Modules](https://github.com/Netflix/jig/wiki/Publishing-Modules) for details.
 
 ### Module proxy
 

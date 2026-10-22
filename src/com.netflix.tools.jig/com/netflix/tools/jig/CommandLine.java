@@ -308,11 +308,7 @@ public final class CommandLine implements OptionChecker {
         if (!hasVisibleOptions()) {
             return "";
         }
-        return optionsHelp("Options", options.toArray(ToolOption[]::new));
-    }
-
-    static String optionsHelp(String heading, ToolOption... options) {
-        var help = new StringBuilder(heading).append(":\n");
+        var help = new StringBuilder("Options:\n");
         for (ToolOption option : options) {
             if (option.hidden()) {
                 continue;
@@ -322,6 +318,35 @@ public final class CommandLine implements OptionChecker {
                 .append("  ")
                 .append(option.description())
                 .append('\n');
+        }
+        return help.toString();
+    }
+
+    static String optionsReference(ToolOption... options) {
+        var help = new StringBuilder("Options:\n");
+        for (ToolOption option : options) {
+            if (option.hidden()) {
+                continue;
+            }
+            help.append("  ").append(display(option)).append('\n');
+            for (String paragraph : option.description().split("\n")) {
+                help.append("        ");
+                int width = 8;
+                for (String word : paragraph.split(" ")) {
+                    if (width > 8) {
+                        if (width + 1 + word.length() > 80) {
+                            help.append("\n        ");
+                            width = 8;
+                        } else {
+                            help.append(' ');
+                            width++;
+                        }
+                    }
+                    help.append(word);
+                    width += word.length();
+                }
+                help.append('\n');
+            }
         }
         return help.toString();
     }

@@ -223,14 +223,7 @@ final class MavenCommands {
     }
 
     private static void printHelp(PrintWriter out) {
-        out.print(MavenProjectCommands.help());
-        out.println();
-        out.println("Publishing:");
-        out.println("  Install or deploy flat, module-named artifacts (not Maven project builds).");
-        out.println();
-        out.println("  jig maven install [--module-version <version>] <artifact-directory>");
-        out.println("  jig maven deploy [--module-version <version>] --repository <id=uri|path> [--sign] <artifact-directory>");
-        out.println("  jig maven deploy-central [--module-version <version>] [--name <name>] [--manual] <artifact-directory>");
+        out.print(MavenProjectCommands.help(true));
     }
 
     private record Request(Path artifacts, RemoteRepository repository, String name,

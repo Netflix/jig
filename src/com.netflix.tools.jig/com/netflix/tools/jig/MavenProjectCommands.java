@@ -31,13 +31,13 @@ import com.netflix.tools.jig.Jig.Options.ModuleForm;
 final class MavenProjectCommands {
     static final List<String> SCOPES = List.of("compile", "runtime", "test");
     private static final String CAPTURE_PREFIX = "jig-maven:";
-    private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Maven project base directory");
+    private static final ToolOption BASE = ToolOption.option("--project-base-dir", "DIRECTORY", "Set the Maven project base directory (required)");
     private static final ToolOption PROJECT = ToolOption.option("--project", "SELECTOR", "Select a Maven project by groupId:artifactId or :artifactId");
-    private static final ToolOption LIST = ToolOption.flag("--list-projects", "List groupId:artifactId project selectors from the selected Maven build");
+    private static final ToolOption LIST = ToolOption.flag("--list-projects", "List active projects as groupId:artifactId selectors");
     private static final ToolOption SCOPE = ToolOption.option("--scope", "compile|runtime|test", "Select the Maven project's classpath and source roots");
-    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
-    private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Maven again instead of using cached results");
+    private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve Java tool options; requires --project and --scope", "-r");
+    private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file instead of stdout", "-w");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Maven again; cached answers skip Maven and build goals");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show cache hits, Maven invocations and version diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
@@ -52,45 +52,29 @@ final class MavenProjectCommands {
     }
 
     static String help() {
+        return help(false);
+    }
+
+    static String help(boolean publishing) {
         return """
-                Usage: jig maven --project-base-dir <DIR> [SELECTION] OPERATION [OPTIONS]
+                Usage: jig maven --project-base-dir <DIRECTORY> [OPTIONS]
+                """
+                + (publishing ? "       jig maven <command> [OPTIONS] <artifact-directory>\n" : "")
+                + """
 
                 Resolve Java tool arguments using the build's mvnw, or mvn on PATH.
-
-                Examples:
-                  List projects:
-                    jig maven --project-base-dir . --list-projects
-                  Resolve runtime arguments:
-                    jig maven --project-base-dir . --project :app --scope runtime \\
-                      -r class-path,module-path,add-modules -w runtime.args
+                Choose --list-projects or --resolve-options.
 
                 """
-                + CommandLine.optionsHelp("Selection", BASE, PROJECT, SCOPE)
-                + "\n" + CommandLine.optionsHelp("Discovery", LIST, ProjectListing.FORMAT)
-                + """
+                + (publishing ? """
+                Publishing commands:
+                  jig maven install         Install module artifacts in the local repository
+                  jig maven deploy          Deploy module artifacts to --repository <id=uri|path>
+                  jig maven deploy-central  Publish module artifacts to Maven Central
 
-                  Lists active projects without executing build goals.
-                  TSV columns: directory, project selector, scope.
-
-                """
-                + CommandLine.optionsHelp("Resolution", RESOLVE)
-                + """
-
-                  --resolve-options requires --project and --scope.
-                  Binary paths prepare Maven compile outputs. Request source paths to leave
-                  the selected sources to the caller; prerequisite projects may still compile.
-
-                """
-                + CommandLine.optionsHelp("Output and cache", WRITE, REFRESH, VERBOSE, HELP)
-                + """
-
-                  Arguments go to stdout unless --write-argfile is given.
-                  Cached answers skip Maven and build goals. Use --refresh after changes not
-                  covered by reported build inputs. Entries unused for seven days are pruned.
-
-                """
-                + ResolveOptions.help(ResolveOptions.Provider.MAVEN)
-                + "\nMore: https://github.com/Netflix/jig#interoperability\n";
+                """ : "")
+                + CommandLine.optionsReference(BASE, PROJECT, SCOPE, LIST, ProjectListing.FORMAT,
+                        RESOLVE, WRITE, REFRESH, VERBOSE, HELP);
     }
 
     static int run(PrintWriter out, PrintWriter err, String[] arguments) {
