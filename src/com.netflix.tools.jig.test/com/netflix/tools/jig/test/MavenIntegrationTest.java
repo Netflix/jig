@@ -74,6 +74,34 @@ class MavenIntegrationTest {
     }
 
     @Test
+    void resolutionCacheReusesAnswersAndRefreshInvokesMaven() throws Exception {
+        Path root = fixture();
+        Path wrapper = root.resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("#!/bin/sh\n", "#!/bin/sh\necho invocation >> launches.txt\n"));
+        String[] request = {"--project", ":app", "--scope", "compile", "-r", "source-path"};
+        var first = discover(root, request);
+        assertEquals(0, first.status(), first.error());
+        var repeated = discover(root, request);
+        assertEquals(first.output(), repeated.output());
+        assertEquals("", repeated.error());
+        assertEquals(2, Files.readAllLines(root.resolve("launches.txt")).size());
+        Path pom = root.resolve("app/pom.xml");
+        String original = Files.readString(pom);
+        Files.writeString(pom, original + "\n<!-- another branch -->\n");
+        assertEquals(first.output(), discover(root, request).output());
+        assertEquals(4, Files.readAllLines(root.resolve("launches.txt")).size());
+        Files.writeString(pom, original);
+        assertEquals(first.output(), discover(root, request).output());
+        assertEquals(4, Files.readAllLines(root.resolve("launches.txt")).size());
+        var refresh = new ArrayList<>(List.of(request));
+        refresh.add("--refresh");
+        var refreshed = discover(root, refresh.toArray(String[]::new));
+        assertEquals(0, refreshed.status(), refreshed.error());
+        assertEquals(first.output(), refreshed.output());
+        assertEquals(6, Files.readAllLines(root.resolve("launches.txt")).size());
+    }
+
+    @Test
     void discoversActiveModulesWithoutExecutingBoundLifecycleGoals() throws Exception {
         Path root = fixture();
         var result = discover(root);

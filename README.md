@@ -138,6 +138,14 @@ jig maven --project-base-dir . \
 java @runtime.args com.example.Main
 ```
 
+### Cached build queries
+
+Gradle and Maven discovery and argument resolution use the same persistent cache. Matching build inputs can reuse results across branch switches and worktrees; paths inside the project are resolved against the current project root. Arguments containing project-specific values that jig cannot relocate safely remain local to that project directory.
+
+A cache hit skips the build-tool invocation, including any tasks that would prepare outputs. Changes to reported build inputs invalidate the answer. Use `--refresh` to query the build again after other changes, such as environment changes or updated dynamic dependencies. Use `--verbose` to see cache hits and build invocations.
+
+Entries unused for seven days are pruned, with cleanup checked at most once daily. Files explicitly written with `--write-argfile` belong to the caller and are not pruned.
+
 ### Module proxy
 
 Start the module proxy as a standalone command:

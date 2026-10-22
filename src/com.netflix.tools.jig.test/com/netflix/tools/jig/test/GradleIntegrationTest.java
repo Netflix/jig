@@ -80,6 +80,30 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void resolutionCacheReusesAnswersAndRefreshInvokesGradle() throws Exception {
+        var fixture = fixture(false);
+        Path evaluations = fixture.root().resolve("evaluations.txt");
+        Files.writeString(fixture.root().resolve("build.gradle"), "\nfile('evaluations.txt') << 'evaluated\\n'\n", StandardOpenOption.APPEND);
+        String[] request = {"gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "main",
+                "--classpath", "compile", "-r", "source-path,release"};
+        String first = run(request);
+        assertEquals(first, run(request));
+        assertEquals(1, Files.readAllLines(evaluations).size());
+        Path build = fixture.app().resolve("build.gradle");
+        String original = Files.readString(build);
+        Files.writeString(build, original + "\n// another branch\n");
+        assertEquals(first, run(request));
+        assertEquals(2, Files.readAllLines(evaluations).size());
+        Files.writeString(build, original);
+        assertEquals(first, run(request));
+        assertEquals(2, Files.readAllLines(evaluations).size());
+        var refresh = new ArrayList<>(List.of(request));
+        refresh.add("--refresh");
+        assertEquals(first, run(refresh.toArray(String[]::new)));
+        assertEquals(3, Files.readAllLines(evaluations).size());
+    }
+
+    @Test
     void discoveryCacheTracksAppliedScriptsAndRefreshesOnRequest() throws Exception {
         var fixture = fixture(false);
         Path applied = fixture.root().resolve("shared.gradle");
@@ -596,8 +620,7 @@ class GradleIntegrationTest {
         Files.writeString(fixture.root().resolve("build.gradle"), """
                 rootProject.file('evaluations.txt') << 'evaluated\\n'
                 """, StandardOpenOption.APPEND);
-        // Repeated requests must return a fresh response without evaluating the
-        // build again, even when dependency outputs have changed.
+        // Cached answers skip Gradle; refresh delegates producer checks to Gradle.
         var discoveries = List.of(
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths"},
                 new String[] {"gradle", "--root-project-dir", fixture.root().toString(), "--list-project-paths", "--format", "tsv"},
@@ -620,8 +643,10 @@ class GradleIntegrationTest {
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
         Files.delete(compiled);
-        // Repeat the last request to check producer freshness on cache replay.
         resolve(fixture, "test", "runtime", "class-path,source-path,release,main-class");
+        assertFalse(Files.exists(compiled));
+        run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "test",
+                "--classpath", "runtime", "-r", "class-path,source-path,release,main-class", "--refresh");
         assertTrue(Files.isRegularFile(compiled));
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs += ['changed/sources']\n", StandardOpenOption.APPEND);
@@ -675,6 +700,9 @@ class GradleIntegrationTest {
         Path generated = fixture.app().resolve("build/generated-arguments.txt");
         Files.delete(generated);
         assertEquals(first, resolve(fixture, "compile", "add-exports"));
+        assertFalse(Files.exists(generated));
+        assertEquals(first, run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "main",
+                "--classpath", "compile", "-r", "add-exports", "--refresh"));
         assertTrue(Files.isRegularFile(generated));
     }
 
@@ -773,6 +801,9 @@ class GradleIntegrationTest {
         assertTrue(Files.isRegularFile(generated));
         Files.delete(generated);
         assertEquals(first, resolve(fixture, "test", "compile", "source-path"));
+        assertFalse(Files.exists(generated));
+        assertEquals(first, run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "test",
+                "--classpath", "compile", "-r", "source-path", "--refresh"));
         assertTrue(Files.isRegularFile(generated));
         assertFalse(Files.exists(fixture.app().resolve("build/classes/java/test")));
     }
@@ -1115,6 +1146,10 @@ class GradleIntegrationTest {
         Files.delete(generated.resolve("Generated.java"));
         Files.delete(arguments);
         assertEquals(first, compilerOptions(fixture, "test"));
+        assertFalse(Files.exists(generated.resolve("Generated.java")));
+        assertFalse(Files.exists(arguments));
+        assertEquals(first, run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "test",
+                "--resolve-compiler-options", "--refresh"));
         assertTrue(Files.isRegularFile(generated.resolve("Generated.java")));
         assertTrue(Files.isRegularFile(arguments));
         assertEquals(1, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
@@ -1293,7 +1328,7 @@ class GradleIntegrationTest {
                 rootProject.name = 'fixture'
                 include 'app', 'library', 'plain'
                 project(':app').projectDir = file('layout/application')
-                """);
+                """ + "// fixture " + java.util.UUID.randomUUID() + "\n");
         Files.writeString(root.resolve("build.gradle"),
                 """
                 allprojects {

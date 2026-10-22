@@ -47,6 +47,48 @@ final class BuildCapture {
         return capture;
     }
 
+    static BuildCapture arguments(String tool, List<String> arguments, List<BuildCapture> captures) throws IOException {
+        var values = new Properties();
+        values.setProperty("version", "2");
+        values.setProperty("kind", "argfile");
+        putList(values, "arguments", arguments);
+        var inputs = new java.util.TreeSet<String>();
+        boolean reported = !captures.isEmpty();
+        for (var capture : captures) {
+            if (capture.optional("build-files.count") == null) {
+                reported = false;
+            } else {
+                inputs.addAll(capture.list("build-files"));
+                if (capture.optional("sources.count") != null) {
+                    for (String source : capture.list("sources")) {
+                        inputs.add(java.nio.file.Path.of(source).resolve("module-info.java").toString());
+                    }
+                }
+            }
+        }
+        if (reported) {
+            putList(values, "build-files", List.copyOf(inputs));
+        }
+        return new BuildCapture(tool, values);
+    }
+
+    static BuildCapture of(String tool, Properties values) {
+        return new BuildCapture(tool, values);
+    }
+
+    Properties properties() {
+        var copy = new Properties();
+        copy.putAll(values);
+        return copy;
+    }
+
+    private static void putList(Properties values, String name, List<String> entries) {
+        values.setProperty(name + ".count", Integer.toString(entries.size()));
+        for (int index = 0; index < entries.size(); index++) {
+            values.setProperty(name + "." + index, entries.get(index));
+        }
+    }
+
     String encoded() throws IOException {
         var bytes = new ByteArrayOutputStream();
         values.store(bytes, null);

@@ -43,9 +43,9 @@ final class MavenArguments {
 
     private MavenArguments() {}
 
-    static String render(Set<String> options, ModuleForm moduleForm, View view) throws IOException {
+    static List<String> resolve(Set<String> options, ModuleForm moduleForm, View view) throws IOException {
         if (options.isEmpty()) {
-            return "";
+            return List.of();
         }
         List<String> sources = view.sources();
         List<String> supplied = view.classpath();
@@ -95,7 +95,7 @@ final class MavenArguments {
                 arguments.addAll(List.of("--describe-module", name));
             }
         }
-        return JavaArgumentFile.render(arguments);
+        return List.copyOf(arguments);
     }
 
     private static ModuleDescriptor sourceModule(List<String> sources) {

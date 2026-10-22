@@ -38,7 +38,7 @@ final class GradleCommandLine {
     private static final ToolOption RESOLVE = ToolOption.option("--resolve-options", "OPTION[,OPTION...]", "Resolve standard options to stdout", "-r");
     private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve the selected source set's effective compiler options");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file", "-w");
-    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Refresh cached project discovery");
+    private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Gradle again instead of using cached results");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show the Gradle invocation and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
@@ -70,6 +70,10 @@ final class GradleCommandLine {
 
     static String help() {
         return COMMAND_LINE.help("jig gradle")
+                + "\nDiscovery and resolved arguments are cached across branches and worktrees.\n"
+                + "Cache hits do not invoke Gradle or prepare build outputs; use --refresh to query again.\n"
+                + "Inputs reported by the build invalidate cached results; other changes require --refresh.\n"
+                + "Entries unused for seven days are pruned.\n"
                 + "\nUses the root project's wrapper, or gradle on PATH.\n"
                 + "Project paths and source-set names are obtained from the build.\n"
                 + "The TSV listing contains absolute directory, project path, source set and classpath.\n"
