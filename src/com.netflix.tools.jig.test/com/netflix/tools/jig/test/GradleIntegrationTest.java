@@ -72,7 +72,7 @@ class GradleIntegrationTest {
                 .toString()),
                 source);
         if (supportsRelease()) {
-            assertTrue(source.contains("\"--release\"\n\"" + javaRelease() + "\""), source);
+            assertTrue(source.contains("--release\n" + javaRelease()), source);
         }
         assertFalse(Files.exists(fixture.app()
                 .resolve("build")));
@@ -436,10 +436,10 @@ class GradleIntegrationTest {
                 "-w",
                 options.toString());
         String captured = Files.readString(options);
-        assertTrue(captured.contains("\"--module-path\""), captured);
-        assertTrue(captured.contains("\"--class-path\""), captured);
+        assertTrue(captured.contains("--module-path\n"), captured);
+        assertTrue(captured.contains("--class-path\n"), captured);
         assertTrue(captured.contains("app.mod=" + fixture.app().resolve("sources/java")), captured);
-        assertTrue(captured.contains("\"--module\"\n\"app.mod\""), captured);
+        assertTrue(captured.contains("--module\napp.mod"), captured);
         assertFalse(Files.exists(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
         Path compiled = temporaryDirectory.resolve("compiled");
         execute("javac", "@" + options, "-d", compiled.toString());
@@ -458,7 +458,7 @@ class GradleIntegrationTest {
                 "-w",
                 runtimeOptions.toString());
         String runtime = Files.readString(runtimeOptions);
-        assertTrue(runtime.contains("\"--module\"\n\"app.mod/app.Main\""), runtime);
+        assertTrue(runtime.contains("--module\napp.mod/app.Main"), runtime);
         assertEquals("hello", execute("java", "@" + runtimeOptions).strip());
     }
 
@@ -494,8 +494,8 @@ class GradleIntegrationTest {
             String captured = resolve(fixture, classpath, "class-path,module-path");
             assertEquals(captured, resolve(fixture, classpath, "class-path,module-path"));
             List<String> lines = captured.lines().toList();
-            String plain = lines.get(lines.indexOf("\"--class-path\"") + 1);
-            String modular = lines.get(lines.indexOf("\"--module-path\"") + 1);
+            String plain = lines.get(lines.indexOf("--class-path") + 1);
+            String modular = lines.get(lines.indexOf("--module-path") + 1);
             assertEquals("\"" + fixture.root().resolve("plain.jar") + System.getProperty("path.separator") + notMultiRelease + "\"", plain);
             for (Path module : List.of(explicit, multiRelease, exploded, fixture.root().resolve("shared.jar"))) {
                 assertTrue(modular.contains(module.toString()), captured);
@@ -510,7 +510,7 @@ class GradleIntegrationTest {
             Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = "
                     + classpath.equals("runtime") + "\ntasks.run.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
             String captured = resolve(fixture, classpath, "class-path,module-path" + (classpath.equals("compile") ? ",module-source-path" : ""));
-            assertFalse(captured.contains("\"--module-path\""), captured);
+            assertFalse(captured.contains("--module-path\n"), captured);
             for (Path binary : List.of(explicit, multiRelease, notMultiRelease, exploded)) {
                 assertTrue(captured.contains(binary.toString()), captured);
             }
@@ -524,9 +524,9 @@ class GradleIntegrationTest {
         Files.writeString(fixture.app().resolve("build.gradle"), "\njava.modularity.inferModulePath = false\n",
                 StandardOpenOption.APPEND);
         String capture = resolve(fixture, "compile", "module-path,class-path,module,module-source-path");
-        assertTrue(capture.contains("\"--class-path\""), capture);
-        assertFalse(capture.contains("\"--module-path\""), capture);
-        assertFalse(capture.contains("\"--module\""), capture);
+        assertTrue(capture.contains("--class-path\n"), capture);
+        assertFalse(capture.contains("--module-path\n"), capture);
+        assertFalse(capture.contains("--module\n"), capture);
     }
 
     @Test
@@ -534,7 +534,7 @@ class GradleIntegrationTest {
     void capturesEffectiveReleaseWithoutConflictingSourceAndTargetOptions() throws Exception {
         var fixture = fixture(false);
         String capture = resolve(fixture, "compile", "release,source,target");
-        String expected = "\"--release\"\n\"" + javaRelease() + "\"\n";
+        String expected = "--release\n" + javaRelease() + "\n";
         assertEquals(expected, capture);
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava { options.release = null; options.compilerArgs += ['--release', '" + javaRelease() + "'] }\n",
                 StandardOpenOption.APPEND);
@@ -562,9 +562,9 @@ class GradleIntegrationTest {
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.run { modularity.inferModulePath = false }\n",
                 java.nio.file.StandardOpenOption.APPEND);
         String capture = resolve(fixture, "runtime", "class-path,module-path,module=main");
-        assertTrue(capture.contains("\"--class-path\""), capture);
-        assertFalse(capture.contains("\"--module-path\""), capture);
-        assertFalse(capture.contains("\"--module\""), capture);
+        assertTrue(capture.contains("--class-path\n"), capture);
+        assertFalse(capture.contains("--module-path\n"), capture);
+        assertFalse(capture.contains("--module\n"), capture);
     }
 
     @Test
@@ -579,9 +579,9 @@ class GradleIntegrationTest {
                     Iterable<String> asArguments() { return ['--add-opens', 'java.base/java.lang=ALL-UNNAMED'] }
                 })
                 """, java.nio.file.StandardOpenOption.APPEND);
-        assertEquals("\"--main-class\"\n\"app.Main\"\n\"--add-exports\"\n\"java.base/java.lang=ALL-UNNAMED\"\n",
+        assertEquals("--main-class\napp.Main\n--add-exports\njava.base/java.lang=ALL-UNNAMED\n",
                 resolve(fixture, "compile", "main-class,add-exports"));
-        assertEquals("\"--add-opens\"\n\"java.base/java.lang=ALL-UNNAMED\"\n",
+        assertEquals("--add-opens\njava.base/java.lang=ALL-UNNAMED\n",
                 resolve(fixture, "runtime", "add-opens"));
     }
 
@@ -695,7 +695,7 @@ class GradleIntegrationTest {
                 }
                 """, StandardOpenOption.APPEND);
         String first = resolve(fixture, "compile", "add-exports");
-        assertEquals("\"--add-exports\"\n\"java.base/java.lang=ALL-UNNAMED\"\n", first);
+        assertEquals("--add-exports\njava.base/java.lang=ALL-UNNAMED\n", first);
         assertFalse(Files.exists(fixture.app().resolve("build/classes/java/main/app/Main.class")));
         Path generated = fixture.app().resolve("build/generated-arguments.txt");
         Files.delete(generated);
@@ -1005,8 +1005,8 @@ class GradleIntegrationTest {
                 tasks.compileJava.options.javaModuleVersion = '2.0'
                 """, StandardOpenOption.APPEND);
         String captured = compilerOptions(fixture, "main");
-        assertTrue(captured.contains("\"--module-version\"\n\"2.0\""), captured);
-        assertTrue(captured.contains("\"--module-path\""), captured);
+        assertTrue(captured.contains("--module-version\n2.0"), captured);
+        assertTrue(captured.contains("--module-path\n"), captured);
         assertTrue(captured.contains("plain.jar"), captured);
         assertTrue(captured.contains("shared.jar"), captured);
         Path options = temporaryDirectory.resolve("module.args");
@@ -1016,7 +1016,7 @@ class GradleIntegrationTest {
                 fixture.app().resolve("sources/java/module-info.java").toString(), fixture.app().resolve("sources/java/app/Main.java").toString());
         assertTrue(Files.isRegularFile(classes.resolve("module-info.class")));
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileJava.modularity.inferModulePath = false\n", StandardOpenOption.APPEND);
-        assertFalse(compilerOptions(fixture, "main").contains("\"--module-path\""));
+        assertFalse(compilerOptions(fixture, "main").contains("--module-path\n"));
     }
 
     @Test
@@ -1030,7 +1030,7 @@ class GradleIntegrationTest {
         // Gradle 6.x replaces an explicit source path for modular compilation;
         // the tested 7.x+ versions retain it. Use the build's own behavior.
         Path expected = atLeast(7, 0) ? configured : fixture.app().resolve("sources/java");
-        assertTrue(captured.contains("\"-sourcepath\"\n\"" + expected + "\""), captured);
+        assertTrue(captured.contains("-sourcepath\n\"" + expected + "\""), captured);
     }
 
     @Test
@@ -1086,7 +1086,7 @@ class GradleIntegrationTest {
         Path compiled = fixture.app().resolve(classesDirectory() + "/app/Main.class");
         byte[] original = Files.readAllBytes(compiled);
         var modified = Files.getLastModifiedTime(compiled);
-        assertTrue(compilerOptions(fixture, "main").contains("\"-d\""));
+        assertTrue(compilerOptions(fixture, "main").contains("-d\n"));
         assertArrayEquals(original, Files.readAllBytes(compiled));
         assertEquals(modified, Files.getLastModifiedTime(compiled));
         String rebuild = execute(Path.of("sh"), fixture.root().resolve("gradlew").toString(), "--project-dir", fixture.root().toString(), "--console", "plain", ":app:compileJava");
@@ -1154,7 +1154,7 @@ class GradleIntegrationTest {
         assertTrue(Files.isRegularFile(arguments));
         assertEquals(1, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.compileTestJava.options.debug = false\n", StandardOpenOption.APPEND);
-        assertTrue(compilerOptions(fixture, "test").contains("\"-g:none\""));
+        assertTrue(compilerOptions(fixture, "test").contains("-g:none\n"));
         assertEquals(2, Files.readAllLines(fixture.root().resolve("evaluations.txt")).size());
     }
 
@@ -1164,7 +1164,7 @@ class GradleIntegrationTest {
         var fixture = fixture(false);
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets { empty {} }\ntasks.compileEmptyJava.options.debug = false\n", StandardOpenOption.APPEND);
         String captured = compilerOptions(fixture, "empty");
-        assertTrue(captured.contains("\"-g:none\""), captured);
+        assertTrue(captured.contains("-g:none\n"), captured);
         // Gradle's spec preparation may create its temporary directory, but must
         // not produce compilation outputs, even when there are no source files.
         assertFalse(Files.exists(fixture.app().resolve(classesDirectory())));
@@ -1186,9 +1186,9 @@ class GradleIntegrationTest {
         Path main = fixture.app().resolve("sources/java/app/Main.java");
         Files.writeString(main, "package app; public class Main { public static String value = generated.Generated.VALUE; public native int number(); }\n");
         String captured = compilerOptions(fixture, "main");
-        assertTrue(captured.contains("\"-processor\"\n\"processor.Generator\""), captured);
+        assertTrue(captured.contains("-processor\nprocessor.Generator"), captured);
         assertTrue(captured.contains("\"-Akey=custom value\""), captured);
-        assertFalse(captured.contains("\"-proc:none\""), captured);
+        assertFalse(captured.contains("-proc:none\n"), captured);
         assertFalse(Files.exists(generated.resolve("generated/Generated.java")));
         Path options = temporaryDirectory.resolve("processing.args");
         Files.writeString(options, captured);

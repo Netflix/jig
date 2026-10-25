@@ -267,7 +267,7 @@ class MavenIntegrationTest {
         for (String scope : List.of("compile", "runtime", "test")) {
             var result = discover(root, "--project", "fixture:app", "--scope", scope, "-r", "class-path");
             assertEquals(0, result.status(), result.error());
-            assertTrue(result.output().startsWith("\"--class-path\"\n"), result.output());
+            assertTrue(result.output().startsWith("--class-path\n"), result.output());
             for (String included : List.of("compile", "transitive")) {
                 assertTrue(result.output().contains(repository.resolve("fixture/dependencies/" + included + "/1/" + included + "-1.jar").toString()), result.output());
             }
@@ -344,7 +344,7 @@ class MavenIntegrationTest {
             var result = discover(root, "--project", ":app", "--scope", scope, "-r", "source-path");
             assertEquals(0, result.status(), result.error());
             Path source = app.resolve(scope.equals("test") ? "checks/java" : "sources/java");
-            assertEquals("\"--source-path\"\n\"" + source + "\"\n", result.output());
+            assertEquals("--source-path\n\"" + source + "\"\n", result.output());
         }
         assertFalse(Files.exists(app.resolve("out")));
         assertNoBuildOutputs();
@@ -373,7 +373,7 @@ class MavenIntegrationTest {
         Files.writeString(pom, Files.readString(pom).replace("<build>", "<build><sourceDirectory>root-sources</sourceDirectory>"));
         var result = discover(root, "--project", "fixture:root", "--scope", "compile", "-r", "source-path");
         assertEquals(0, result.status(), result.error());
-        assertEquals("\"--source-path\"\n\"" + root.resolve("root-sources") + "\"\n", result.output());
+        assertEquals("--source-path\n\"" + root.resolve("root-sources") + "\"\n", result.output());
         assertNoBuildOutputs();
     }
 
@@ -445,7 +445,7 @@ class MavenIntegrationTest {
         var compile = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "class-path,module-path,module-source-path,module", "-w", compileArguments.toString());
         assertEquals(0, compile.status(), compile.error());
         String captured = Files.readString(compileArguments);
-        assertTrue(captured.contains("\"--module-path\""), captured);
+        assertTrue(captured.contains("--module-path\n"), captured);
         assertTrue(captured.contains("app.mod=" + sources), captured);
         assertFalse(captured.contains(app.resolve("out/main/app.mod").toString()), captured);
         javac("@" + compileArguments, "-d", app.resolve("out/main").toString());
@@ -461,8 +461,8 @@ class MavenIntegrationTest {
         Files.delete(sources.resolve("module-info.java"));
         var binary = discover(root, "--project", "fixture:app", "--scope", "runtime", "-r", "module-path,module,describe-module");
         assertEquals(0, binary.status(), binary.error());
-        assertTrue(binary.output().contains("\"--module\"\n\"app.mod\""), binary.output());
-        assertTrue(binary.output().contains("\"--describe-module\"\n\"app.mod\""), binary.output());
+        assertTrue(binary.output().contains("--module\napp.mod"), binary.output());
+        assertTrue(binary.output().contains("--describe-module\napp.mod"), binary.output());
     }
 
     @Test
@@ -475,7 +475,7 @@ class MavenIntegrationTest {
         Files.writeString(sources.resolve("module-info.java"), "module app.mod { requires missing.dep; }\n");
         var result = discover(root, "--project", "fixture:app", "--scope", "compile", "-r", "module-source-path,module");
         assertEquals(0, result.status(), result.error());
-        assertEquals("\"--module-source-path\"\n\"app.mod=" + sources + "\"\n\"--module\"\n\"app.mod\"\n", result.output());
+        assertEquals("--module-source-path\n\"app.mod=" + sources + "\"\n--module\napp.mod\n", result.output());
         assertNoBuildOutputs();
     }
 
@@ -492,7 +492,7 @@ class MavenIntegrationTest {
         Files.writeString(sources.resolve("Main.java"), "not Java; selected compilation must not run\n");
         var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "class-path,module-path,source-path,module");
         assertEquals(0, result.status(), result.error());
-        assertEquals("\"--source-path\"\n\"" + sources + "\"\n", result.output());
+        assertEquals("--source-path\n\"" + sources + "\"\n", result.output());
         assertTrue(Files.isRegularFile(app.resolve("out/main/module-info.class")));
     }
 
@@ -515,7 +515,7 @@ class MavenIntegrationTest {
         assertEquals(0, result.status(), result.error());
         assertTrue(result.output().contains("generated.mod=" + sources), result.output());
         assertTrue(result.output().contains(app.resolve("target/generated-fixture").toString()), result.output());
-        assertTrue(result.output().contains("\"--module\"\n\"generated.mod\""), result.output());
+        assertTrue(result.output().contains("--module\ngenerated.mod"), result.output());
         assertFalse(result.output().contains(app.resolve("out/main").toString()), result.output());
         assertFalse(Files.exists(app.resolve("out/main")));
     }

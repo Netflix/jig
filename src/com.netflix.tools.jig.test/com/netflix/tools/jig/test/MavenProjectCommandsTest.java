@@ -115,7 +115,7 @@ class MavenProjectCommandsTest {
         refresh.add("--refresh");
         var changed = run(refresh.toArray(String[]::new));
         assertEquals(0, changed.status(), changed.error());
-        assertEquals("\"--class-path\"\n\"" + fixture.project().resolve("changed.jar") + "\"\n", changed.output());
+        assertEquals("--class-path\n\"" + fixture.project().resolve("changed.jar") + "\"\n", changed.output());
         assertEquals(3, launches(fixture));
         assertEquals(first.output(), discover(fixture, "--format", "tsv").output());
         assertEquals(4, launches(fixture));
@@ -297,7 +297,7 @@ class MavenProjectCommandsTest {
         var fixture = fixture(false);
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path");
         assertEquals(0, result.status(), result.error());
-        String expected = "\"--class-path\"\n\"" + fixture.project().resolve("dependency.jar") + "\"\n\"--source-path\"\n\"" + fixture.project().resolve("sources") + "\"\n";
+        String expected = "--class-path\n\"" + fixture.project().resolve("dependency.jar") + "\"\n--source-path\n\"" + fixture.project().resolve("sources") + "\"\n";
         assertEquals(expected, result.output());
         String invocation = Files.readString(fixture.project().resolve("invocation.txt"));
         assertTrue(invocation.contains("--projects\nexample:app\n"), invocation);
@@ -309,6 +309,31 @@ class MavenProjectCommandsTest {
         assertEquals(0, written.status(), written.error());
         assertEquals("", written.output());
         assertEquals(expected, Files.readString(file));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void simpleArgumentsRemainUnquotedOnCacheMissAndHit() throws Exception {
+        var fixture = cacheFixture();
+        Path dependency = temporaryDirectory.resolve("dependency.jar");
+        var values = cacheCapture(fixture);
+        values.setProperty("classpath.0", dependency.toString());
+        storeCacheCapture(fixture, values);
+        String expected = "--class-path\n" + dependency + "\n";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app",
+                    "-r", "class-path");
+            assertEquals(0, result.status(), result.error());
+            assertEquals(expected, result.output());
+        }
+        assertEquals(1, launches(fixture));
+        Path file = temporaryDirectory.resolve("classpath.args");
+        var written = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app",
+                "-r", "class-path", "-w", file.toString());
+        assertEquals(0, written.status(), written.error());
+        assertEquals("", written.output());
+        assertEquals(expected, Files.readString(file));
+        assertEquals(1, launches(fixture));
     }
 
     @Test
@@ -351,11 +376,11 @@ class MavenProjectCommandsTest {
                 "--scope", "compile", "-r", "source-path,module-source-path"};
         var classpath = run(arguments);
         assertEquals(0, classpath.status(), classpath.error());
-        assertEquals("\"--source-path\"\n\"" + sources + "\"\n", classpath.output());
+        assertEquals("--source-path\n\"" + sources + "\"\n", classpath.output());
         Files.writeString(sources.resolve("module-info.java"), "module example.app {}\n");
         var modular = run(arguments);
         assertEquals(0, modular.status(), modular.error());
-        assertEquals("\"--module-source-path\"\n\"example.app=" + sources + "\"\n", modular.output());
+        assertEquals("--module-source-path\n\"example.app=" + sources + "\"\n", modular.output());
     }
 
     @Test
@@ -367,7 +392,7 @@ class MavenProjectCommandsTest {
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
                 "-r", "module-source-path,module=list,upgrade-module-path,patch-module,release,enable-preview,add-exports");
         assertEquals(0, result.status(), result.error());
-        assertEquals("\"--module-source-path\"\n\"example.app=" + source + "\"\n\"--module\"\n\"example.app\"\n", result.output());
+        assertEquals("--module-source-path\n\"example.app=" + source + "\"\n--module\nexample.app\n", result.output());
         assertTrue(Files.readAllLines(fixture.project().resolve("invocation.txt")).contains("-Djig.maven.options=module,module-source-path"));
     }
 
@@ -472,20 +497,20 @@ class MavenProjectCommandsTest {
         }
         var compile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,module-path,module-source-path,module");
         assertEquals(0, compile.status(), compile.error());
-        assertEquals("\"--class-path\"\n\"" + plain + "\"\n\"--module-path\"\n\"" + fixture.project().resolve("dependency.jar")
-                + "\"\n\"--module-source-path\"\n\"example.app=" + sources + "\"\n\"--module\"\n\"example.app\"\n", compile.output());
+        assertEquals("--class-path\n\"" + plain + "\"\n--module-path\n\"" + fixture.project().resolve("dependency.jar")
+                + "\"\n--module-source-path\n\"example.app=" + sources + "\"\n--module\nexample.app\n", compile.output());
         var binaryCompile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "module-path,source-path");
         assertEquals(0, binaryCompile.status(), binaryCompile.error());
         assertTrue(binaryCompile.output().contains(fixture.project().resolve("output").toString()), binaryCompile.output());
         var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "module-path,module=main");
         assertEquals(0, runtime.status(), runtime.error());
         assertTrue(runtime.output().contains(fixture.project().resolve("output").toString()), runtime.output());
-        assertTrue(runtime.output().contains("\"--module\"\n\"example.app/example.Main\""), runtime.output());
+        assertTrue(runtime.output().contains("--module\nexample.app/example.Main"), runtime.output());
         assertFalse(runtime.output().contains(plain.toString()), runtime.output());
         for (String form : List.of("module=single", "module=list", "module=roots,add-modules")) {
             var selected = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", form);
             assertEquals(0, selected.status(), selected.error());
-            assertEquals("\"--module\"\n\"example.app\"\n", selected.output());
+            assertEquals("--module\nexample.app\n", selected.output());
         }
     }
 

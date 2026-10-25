@@ -796,6 +796,30 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void simpleArgumentsRemainUnquotedOnCacheMissAndHit() throws Exception {
+        var fixture = cacheFixture();
+        Path dependency = temporaryDirectory.resolve("dependency.jar");
+        var values = capture(fixture);
+        putList(values, "classpath", List.of(dependency.toString()));
+        storeCapture(fixture, values);
+        String expected = "--class-path\n" + dependency + "\n";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var result = resolve(fixture, "compile", "class-path");
+            assertEquals(0, result.exitCode(), result.error());
+            assertEquals(expected, result.output());
+        }
+        assertEquals(1, launches(fixture));
+        Path file = temporaryDirectory.resolve("classpath.args");
+        var written = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "-r", "class-path", "-w", file.toString());
+        assertEquals(0, written.exitCode(), written.error());
+        assertEquals("", written.output());
+        assertEquals(expected, Files.readString(file));
+        assertEquals(1, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void emptySourceSetContentProducesNoArguments() throws Exception {
         var fixture = fixture();
         writeCapture(fixture.root().resolve("compile.properties"),
