@@ -22,7 +22,7 @@ final class JavaArgumentFile {
 
     static String render(List<String> arguments) {
         var output = new StringBuilder();
-        arguments.forEach(argument -> appendQuoted(output, argument));
+        arguments.forEach(argument -> append(output, argument));
         return output.toString();
     }
 

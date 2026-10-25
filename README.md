@@ -85,6 +85,10 @@ Launches the JUnit Platform for test discovery and execution.
 
 ## Interoperability
 
+Resolved options are emitted using Java argument-file syntax, both on stdout and with `--write-argfile`. Quoting preserves spaces and special characters for tools that support `@file` arguments. Prefer writing an argument file and passing it to the consuming tool; argument-file support varies between JDK tools (`jdeps`, for example, does not support it in JDK 25).
+
+Shell command substitution, such as `tool $(jig ...)`, is only a convenience for simple arguments. The shell does not interpret quotes emitted by `jig`, so this form does not preserve arguments that require quoting and may perform filename expansion.
+
 ### Gradle
 
 Resolve arguments from Gradle projects and source sets, including composite builds. Use `--list-project-paths` and `--list-source-sets` to discover selections.

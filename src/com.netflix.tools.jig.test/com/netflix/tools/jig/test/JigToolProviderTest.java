@@ -95,7 +95,7 @@ class JigToolProviderTest {
                 .redirectError(diagnostics.toFile()).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         assertEquals(0, process.waitFor(), output + Files.readString(diagnostics));
-        assertEquals("\"--source-path\"\n\"" + source + "\"\n", output);
+        assertEquals("--source-path\n" + source + "\n", output);
     }
 
     @Test
