@@ -87,7 +87,16 @@ Launches the JUnit Platform for test discovery and execution.
 
 Resolved options are emitted using Java argument-file syntax, both on stdout and with `--write-argfile`. Quoting preserves spaces and special characters for tools that support `@file` arguments. Prefer writing an argument file and passing it to the consuming tool; argument-file support varies between JDK tools (`jdeps`, for example, does not support it in JDK 25).
 
-Shell command substitution, such as `tool $(jig ...)`, is only a convenience for simple arguments. The shell does not interpret quotes emitted by `jig`, so this form does not preserve arguments that require quoting and may perform filename expansion.
+Shell command substitution, such as `tool $(jig ...)`, is only a convenience for simple arguments. The shell does not interpret quotes emitted by `jig`, so this form does not preserve arguments that require quoting and may perform filename expansion. Quoting the substitution as `"$(jig ...)"` instead passes the entire output as one argument, not an argument list.
+
+For tools without argument-file support, `xargs` can consume stdout containing ordinary arguments and quoted paths with spaces:
+
+```sh
+jig gradle --root-project-dir . --project-path :app -r class-path |
+  xargs jdeps app.jar
+```
+
+This is a convenience, not a lossless Java argument-file parser: `xargs` uses different quoting and escaping rules, so embedded double quotes, backslashes, and encoded control characters may be rejected or altered. It may also split large inputs across multiple invocations, and a pipeline does not automatically prevent execution when `jig` fails. Use a tool that supports Java argument files when exact argument preservation is required.
 
 ### Gradle
 
