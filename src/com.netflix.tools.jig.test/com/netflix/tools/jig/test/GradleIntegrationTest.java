@@ -980,7 +980,7 @@ class GradleIntegrationTest {
                 """, StandardOpenOption.APPEND);
         String captured = compilerOptions(fixture, "main");
         for (String option : List.of("-deprecation", "-nowarn", "-encoding", "-g:none", "-parameters", "-Werror", "-Xlint:deprecation", "-g:lines,vars")) {
-            assertTrue(captured.contains('"' + option + '"'), captured);
+            assertTrue(captured.lines().anyMatch(option::equals), captured);
         }
         assertFalse(captured.contains("Main.java"), captured);
         assertFalse(captured.contains("compiler.launcher.only"), captured);
