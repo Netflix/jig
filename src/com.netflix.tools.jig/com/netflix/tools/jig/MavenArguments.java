@@ -34,10 +34,11 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
 
 /** Projects Maven-selected paths using jig's existing source and artifact module identities. */
 final class MavenArguments {
-    record View(List<String> sources, List<String> classpath, Path output, boolean sourceView) {
+    record View(List<String> sources, List<String> classpath, Path output, String release, String system, boolean sourceView) {
         static View read(BuildCapture capture) throws IOException {
             return new View(capture.list("sources"), capture.list("classpath"),
-                    Path.of(capture.require("output-directory")).toAbsolutePath().normalize(), capture.flag("source-view"));
+                    Path.of(capture.require("output-directory")).toAbsolutePath().normalize(),
+                    capture.optional("release"), capture.optional("system"), capture.flag("source-view"));
         }
     }
 
@@ -77,6 +78,8 @@ final class MavenArguments {
         path(arguments, options.contains("module-path"), "--module-path", List.copyOf(modulePath));
         boolean moduleSources = options.contains("module-source-path") && sourceModule != null;
         path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sources);
+        value(arguments, options.contains("release"), "--release", view.release());
+        value(arguments, options.contains("system") && view.release() == null, "--system", view.system());
         if (module != null) {
             String name = module.name();
             path(arguments, moduleSources, "--module-source-path",
@@ -150,7 +153,13 @@ final class MavenArguments {
 
     private static void path(List<String> arguments, boolean requested, String option, List<String> paths) {
         if (requested && !paths.isEmpty()) {
-            arguments.addAll(List.of(option, String.join(System.getProperty("path.separator"), new LinkedHashSet<>(paths))));
+            value(arguments, true, option, String.join(System.getProperty("path.separator"), new LinkedHashSet<>(paths)));
+        }
+    }
+
+    private static void value(List<String> arguments, boolean requested, String option, String value) {
+        if (requested && value != null && !value.isEmpty()) {
+            arguments.addAll(List.of(option, value));
         }
     }
 }

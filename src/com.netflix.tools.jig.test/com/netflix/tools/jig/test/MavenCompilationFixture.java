@@ -77,6 +77,11 @@ final class MavenCompilationFixture {
                     private boolean noop;
                     private boolean generate;
                     private String moduleName;
+                    private String compilerId = "javac";
+                    private String release;
+                    private String executable;
+                    private boolean fork;
+                    private List<String> compilerArgs;
                     public void execute() throws MojoExecutionException {
                         if (noop) { return; }
                         try {
@@ -134,6 +139,7 @@ final class MavenCompilationFixture {
                 "-d", classes.toString(), source.toString()), diagnostics.toString());
         install(repository, classes, "maven-compiler-plugin", "3.1", List.of(goal("compile", "compile", false, false), goal("testCompile", "test", true, false), goal("generate", "", false, false)));
         install(repository, classes, "maven-resources-plugin", "2.6", List.of(goal("resources", "", false, true), goal("testResources", "", true, true)));
+        install(repository, classes, "maven-toolchains-plugin", "3.2.0", List.of(goal("toolchain", "", false, true)));
         // Older Maven versions inject this legacy plugin dependency even when the
         // plugin does not use it. An empty fixture artifact keeps resolution offline.
         Path plexus = Files.createDirectories(repository.resolve("org/codehaus/plexus/plexus-utils/1.1"));
@@ -156,12 +162,20 @@ final class MavenCompilationFixture {
                     <parameter><name>noop</name><type>boolean</type><editable>false</editable></parameter>
                     <parameter><name>generate</name><type>boolean</type><editable>false</editable></parameter>
                     <parameter><name>moduleName</name><type>java.lang.String</type><editable>true</editable></parameter>
+                    <parameter><name>compilerId</name><type>java.lang.String</type><editable>true</editable></parameter>
+                    <parameter><name>release</name><type>java.lang.String</type><editable>true</editable></parameter>
+                    <parameter><name>executable</name><type>java.lang.String</type><editable>true</editable></parameter>
+                    <parameter><name>fork</name><type>boolean</type><editable>true</editable></parameter>
+                    <parameter><name>jdkToolchain</name><type>java.util.Map</type><editable>true</editable></parameter>
+                    <parameter><name>toolchains</name><type>java.util.Map</type><editable>true</editable></parameter>
+                    <parameter><name>compilerArgs</name><type>java.util.List</type><editable>true</editable></parameter>
                   </parameters>
                   <configuration>
                     <project implementation="org.apache.maven.project.MavenProject">${project}</project>
                     <test implementation="boolean" default-value="%s"/>
                     <noop implementation="boolean" default-value="%s"/>
                     <generate implementation="boolean" default-value="%s"/>
+                    <compilerId implementation="java.lang.String" default-value="javac"/>
                   </configuration>
                 </mojo>
                 """.formatted(name, scope.isEmpty() ? "" : "<requiresDependencyResolution>" + scope + "</requiresDependencyResolution>", test, noop, name.equals("generate"));

@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.TreeSet;
 
@@ -36,14 +37,20 @@ import org.apache.maven.AbstractMavenLifecycleParticipant;
 import org.apache.maven.execution.ExecutionEvent;
 import org.apache.maven.execution.ExecutionListener;
 import org.apache.maven.execution.MavenSession;
+import org.apache.maven.lifecycle.MavenExecutionPlan;
 import org.apache.maven.lifecycle.internal.LifecycleDependencyResolver;
+import org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator;
 import org.apache.maven.lifecycle.internal.LifecycleStarter;
+import org.apache.maven.lifecycle.internal.LifecycleTask;
+import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.project.MavenProject;
 
 // Compiled against the selected Maven installation, not jig's relocated libraries.
 // Maven 3's starter is a class; Maven 4's starter is an interface.
 public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
     private LifecycleDependencyResolver dependencyResolver;
+    private LifecycleExecutionPlanCalculator executionPlanCalculator;
+    private Object toolchainManager;
 
     @Override
     public void execute(MavenSession session) {
@@ -107,7 +114,9 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
     // require native build outputs. Capture only after that lifecycle succeeds.
     public static final class Build extends AbstractMavenLifecycleParticipant {
         private LifecycleDependencyResolver dependencyResolver;
+        private LifecycleExecutionPlanCalculator executionPlanCalculator;
         private LifecycleStarter lifecycleStarter;
+        private Object toolchainManager;
         private MavenSession buildSession;
         private List<MavenProject> projects;
         private boolean preparedSources;
@@ -175,6 +184,8 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 if (!session.getResult().hasExceptions()) {
                     Capture capture = new Capture();
                     capture.dependencyResolver = dependencyResolver;
+                    capture.executionPlanCalculator = executionPlanCalculator;
+                    capture.toolchainManager = toolchainManager;
                     capture.capture(session, Boolean.valueOf(preparedSources));
                 }
             }
@@ -204,6 +215,316 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         list(values, "classpath", paths);
         list(values, "sources", "test".equals(scope) ? selected.getTestCompileSourceRoots() : selected.getCompileSourceRoots());
         values.setProperty("output-directory", "test".equals(scope) ? selected.getBuild().getTestOutputDirectory() : selected.getBuild().getOutputDirectory());
+        if (options.contains("release") || options.contains("system")) {
+            Compiler compiler = compiler(session, selected, scope);
+            if (compiler.release != null) {
+                values.setProperty("release", compiler.release);
+            } else if (options.contains("system")) {
+                if (compiler.system == null) {
+                    throw new IllegalArgumentException(compiler.failure);
+                }
+                values.setProperty("system", compiler.system);
+            }
+        }
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Compiler compiler(MavenSession session, MavenProject project, String scope) throws Exception {
+        String goal = "test".equals(scope) ? "testCompile" : "compile";
+        String phase = "test".equals(scope) ? "test-compile" : "compile";
+        List tasks = Collections.singletonList(new LifecycleTask(phase));
+        MavenExecutionPlan plan = executionPlanCalculator.calculateExecutionPlan(session, project, tasks);
+        Map<String, String> contextRequirements = contextRequirements(plan, session, project);
+        Compiler selected = null;
+        for (MojoExecution execution : plan.getMojoExecutions()) {
+            if (!"maven-compiler-plugin".equals(execution.getArtifactId()) || !goal.equals(execution.getGoal())) {
+                continue;
+            }
+            setupMojoExecution(session, project, execution);
+            Compiler compiler = compiler(execution.getConfiguration(), session, project, scope, contextRequirements);
+            if (selected != null && !selected.equals(compiler)) {
+                throw new IllegalArgumentException("Maven compiler executions select conflicting Java platforms: "
+                        + selected.describe() + ", " + compiler.describe());
+            }
+            selected = compiler;
+        }
+        return selected == null ? runtimeCompiler() : selected;
+    }
+
+    private void setupMojoExecution(MavenSession session, MavenProject project, MojoExecution execution) throws Exception {
+        for (Method method : executionPlanCalculator.getClass().getMethods()) {
+            if (!"setupMojoExecution".equals(method.getName())) {
+                continue;
+            }
+            if (method.getParameterTypes().length == 3) {
+                method.invoke(executionPlanCalculator, session, project, execution);
+                return;
+            }
+            if (method.getParameterTypes().length == 4) {
+                method.invoke(executionPlanCalculator, session, project, execution, Collections.emptySet());
+                return;
+            }
+        }
+    }
+
+    private Map<String, String> contextRequirements(MavenExecutionPlan plan, MavenSession session, MavenProject project) throws Exception {
+        Map<String, String> selected = Collections.emptyMap();
+        for (MojoExecution execution : plan.getMojoExecutions()) {
+            if (!"maven-toolchains-plugin".equals(execution.getArtifactId())) {
+                continue;
+            }
+            setupMojoExecution(session, project, execution);
+            Object configuration = execution.getConfiguration();
+            boolean select = "select-jdk-toolchain".equals(execution.getGoal());
+            Object requirements = "toolchain".equals(execution.getGoal())
+                    ? child(child(configuration, "toolchains"), "jdk")
+                    : select ? configuration : null;
+            if (requirements == null) {
+                continue;
+            }
+            Map<String, String> candidate = requirementValues(requirements, session, project,
+                    select ? new TreeSet<String>(Arrays.asList("version", "vendor", "runtimeName", "runtimeVersion", "env")) : null);
+            if (!selected.isEmpty() && !selected.equals(candidate)) {
+                throw new IllegalArgumentException("Maven toolchain executions select conflicting JDKs: " + selected + ", " + candidate);
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    private Compiler compiler(Object configuration, MavenSession session, MavenProject project, String scope,
+            Map<String, String> contextRequirements) throws Exception {
+        String release = value(configuration, "release", session, project);
+        String property = property(session, project, "test".equals(scope) ? "maven.compiler.testRelease" : "maven.compiler.release");
+        if (property == null && "test".equals(scope)) {
+            property = property(session, project, "maven.compiler.release");
+        }
+        if (property != null) release = property;
+        String system = null;
+        String[] selected = standardOptions(values(configuration, "compilerArgs", session, project));
+        if (selected[0] != null) release = selected[0];
+        if (selected[1] != null) system = selected[1];
+        Object compilerArguments = child(configuration, "compilerArguments");
+        String configured = value(compilerArguments, "release", session, project);
+        if (configured != null) release = configured;
+        configured = value(compilerArguments, "system", session, project);
+        if (configured != null) system = configured;
+        if (release != null && !release.trim().isEmpty()) {
+            return new Compiler(release.trim(), null, null);
+        }
+        if (system != null && !system.trim().isEmpty()) {
+            return new Compiler(null, normalizeSystem(system.trim(), project), null);
+        }
+        String compilerId = value(configuration, "compilerId", session, project);
+        property = property(session, project, "maven.compiler.compilerId");
+        if (property != null) compilerId = property;
+        if (compilerId != null && !compilerId.isEmpty() && !"javac".equals(compilerId)) {
+            return new Compiler(null, null, "Maven compiler " + compilerId + " does not expose a JDK system image");
+        }
+        String executable = value(configuration, "executable", session, project);
+        property = property(session, project, "maven.compiler.executable");
+        if (property != null) executable = property;
+        String fork = value(configuration, "fork", session, project);
+        property = property(session, project, "maven.compiler.fork");
+        if (property != null) fork = property;
+        if (!Boolean.parseBoolean(fork)) executable = null;
+        if (executable == null || executable.isEmpty()) {
+            Map<String, String> requirements = requirements(configuration, session, project);
+            Object toolchain = toolchain(session, requirements.isEmpty() ? contextRequirements : requirements);
+            if (toolchain != null) {
+                Method findTool = toolchain.getClass().getMethod("findTool", String.class);
+                findTool.setAccessible(true);
+                executable = (String) findTool.invoke(toolchain, "javac");
+            }
+        }
+        if (executable == null || executable.isEmpty()) {
+            return runtimeCompiler();
+        }
+        String home = javaHome(executable, project);
+        return home == null
+                ? new Compiler(null, null, "Maven compiler executable does not identify a modular JDK: " + executable)
+                : new Compiler(null, home, null);
+    }
+
+    private Object toolchain(MavenSession session, Map<String, String> requirements) throws Exception {
+        if (toolchainManager == null) {
+            return null;
+        }
+        if (!requirements.isEmpty()) {
+            for (Method method : toolchainManager.getClass().getMethods()) {
+                if ("getToolchains".equals(method.getName()) && method.getParameterTypes().length == 3) {
+                    List<?> toolchains = (List<?>) method.invoke(toolchainManager, session, "jdk", requirements);
+                    if (toolchains != null && !toolchains.isEmpty()) {
+                        return toolchains.get(0);
+                    }
+                }
+            }
+        }
+        try {
+            session.getClass().getMethod("getSession");
+            return null;
+        } catch (NoSuchMethodException maven3) {
+            for (Method method : toolchainManager.getClass().getMethods()) {
+                if ("getToolchainFromBuildContext".equals(method.getName()) && method.getParameterTypes().length == 2) {
+                    return method.invoke(toolchainManager, "jdk", session);
+                }
+            }
+            return null;
+        }
+    }
+
+    private static Map<String, String> requirements(Object configuration, MavenSession session, MavenProject project) throws Exception {
+        return requirementValues(child(configuration, "jdkToolchain"), session, project, null);
+    }
+
+    private static Map<String, String> requirementValues(Object configuration, MavenSession session, MavenProject project,
+            java.util.Set<String> selected) throws Exception {
+        Map<String, String> requirements = new java.util.LinkedHashMap<String, String>();
+        for (Object element : children(configuration)) {
+            if (selected != null && !selected.contains(name(element))) {
+                continue;
+            }
+            String value = interpolate(text(element), session, project);
+            if (value != null && !value.isEmpty()) {
+                requirements.put(name(element), value);
+            }
+        }
+        return requirements;
+    }
+
+    private static String property(MavenSession session, MavenProject project, String name) {
+        String value = session.getUserProperties().getProperty(name);
+        return value != null ? value : project.getProperties().getProperty(name);
+    }
+
+    private static String value(Object configuration, String name, MavenSession session, MavenProject project) throws Exception {
+        return interpolate(text(child(configuration, name)), session, project);
+    }
+
+    private static List<String> values(Object configuration, String name, MavenSession session, MavenProject project) throws Exception {
+        List<String> values = new ArrayList<String>();
+        for (Object element : children(child(configuration, name))) {
+            String value = interpolate(text(element), session, project);
+            if (value != null) values.add(value);
+        }
+        return values;
+    }
+
+    private static String interpolate(String value, MavenSession session, MavenProject project) {
+        if (value == null || !value.startsWith("${") || !value.endsWith("}")) {
+            return value;
+        }
+        String name = value.substring(2, value.length() - 1);
+        String resolved = property(session, project, name);
+        return resolved != null ? resolved : System.getProperty(name, value);
+    }
+
+    private static Object child(Object configuration, String name) throws Exception {
+        return configuration == null ? null : configuration.getClass().getMethod("getChild", String.class).invoke(configuration, name);
+    }
+
+    private static Object[] children(Object configuration) throws Exception {
+        return configuration == null ? new Object[0] : (Object[]) configuration.getClass().getMethod("getChildren").invoke(configuration);
+    }
+
+    private static String name(Object configuration) throws Exception {
+        return (String) configuration.getClass().getMethod("getName").invoke(configuration);
+    }
+
+    private static String text(Object configuration) throws Exception {
+        return configuration == null ? null : (String) configuration.getClass().getMethod("getValue").invoke(configuration);
+    }
+
+    private static Compiler runtimeCompiler() throws Exception {
+        File home = new File(System.getProperty("java.home")).getCanonicalFile();
+        return new File(home, "lib/modules").isFile()
+                ? new Compiler(null, home.getPath(), null)
+                : new Compiler(null, null, "The JDK running Maven does not provide a system module image: " + home);
+    }
+
+    private static String normalizeSystem(String value, MavenProject project) throws Exception {
+        if ("none".equals(value)) {
+            return value;
+        }
+        File home = resolve(value, project);
+        return new File(home, "lib/modules").isFile() ? home.getCanonicalPath() : value;
+    }
+
+    private static String javaHome(String executable, MavenProject project) throws Exception {
+        File compiler = resolve(executable, project);
+        File bin = compiler.getParentFile();
+        if (bin == null || !"bin".equals(bin.getName())) {
+            return null;
+        }
+        File home = bin.getParentFile();
+        return home != null && new File(home, "lib/modules").isFile() ? home.getCanonicalPath() : null;
+    }
+
+    private static File resolve(String value, MavenProject project) throws Exception {
+        File file = new File(value);
+        if (!file.isAbsolute() && file.getParent() != null) {
+            file = new File(project.getBasedir(), value);
+        }
+        if (!file.isAbsolute() && file.getParent() == null) {
+            String path = System.getenv("PATH");
+            if (path != null) {
+                for (String directory : path.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+                    File candidate = new File(directory, value);
+                    if (candidate.isFile()) {
+                        return candidate.getCanonicalFile();
+                    }
+                }
+            }
+        }
+        return file.getCanonicalFile();
+    }
+
+    private static String[] standardOptions(List<?> arguments) {
+        String release = null;
+        String system = null;
+        for (int index = 0; index < arguments.size(); index++) {
+            String argument = String.valueOf(arguments.get(index));
+            if ("--release".equals(argument) && index + 1 < arguments.size()) {
+                release = String.valueOf(arguments.get(++index));
+            } else if (argument.startsWith("--release=")) {
+                release = argument.substring("--release=".length());
+            } else if ("--system".equals(argument) && index + 1 < arguments.size()) {
+                system = String.valueOf(arguments.get(++index));
+            } else if (argument.startsWith("--system=")) {
+                system = argument.substring("--system=".length());
+            }
+        }
+        return new String[] { release, system };
+    }
+
+    private static final class Compiler {
+        final String release;
+        final String system;
+        final String failure;
+
+        Compiler(String release, String system, String failure) {
+            this.release = release;
+            this.system = system;
+            this.failure = failure;
+        }
+
+        String describe() {
+            return release != null ? "--release " + release : system != null ? "--system " + system : failure;
+        }
+
+        @Override
+        public boolean equals(Object value) {
+            if (!(value instanceof Compiler)) return false;
+            Compiler other = (Compiler) value;
+            return java.util.Objects.equals(release, other.release)
+                    && java.util.Objects.equals(system, other.system)
+                    && java.util.Objects.equals(failure, other.failure);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(release, system, failure);
+        }
     }
 
     private static boolean sourceView(MavenProject project, String scope, List<String> options) {

@@ -313,6 +313,29 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void exposesTheMavenRuntimeAsTheSystemImage() throws Exception {
+        var fixture = fixture(false);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app",
+                "--scope", "compile", "-r", "system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals(List.of("--system", System.getProperty("java.home")), arguments(result));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void exposesReleaseInsteadOfTheCompilerSystemImage() throws Exception {
+        var fixture = fixture(false);
+        var values = cacheCapture(fixture);
+        values.setProperty("release", "17");
+        storeCacheCapture(fixture, values);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app",
+                "--scope", "compile", "-r", "release,system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals(List.of("--release", "17"), arguments(result));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void simpleArgumentsRemainUnquotedOnCacheMissAndHit() throws Exception {
         var fixture = cacheFixture();
         Path dependency = temporaryDirectory.resolve("dependency.jar");
@@ -340,14 +363,14 @@ class MavenProjectCommandsTest {
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void portableRequestsOmitOptionsNotSupportedByMaven() throws Exception {
         var fixture = fixture(false);
-        String supported = "class-path,source-path";
-        String portable = supported + ",upgrade-module-path,processor-module-path,patch-module,release,enable-preview,add-exports,processor-path,source,target,encoding,system,add-reads,d";
+        String supported = "class-path,release,source-path,system";
+        String portable = supported + ",upgrade-module-path,processor-module-path,patch-module,enable-preview,add-exports,processor-path,source,target,encoding,add-reads,d";
         var expected = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", supported);
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", portable);
         assertEquals(0, result.status(), result.error());
         assertEquals(expected.output(), result.output());
         var invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
-        assertTrue(invocation.contains("-Djig.maven.options=class-path,source-path"), invocation.toString());
+        assertTrue(invocation.contains("-Djig.maven.options=class-path,release,source-path,system"), invocation.toString());
     }
 
     @Test
@@ -358,7 +381,7 @@ class MavenProjectCommandsTest {
         Path source = Files.createDirectories(fixture.project().resolve("sources"));
         Files.writeString(source.resolve("module-info.java"), "not a module declaration\n");
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile",
-                "-r", "release,encoding,d", "-w", file.toString());
+                "-r", "encoding,d", "-w", file.toString());
         assertEquals(0, result.status(), result.error());
         assertEquals("", result.output());
         assertEquals("", Files.readString(file));
@@ -393,7 +416,7 @@ class MavenProjectCommandsTest {
                 "-r", "module-source-path,module=list,upgrade-module-path,patch-module,release,enable-preview,add-exports");
         assertEquals(0, result.status(), result.error());
         assertEquals("--module-source-path\n\"example.app=" + source + "\"\n--module\nexample.app\n", result.output());
-        assertTrue(Files.readAllLines(fixture.project().resolve("invocation.txt")).contains("-Djig.maven.options=module,module-source-path"));
+        assertTrue(Files.readAllLines(fixture.project().resolve("invocation.txt")).contains("-Djig.maven.options=module,module-source-path,release"));
     }
 
     @Test
@@ -949,6 +972,7 @@ class MavenProjectCommandsTest {
         values.setProperty("sources.count", "1");
         values.setProperty("sources.0", project.resolve("sources").toString());
         values.setProperty("output-directory", project.resolve("output").toString());
+        values.setProperty("system", System.getProperty("java.home"));
         try (var output = Files.newOutputStream(project.resolve("capture.properties"))) {
             values.store(output, "fixture");
         }
@@ -1000,6 +1024,10 @@ class MavenProjectCommandsTest {
         Path project = sources.resolve("MavenProject.java");
         Path lifecycle = sources.resolve("LifecycleStarter.java");
         Path resolver = sources.resolve("LifecycleDependencyResolver.java");
+        Path plan = sources.resolve("MavenExecutionPlan.java");
+        Path calculator = sources.resolve("LifecycleExecutionPlanCalculator.java");
+        Path task = sources.resolve("LifecycleTask.java");
+        Path execution = sources.resolve("MojoExecution.java");
         Path filter = sources.resolve("ArtifactFilter.java");
         Path cumulative = sources.resolve("CumulativeScopeArtifactFilter.java");
         Path build = sources.resolve("Build.java");
@@ -1017,6 +1045,7 @@ class MavenProjectCommandsTest {
                     public String getGroupId() { return null; }
                     public String getArtifactId() { return null; }
                     public java.io.File getBasedir() { return null; }
+                    public java.util.Properties getProperties() { return new java.util.Properties(); }
                     public java.util.List<String> getCompileSourceRoots() { return java.util.Collections.emptyList(); }
                     public java.util.List<String> getTestCompileSourceRoots() { return java.util.Collections.emptyList(); }
                     public java.util.List<String> getCompileClasspathElements() { return java.util.Collections.emptyList(); }
@@ -1027,6 +1056,10 @@ class MavenProjectCommandsTest {
                 }
                 """);
         Files.writeString(resolver, "package org.apache.maven.lifecycle.internal; public class LifecycleDependencyResolver { public void resolveProjectDependencies(org.apache.maven.project.MavenProject project, java.util.Collection<String> collect, java.util.Collection<String> resolve, org.apache.maven.execution.MavenSession session, boolean aggregating, java.util.Set<?> artifacts) {} }\n");
+        Files.writeString(plan, "package org.apache.maven.lifecycle; public class MavenExecutionPlan { public java.util.List<org.apache.maven.plugin.MojoExecution> getMojoExecutions() { return java.util.Collections.emptyList(); } }\n");
+        Files.writeString(calculator, "package org.apache.maven.lifecycle.internal; public interface LifecycleExecutionPlanCalculator { org.apache.maven.lifecycle.MavenExecutionPlan calculateExecutionPlan(org.apache.maven.execution.MavenSession session, org.apache.maven.project.MavenProject project, java.util.List tasks); }\n");
+        Files.writeString(task, "package org.apache.maven.lifecycle.internal; public final class LifecycleTask { public LifecycleTask(String phase) {} }\n");
+        Files.writeString(execution, "package org.apache.maven.plugin; public class MojoExecution { public String getArtifactId() { return null; } public String getGoal() { return null; } public Object getConfiguration() { return null; } }\n");
         Files.writeString(build, "package org.apache.maven.model; public class Build { public String getOutputDirectory() { return null; } public String getTestOutputDirectory() { return null; } }\n");
         Files.writeString(filter, "package org.apache.maven.artifact.resolver.filter; public interface ArtifactFilter {}\n");
         Files.writeString(cumulative, "package org.apache.maven.artifact.resolver.filter; public class CumulativeScopeArtifactFilter implements ArtifactFilter { public CumulativeScopeArtifactFilter(java.util.Collection<String> scopes) {} }\n");
@@ -1036,7 +1069,7 @@ class MavenProjectCommandsTest {
         Path classes = home.resolve("classes");
         var diagnostics = new StringWriter();
         assertEquals(0, ToolProvider.findFirst("javac").orElseThrow().run(new PrintWriter(diagnostics), new PrintWriter(diagnostics),
-                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), lifecycleParticipant.toString(), listener.toString(), request.toString(), event.toString(), result.toString(), project.toString(), lifecycle.toString(), resolver.toString(), filter.toString(), cumulative.toString(), build.toString()), diagnostics.toString());
+                "--release", "8", "-Xlint:-options", "-g:none", "-d", classes.toString(), session.toString(), lifecycleParticipant.toString(), listener.toString(), request.toString(), event.toString(), result.toString(), project.toString(), lifecycle.toString(), resolver.toString(), plan.toString(), calculator.toString(), task.toString(), execution.toString(), filter.toString(), cumulative.toString(), build.toString()), diagnostics.toString());
         Path library = Files.createDirectories(home.resolve("lib")).resolve("maven-core-fixture.jar");
         try (var output = new JarOutputStream(Files.newOutputStream(library)); var paths = Files.walk(classes)) {
             for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {
@@ -1070,6 +1103,14 @@ class MavenProjectCommandsTest {
         var arguments = new ArrayList<>(List.of("maven", "--project-base-dir", fixture.project().toString(), "--list-projects"));
         arguments.addAll(List.of(options));
         return run(arguments.toArray(String[]::new));
+    }
+
+    private static List<String> arguments(Result result) {
+        return result.output().lines()
+                .map(line -> line.length() >= 2 && line.startsWith("\"") && line.endsWith("\"")
+                        ? line.substring(1, line.length() - 1)
+                        : line)
+                .toList();
     }
 
     private static String shellQuote(String value) {

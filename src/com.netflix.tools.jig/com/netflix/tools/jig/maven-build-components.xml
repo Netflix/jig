@@ -28,6 +28,14 @@
           <role>org.apache.maven.lifecycle.internal.LifecycleDependencyResolver</role>
           <field-name>dependencyResolver</field-name>
         </requirement>
+        <requirement>
+          <role>org.apache.maven.lifecycle.internal.LifecycleExecutionPlanCalculator</role>
+          <field-name>executionPlanCalculator</field-name>
+        </requirement>
+        <requirement>
+          <role>org.apache.maven.toolchain.ToolchainManager</role>
+          <field-name>toolchainManager</field-name>
+        </requirement>
       </requirements>
     </component>
   </components>

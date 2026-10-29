@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /** Contract checks on every Maven version; detailed scenarios at lifecycle API boundaries. */
 @EnabledOnOs({OS.LINUX, OS.MAC})
@@ -71,6 +72,99 @@ class MavenIntegrationTest {
         Files.write(other.resolve(plugin), new byte[] {0});
         assertArrayEquals(original, Files.readAllBytes(fixtures.resolve(plugin)));
         assertArrayEquals(original, Files.readAllBytes(root.resolve("repository").resolve(plugin)));
+    }
+
+    @Test
+    void exposesTheMavenRuntimeAsTheSystemImage() throws Exception {
+        assumeTrue(maven.javaVersion() >= 9);
+        Path root = fixture(true);
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--system\n" + maven.javaHome().toRealPath() + "\n", result.output());
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void exposesTheConfiguredForkedCompilerSystemImage() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        Path javaHome = Path.of(System.getProperty("java.home")).toRealPath();
+        String model = pom("app", "", customLayout()).replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <configuration><fork>true</fork><executable>%s/bin/javac</executable></configuration>
+                """.formatted(javaHome));
+        Files.writeString(app.resolve("pom.xml"), model);
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--system\n" + javaHome + "\n", result.output());
+    }
+
+    @Test
+    @EnabledIf("detailedMavenConfigCoverage")
+    void exposesTheCompilerJdkToolchainSystemImage() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        Path javaHome = Path.of(System.getProperty("java.home")).toRealPath();
+        String version = Integer.toString(Runtime.version().feature());
+        String model = pom("app", "", customLayout()).replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <configuration><jdkToolchain><version>%s</version></jdkToolchain></configuration>
+                """.formatted(version));
+        Files.writeString(app.resolve("pom.xml"), model);
+        Path toolchains = root.resolve("toolchains.xml");
+        Files.writeString(toolchains, """
+                <toolchains><toolchain><type>jdk</type><provides><version>%s</version></provides>
+                  <configuration><jdkHome>%s</jdkHome></configuration>
+                </toolchain></toolchains>
+                """.formatted(version, javaHome));
+        Path wrapper = root.resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$@\"", "--toolchains " + shellQuote(toolchains.toString()) + " \"$@\""));
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--system\n" + javaHome + "\n", result.output());
+    }
+
+    @Test
+    @EnabledIf("detailedMavenConfigCoverage")
+    void exposesTheBuildContextToolchainSystemImage() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        Path javaHome = Path.of(System.getProperty("java.home")).toRealPath();
+        String version = Integer.toString(Runtime.version().feature());
+        String plugin = """
+                <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-toolchains-plugin</artifactId><version>3.2.0</version>
+                  <executions><execution><phase>validate</phase><goals><goal>toolchain</goal></goals>
+                    <configuration><toolchains><jdk><version>%s</version></jdk></toolchains></configuration>
+                  </execution></executions>
+                </plugin>
+                """.formatted(version);
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", customLayout()).replace("</plugins>", plugin + "</plugins>"));
+        Path toolchains = root.resolve("toolchains.xml");
+        Files.writeString(toolchains, """
+                <toolchains><toolchain><type>jdk</type><provides><version>%s</version></provides>
+                  <configuration><jdkHome>%s</jdkHome></configuration>
+                </toolchain></toolchains>
+                """.formatted(version, javaHome));
+        Path wrapper = root.resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$@\"", "--toolchains " + shellQuote(toolchains.toString()) + " \"$@\""));
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--system\n" + javaHome + "\n", result.output());
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void exposesReleaseInsteadOfTheCompilerSystemImage() throws Exception {
+        Path root = fixture(true);
+        Path app = root.resolve("app");
+        String model = pom("app", "", customLayout()).replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <configuration><release>17</release></configuration>
+                """);
+        Files.writeString(app.resolve("pom.xml"), model);
+        var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "release,system");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--release\n17\n", result.output());
     }
 
     @Test
