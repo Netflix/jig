@@ -774,6 +774,19 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void exposesTheGradleCompilerAsTheSystemImage() throws Exception {
+        var fixture = fixture();
+        var values = capture(fixture);
+        values.remove("release");
+        values.setProperty("system", System.getProperty("java.home"));
+        storeCapture(fixture, values);
+        var result = resolve(fixture, "compile", "system");
+        assertEquals(0, result.exitCode(), result.error());
+        assertEquals(List.of("--system", System.getProperty("java.home")), arguments(result));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void compileAndRuntimeClasspathsAreDifferentViews() throws Exception {
         var fixture = fixture();
         var compile = resolve(fixture, "compile", "class-path");

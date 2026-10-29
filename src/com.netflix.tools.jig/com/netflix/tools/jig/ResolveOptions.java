@@ -46,7 +46,7 @@ record ResolveOptions(Set<String> options, ModuleForm moduleForm) {
             option("main-class", MODULE, GRADLE),
             option("module-version", MODULE, GRADLE),
             option("patch-module", MODULE, GRADLE),
-            option("release", MODULE, GRADLE),
+            option("release", MODULE, MAVEN, GRADLE),
             option("multi-release", MODULE, GRADLE),
             option("enable-preview", MODULE, GRADLE),
             option("enable-native-access", MODULE, GRADLE),
@@ -58,7 +58,7 @@ record ResolveOptions(Set<String> options, ModuleForm moduleForm) {
             option("source", GRADLE),
             option("target", GRADLE),
             option("encoding", GRADLE),
-            option("system", GRADLE),
+            option("system", MAVEN, GRADLE),
             option("add-reads", GRADLE),
             option("d"));
 
