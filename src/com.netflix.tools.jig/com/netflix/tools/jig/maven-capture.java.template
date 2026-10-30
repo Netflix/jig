@@ -102,8 +102,9 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 emit(common);
                 return;
             }
-            List<String> scopes = Boolean.parseBoolean(session.getUserProperties().getProperty("jig.maven.all-scopes"))
-                    ? Arrays.asList("compile", "runtime", "test") : Collections.singletonList(requestedScope);
+            List<String> scopes = preparedSources != null ? new ArrayList<String>(preparedSources.keySet())
+                    : Boolean.parseBoolean(session.getUserProperties().getProperty("jig.maven.all-scopes"))
+                            ? Arrays.asList("compile", "runtime", "test") : Collections.singletonList(requestedScope);
             for (String scope : scopes) {
                 Properties values = new Properties();
                 values.putAll(common);
@@ -178,29 +179,34 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 String scope = request.getProperty("jig.maven.scope");
                 MavenProject selected = selected(session);
                 preparedSources = new LinkedHashMap<String, Boolean>();
-                if (Boolean.parseBoolean(request.getProperty("jig.maven.all-scopes"))) {
+                boolean prepared = sourceView(selected, scope, options);
+                boolean allScopes = Boolean.parseBoolean(request.getProperty("jig.maven.all-scopes")) && prepared;
+                if (allScopes) {
                     for (String contextScope : Arrays.asList("compile", "runtime", "test")) {
-                        preparedSources.put(contextScope, Boolean.valueOf(sourceView(selected, contextScope, options)));
+                        if (sourceView(selected, contextScope, options)) {
+                            preparedSources.put(contextScope, Boolean.TRUE);
+                        }
                     }
                 } else {
-                    boolean prepared = sourceView(selected, scope, options);
                     preparedSources.put(scope, Boolean.valueOf(prepared));
-                    if (prepared) {
-                        List<MavenProject> dependencies = new ArrayList<MavenProject>(projects);
-                        dependencies.remove(selected);
-                        if (!dependencies.isEmpty()) {
-                            // --also-make supplies the native prerequisite selection and
-                            // ordering. Let Maven execute it, without selected compilation.
-                            MavenSession prerequisites = session.clone();
-                            prerequisites.setProjects(dependencies);
-                            session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "test-compile" : "compile"));
-                            lifecycleStarter.execute(prerequisites);
-                        }
-                        session.setProjects(Collections.singletonList(selected));
-                        // Run selected generators in the original native lifecycle.
-                        // Test sources additionally require the selected main output.
-                        session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "process-test-sources" : "process-sources"));
+                }
+                if (prepared) {
+                    List<MavenProject> dependencies = new ArrayList<MavenProject>(projects);
+                    dependencies.remove(selected);
+                    if (!dependencies.isEmpty()) {
+                        // --also-make supplies the native prerequisite selection and
+                        // ordering. Let Maven execute it, without selected compilation.
+                        MavenSession prerequisites = session.clone();
+                        prerequisites.setProjects(dependencies);
+                        session.getRequest().setGoals(Collections.singletonList(allScopes || "test".equals(scope) ? "test-compile" : "compile"));
+                        lifecycleStarter.execute(prerequisites);
                     }
+                    session.setProjects(Collections.singletonList(selected));
+                    // Run selected generators in the original native lifecycle. An
+                    // all-scope source view must not reach compile while preparing the
+                    // selected project.
+                    session.getRequest().setGoals(Collections.singletonList(!allScopes && "test".equals(scope)
+                            ? "process-test-sources" : "process-sources"));
                 }
             } else if (execution.getType() == ExecutionEvent.Type.SessionEnded && projects != null) {
                 session.setProjects(projects);

@@ -227,11 +227,11 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void resolutionCachesEveryScopeForTheRequestedProject() throws Exception {
+    void resolutionCachesEverySourceScopeForTheRequestedProject() throws Exception {
         var fixture = cacheFixture();
-        var compile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path");
-        var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "class-path");
-        var test = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "test", "-r", "class-path");
+        var compile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path");
+        var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "class-path,source-path");
+        var test = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "test", "-r", "class-path,source-path");
         assertEquals(0, compile.status(), compile.error());
         assertEquals(0, runtime.status(), runtime.error());
         assertEquals(0, test.status(), test.error());
@@ -455,7 +455,7 @@ class MavenProjectCommandsTest {
             assertEquals(0, result.status(), result.error());
             List<String> invocation = Files.readAllLines(fixture.project().resolve("invocation.txt"));
             assertTrue(invocation.contains("--also-make"), invocation.toString());
-            assertEquals("test-compile", invocation.getLast());
+            assertEquals(scope.equals("test") ? "test-compile" : "compile", invocation.getLast());
         }
         var sources = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
                 "-r", "source-path");

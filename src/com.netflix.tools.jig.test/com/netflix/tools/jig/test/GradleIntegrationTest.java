@@ -642,12 +642,12 @@ class GradleIntegrationTest {
         int expectedEvaluations = 2;
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
-        Files.delete(compiled);
+        assertFalse(Files.exists(compiled));
         resolve(fixture, "test", "runtime", "class-path,source-path,release,main-class");
         assertFalse(Files.exists(compiled));
-        run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "test",
-                "--classpath", "runtime", "-r", "class-path,source-path,release,main-class", "--refresh");
-        assertTrue(Files.isRegularFile(compiled));
+        run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app", "--source-set", "main",
+                "--classpath", "compile", "-r", "class-path,source-path,release,main-class", "--refresh");
+        assertFalse(Files.exists(compiled));
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size());
         Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs += ['changed/sources']\n", StandardOpenOption.APPEND);
         String changed = resolve(fixture, "compile", "class-path,source-path,release,main-class");
@@ -754,7 +754,6 @@ class GradleIntegrationTest {
             assertTrue(compile.contains(fixture.app().resolve(source).toString()), compile);
             assertTrue(compile.contains("test compile only.jar"), compile);
             assertFalse(compile.contains("test runtime only.jar"), compile);
-            assertTrue(Files.isRegularFile(fixture.app().resolve(classesDirectory() + "/app/Main.class")));
             Path selectedOutput = fixture.app().resolve(classesDirectory().replace("main", output) + "/Case.class");
             assertFalse(Files.exists(selectedOutput));
             if (name.equals("integrationTest")) {

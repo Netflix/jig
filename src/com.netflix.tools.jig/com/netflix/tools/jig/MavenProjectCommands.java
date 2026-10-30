@@ -95,9 +95,10 @@ final class MavenProjectCommands {
             var launcher = BuildProcess.launcher(request.base(), "mvn", "mvnw", "mvn.cmd", "mvnw.cmd");
             var cache = new ProjectQueryCache("Maven", request.base(), "projects\n" + (request.listProjects() && request.project() != null ? request.project() : ""),
                     launcher, "maven-capture.java.template");
+            boolean allScopes = allScopes(request);
             var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Maven", request.base(),
-                    "arguments\n" + request.project() + '\n' + request.options().stream().sorted().toList()
-                            + '\n' + request.moduleForm(), launcher, "maven-capture.java.template");
+                    "arguments\n" + request.project() + (allScopes ? "" : "\n" + request.scope()) + '\n'
+                            + request.options().stream().sorted().toList() + '\n' + request.moduleForm(), launcher, "maven-capture.java.template");
             if (!request.listProjects()) {
                 if (request.refresh()) {
                     resultCache.clear();
@@ -164,13 +165,13 @@ final class MavenProjectCommands {
             }
             if (!request.listProjects()) {
                 captureArguments.addAll(List.of("-Djig.maven.project=" + request.project(), "-Djig.maven.scope=" + request.scope(),
-                        "-Djig.maven.all-scopes=true",
+                        "-Djig.maven.all-scopes=" + allScopes,
                         "-Djig.maven.options=" + String.join(",", request.options().stream().sorted().toList())));
             }
             String phase = "validate";
             if (prepare) {
                 captureArguments.add("--also-make");
-                phase = "test-compile";
+                phase = request.scope().equals("test") ? "test-compile" : "compile";
             }
             captureArguments.add(phase);
             var captures = new ArrayList<BuildCapture>();
@@ -244,6 +245,11 @@ final class MavenProjectCommands {
             err.println("jig maven: " + failure.getMessage());
             return 2;
         }
+    }
+
+    private static boolean allScopes(Request request) {
+        return !request.listProjects()
+                && (request.options().contains("source-path") || request.options().contains("module-source-path"));
     }
 
     private static BuildCapture cachedArguments(List<BuildCapture> captures, Request request) throws IOException {

@@ -817,14 +817,16 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void resolutionCachesEveryClasspathForTheRequestedProject() throws Exception {
+    void resolutionCachesEverySourceContextForTheRequestedProject() throws Exception {
         var fixture = cacheFixture();
-        var compile = resolve(fixture, "compile", "class-path");
-        var runtime = resolve(fixture, "runtime", "class-path");
+        var compile = resolve(fixture, "compile", "class-path,source-path");
+        var runtime = resolve(fixture, "runtime", "class-path,source-path");
         assertEquals(0, compile.exitCode(), compile.error());
         assertEquals(0, runtime.exitCode(), runtime.error());
-        assertEquals(List.of("--class-path", fixture.root().resolve("compile only.jar").toString()), arguments(compile));
-        assertEquals(List.of("--class-path", fixture.root().resolve("runtime only.jar").toString()), arguments(runtime));
+        assertEquals(List.of("--class-path", fixture.root().resolve("compile only.jar").toString(), "--source-path",
+                fixture.project().resolve("custom sources").toString()), arguments(compile));
+        assertEquals(List.of("--class-path", fixture.root().resolve("runtime only.jar").toString(), "--source-path",
+                fixture.project().resolve("custom sources").toString()), arguments(runtime));
         assertEquals(1, launches(fixture));
     }
 

@@ -51,9 +51,11 @@ final class GradleCommands {
         try {
             var launcher = BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat");
             var cache = new ProjectQueryCache("Gradle", request.root(), "projects", launcher, "gradle-init.gradle");
+            boolean allContexts = allContexts(request);
             String query = request.listProjects() ? "projects" : request.listSourceSets() ? "source-sets\n" + request.projectPath()
                     : request.compiler() ? "compiler\n" + request.projectPath() + '\n' + request.sourceSet()
-                    : "arguments\n" + request.projectPath() + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
+                    : "arguments\n" + request.projectPath() + (allContexts ? "" : "\n" + request.sourceSet() + "\n" + request.classpath())
+                            + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
             var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Gradle", request.root(), query, launcher, "gradle-init.gradle");
             if (!request.listProjects()) {
                 if (request.refresh()) {
@@ -208,6 +210,11 @@ final class GradleCommands {
                 request.options(), request.moduleForm(), request.argumentFile(), request.verbose(), request.refresh());
     }
 
+    private static boolean allContexts(Request request) {
+        return !request.listProjects() && !request.listSourceSets() && !request.compiler()
+                && (request.options().contains("source-path") || request.options().contains("module-source-path"));
+    }
+
     private static void write(PrintWriter out, Path file, String arguments) throws IOException {
         if (file == null) {
             out.print(arguments);
@@ -258,7 +265,7 @@ final class GradleCommands {
                         "-Pjig.gradle.list=" + request.listProjects(),
                         "-Pjig.gradle.list-contexts=" + request.listProjects(),
                         "-Pjig.gradle.list-source-sets=" + request.listSourceSets(),
-                        "-Pjig.gradle.all-contexts=" + (!request.listProjects() && !request.listSourceSets() && !request.compiler())));
+                        "-Pjig.gradle.all-contexts=" + allContexts(request)));
         if (!request.listProjects()) {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());
         }

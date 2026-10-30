@@ -556,7 +556,8 @@ gradle.settingsEvaluated { settings ->
                             : project.tasks.create(name, JigCaptureTask, action)
                 }
                 def capture = registerCapture(captureTaskName, sourceSetName, classpath)
-                if (allContexts && !dispatch && !listProjects && !listSourceSets && !compilerRequest && sourceSets != null) {
+                if (allContexts && !dispatch && !listProjects && !listSourceSets && !compilerRequest && sourceSets != null
+                        && sourceSets.findByName(sourceSetName) != null) {
                     int index = 0
                     sourceSets.names.toList().sort().each { contextSourceSet ->
                         ['compile', 'runtime'].each { contextClasspath ->

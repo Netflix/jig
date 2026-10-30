@@ -371,7 +371,7 @@ class MavenIntegrationTest {
             assertTrue(result.output().contains(app.resolve("out/main").toString()), result.output());
             assertEquals(scope.equals("test"), result.output().contains(app.resolve("out/test").toString()), result.output());
             assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")), scope);
-            assertTrue(Files.isRegularFile(app.resolve("out/test/app/Check.class")), scope);
+            assertEquals(scope.equals("test"), Files.isRegularFile(app.resolve("out/test/app/Check.class")), scope);
         }
         assertFalse(Files.exists(app.resolve("target/surefire-reports")));
     }
@@ -403,9 +403,8 @@ class MavenIntegrationTest {
         assertTrue(sources.output().contains(app.resolve("target/generated-fixture").toString()), sources.output());
         var testSources = discover(root, "--project", ":app", "--scope", "test", "-r", "class-path,source-path");
         assertEquals(0, testSources.status(), testSources.error());
-        assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")));
+        assertFalse(Files.exists(app.resolve("out/main/app/Main.class")));
         assertFalse(Files.exists(app.resolve("out/test/app/Check.class")));
-        Files.delete(app.resolve("out/main/app/Main.class"));
         Path arguments = root.resolve("runtime.args");
         var binaries = discover(root, "--project", ":app", "--scope", "runtime", "-r", "class-path,module-source-path", "-w", arguments.toString());
         assertEquals(0, binaries.status(), binaries.error());
