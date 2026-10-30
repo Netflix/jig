@@ -225,6 +225,21 @@ class MavenProjectCommandsTest {
         assertEquals(1, launches(fixture));
     }
 
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionCachesEverySourceScopeForTheRequestedProject() throws Exception {
+        var fixture = cacheFixture();
+        var compile = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "compile", "-r", "class-path,source-path");
+        var runtime = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "runtime", "-r", "class-path,source-path");
+        var test = run("maven", "--project-base-dir", fixture.project().toString(), "--project", "example:app", "--scope", "test", "-r", "class-path,source-path");
+        assertEquals(0, compile.status(), compile.error());
+        assertEquals(0, runtime.status(), runtime.error());
+        assertEquals(0, test.status(), test.error());
+        assertEquals(compile.output(), runtime.output());
+        assertEquals(compile.output(), test.output());
+        assertEquals(1, launches(fixture));
+    }
+
     private Fixture cacheFixture() throws Exception {
         var fixture = fixture(false);
         var files = List.of("pom.xml", "app/pom.xml", "parent.xml", "settings.xml");
@@ -821,7 +836,7 @@ class MavenProjectCommandsTest {
         }
         // Model a generator creating module-info.java after preparation chose binaries.
         Path wrapper = fixture.project().resolve("mvnw");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$scope\" \"$source_view\"", "\"$scope\" false"));
+        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$1\" \"$source_view\"", "\"$1\" false"));
         var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
                 "-r", "module-path,module-source-path");
         assertEquals(0, result.status(), result.error());
@@ -835,7 +850,7 @@ class MavenProjectCommandsTest {
         var fixture = fixture(false);
         Path wrapper = fixture.project().resolve("mvnw");
         String script = Files.readString(wrapper);
-        Files.writeString(wrapper, script + "printf 'jig-maven:'; base64 < capture.properties | tr -d '\\n'; printf '\\n'\n");
+        Files.writeString(wrapper, script.replace("emit \"$scope\"", "emit \"$scope\"; emit \"$scope\""));
         Path file = fixture.project().resolve("tool.args");
         Files.writeString(file, "original\n");
         var duplicate = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",
@@ -988,26 +1003,36 @@ class MavenProjectCommandsTest {
                 echo 'Maven build output'
                 scope=
                 options=
+                all_scopes=false
                 for argument do
                     case "$argument" in
                         -Djig.maven.scope=*) scope=${argument#*=} ;;
                         -Djig.maven.options=*) options=${argument#*=} ;;
+                        -Djig.maven.all-scopes=true) all_scopes=true ;;
                     esac
                 done
-                printf 'jig-maven:'
-                {
-                    while IFS= read -r line; do printf '%%s\\n' "$line"; done < capture.properties
-                    if [ -z "$scope" ]; then
-                        printf 'kind=projects\\n'
-                    else
-                        source_option=source-path
-                        if [ -f sources/module-info.java ]; then source_option=module-source-path; fi
-                        source_view=false
-                        case ",$options," in *,"$source_option",*) source_view=true ;; esac
-                        printf 'kind=arguments\\nscope=%%s\\nsource-view=%%s\\n' "$scope" "$source_view"
-                    fi
-                } | base64 | tr -d '\\n'
-                printf '\\n'
+                emit() {
+                    printf 'jig-maven:'
+                    {
+                        while IFS= read -r line; do printf '%%s\\n' "$line"; done < capture.properties
+                        if [ -z "$1" ]; then
+                            printf 'kind=projects\\n'
+                        else
+                            source_option=source-path
+                            if [ -f sources/module-info.java ]; then source_option=module-source-path; fi
+                            source_view=false
+                            case ",$options," in *,"$source_option",*) source_view=true ;; esac
+                            printf 'kind=arguments\\nscope=%%s\\nsource-view=%%s\\n' "$1" "$source_view"
+                        fi
+                    } | base64 | tr -d '\\n'
+                    printf '\\n'
+                }
+                emit "$scope"
+                if [ "$all_scopes" = true ]; then
+                    for captured_scope in compile runtime test; do
+                        if [ "$captured_scope" != "$scope" ]; then emit "$captured_scope"; fi
+                    done
+                fi
                 """.formatted(shellQuote(home.toString())));
         return new Fixture(project);
     }

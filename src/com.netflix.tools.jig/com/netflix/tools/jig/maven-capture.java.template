@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -58,18 +59,17 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         // This invocation queries the model; do not execute the requested lifecycle.
     }
 
-    private void capture(MavenSession session, Boolean preparedSources) {
+    private void capture(MavenSession session, Map<String, Boolean> preparedSources) {
         try {
-            Properties values = new Properties();
-            values.setProperty("version", "2");
-            values.setProperty("kind", session.getUserProperties().getProperty("jig.maven.scope") == null ? "projects" : "arguments");
+            Properties common = new Properties();
+            common.setProperty("version", "2");
             int index = 0;
             for (MavenProject project : session.getProjects()) {
-                values.setProperty("projects." + index, project.getGroupId() + ":" + project.getArtifactId());
-                values.setProperty("project-directories." + index++, project.getBasedir().getCanonicalPath());
+                common.setProperty("projects." + index, project.getGroupId() + ":" + project.getArtifactId());
+                common.setProperty("project-directories." + index++, project.getBasedir().getCanonicalPath());
             }
-            values.setProperty("projects.count", Integer.toString(index));
-            values.setProperty("project-directories.count", Integer.toString(index));
+            common.setProperty("projects.count", Integer.toString(index));
+            common.setProperty("project-directories.count", Integer.toString(index));
             TreeSet<String> files = new TreeSet<String>();
             for (MavenProject project : session.getProjects()) {
                 for (MavenProject model = project; model != null; model = model.getParent()) {
@@ -93,21 +93,37 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             File globalSettings = session.getRequest().getGlobalSettingsFile();
             if (userSettings != null) files.add(userSettings.getCanonicalPath());
             if (globalSettings != null) files.add(globalSettings.getCanonicalPath());
-            values.setProperty("build-files.count", Integer.toString(files.size()));
+            common.setProperty("build-files.count", Integer.toString(files.size()));
             int fileIndex = 0;
-            for (String file : files) values.setProperty("build-files." + fileIndex++, file);
-            if (session.getUserProperties().getProperty("jig.maven.scope") != null) {
-                resolve(session, values, preparedSources);
+            for (String file : files) common.setProperty("build-files." + fileIndex++, file);
+            String requestedScope = session.getUserProperties().getProperty("jig.maven.scope");
+            if (requestedScope == null) {
+                common.setProperty("kind", "projects");
+                emit(common);
+                return;
             }
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-            values.store(bytes, null);
-            // Maven 4 decorates System.out through its logger. The protocol uses
-            // the process stream directly; do not close Maven's output descriptor.
-            PrintStream output = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
-            output.println("\njig-maven:" + Base64.getEncoder().encodeToString(bytes.toByteArray()));
+            List<String> scopes = preparedSources != null ? new ArrayList<String>(preparedSources.keySet())
+                    : Boolean.parseBoolean(session.getUserProperties().getProperty("jig.maven.all-scopes"))
+                            ? Arrays.asList("compile", "runtime", "test") : Collections.singletonList(requestedScope);
+            for (String scope : scopes) {
+                Properties values = new Properties();
+                values.putAll(common);
+                values.setProperty("kind", "arguments");
+                resolve(session, values, scope, preparedSources == null ? null : preparedSources.get(scope));
+                emit(values);
+            }
         } catch (Exception failure) {
             throw new IllegalStateException("Cannot capture Maven arguments", failure);
         }
+    }
+
+    private static void emit(Properties values) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        values.store(bytes, null);
+        // Maven 4 decorates System.out through its logger. The protocol uses
+        // the process stream directly; do not close Maven's output descriptor.
+        PrintStream output = new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8");
+        output.println("\njig-maven:" + Base64.getEncoder().encodeToString(bytes.toByteArray()));
     }
 
     // A separate component leaves Maven's lifecycle starter untouched when paths
@@ -119,7 +135,7 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         private Object toolchainManager;
         private MavenSession buildSession;
         private List<MavenProject> projects;
-        private boolean preparedSources;
+        private Map<String, Boolean> preparedSources;
 
         @Override
         public void afterProjectsRead(MavenSession session) {
@@ -162,8 +178,19 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                 List<String> options = Arrays.asList(request.getProperty("jig.maven.options").split(","));
                 String scope = request.getProperty("jig.maven.scope");
                 MavenProject selected = selected(session);
-                preparedSources = sourceView(selected, scope, options);
-                if (preparedSources) {
+                preparedSources = new LinkedHashMap<String, Boolean>();
+                boolean prepared = sourceView(selected, scope, options);
+                boolean allScopes = Boolean.parseBoolean(request.getProperty("jig.maven.all-scopes")) && prepared;
+                if (allScopes) {
+                    for (String contextScope : Arrays.asList("compile", "runtime", "test")) {
+                        if (sourceView(selected, contextScope, options)) {
+                            preparedSources.put(contextScope, Boolean.TRUE);
+                        }
+                    }
+                } else {
+                    preparedSources.put(scope, Boolean.valueOf(prepared));
+                }
+                if (prepared) {
                     List<MavenProject> dependencies = new ArrayList<MavenProject>(projects);
                     dependencies.remove(selected);
                     if (!dependencies.isEmpty()) {
@@ -171,13 +198,15 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                         // ordering. Let Maven execute it, without selected compilation.
                         MavenSession prerequisites = session.clone();
                         prerequisites.setProjects(dependencies);
-                        session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "test-compile" : "compile"));
+                        session.getRequest().setGoals(Collections.singletonList(allScopes || "test".equals(scope) ? "test-compile" : "compile"));
                         lifecycleStarter.execute(prerequisites);
                     }
                     session.setProjects(Collections.singletonList(selected));
-                    // Run selected generators in the original native lifecycle.
-                    // Test sources additionally require the selected main output.
-                    session.getRequest().setGoals(Collections.singletonList("test".equals(scope) ? "process-test-sources" : "process-sources"));
+                    // Run selected generators in the original native lifecycle. An
+                    // all-scope source view must not reach compile while preparing the
+                    // selected project.
+                    session.getRequest().setGoals(Collections.singletonList(!allScopes && "test".equals(scope)
+                            ? "process-test-sources" : "process-sources"));
                 }
             } else if (execution.getType() == ExecutionEvent.Type.SessionEnded && projects != null) {
                 session.setProjects(projects);
@@ -186,15 +215,14 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
                     capture.dependencyResolver = dependencyResolver;
                     capture.executionPlanCalculator = executionPlanCalculator;
                     capture.toolchainManager = toolchainManager;
-                    capture.capture(session, Boolean.valueOf(preparedSources));
+                    capture.capture(session, preparedSources);
                 }
             }
         }
     }
 
-    private void resolve(MavenSession session, Properties values, Boolean preparedSources) throws Exception {
+    private void resolve(MavenSession session, Properties values, String scope, Boolean preparedSources) throws Exception {
         Properties request = session.getUserProperties();
-        String scope = request.getProperty("jig.maven.scope");
         List<String> options = Arrays.asList(request.getProperty("jig.maven.options").split(","));
         MavenProject selected = selected(session);
         session.setCurrentProject(selected);

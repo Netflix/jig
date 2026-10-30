@@ -26,7 +26,7 @@ final class GradleCapture {
     private final List<String> projects = new ArrayList<>();
     private final List<BuildCapture> discoveries = new ArrayList<>();
     private boolean discovered;
-    private BuildCapture metadata;
+    private final List<BuildCapture> metadata = new ArrayList<>();
     private BuildCapture compiler;
 
     GradleCapture(Request request) {
@@ -49,10 +49,21 @@ final class GradleCapture {
             capture.expect("kind", request.compiler() ? "compiler-metadata" : request.listSourceSets() ? "source-sets" : "arguments");
             projects.addAll(capture.list("project-paths"));
             discovered = true;
-            if (metadata != null) {
-                throw new IOException("Duplicate Gradle project capture");
+            if (request.compiler() || request.listSourceSets()) {
+                if (!metadata.isEmpty()) {
+                    throw new IOException("Duplicate Gradle project capture");
+                }
+            } else {
+                String sourceSet = capture.require("source-set");
+                String classpath = capture.require("context-classpath");
+                for (var existing : metadata) {
+                    if (existing.require("source-set").equals(sourceSet)
+                            && existing.require("context-classpath").equals(classpath)) {
+                        throw new IOException("Duplicate Gradle project capture: " + sourceSet + "/" + classpath);
+                    }
+                }
             }
-            metadata = capture;
+            metadata.add(capture);
         }
     }
 
@@ -72,10 +83,33 @@ final class GradleCapture {
     }
 
     BuildCapture metadata() throws IOException {
-        if (metadata == null) {
+        if (metadata.isEmpty()) {
             throw new IOException("Gradle did not return a project capture");
         }
-        return metadata;
+        return request.listSourceSets() || request.compiler()
+                ? metadata.getFirst()
+                : metadata(request.sourceSet(), request.classpath());
+    }
+
+    BuildCapture metadata(String sourceSet, String classpath) throws IOException {
+        for (var capture : metadata) {
+            if (capture.require("source-set").equals(sourceSet)
+                    && (classpath == null || capture.require("context-classpath").equals(classpath))) {
+                return capture;
+            }
+        }
+        if (metadata.size() == 1) {
+            metadata.getFirst().expect("source-set", sourceSet);
+            if (classpath != null) {
+                metadata.getFirst().expect("context-classpath", classpath);
+            }
+        }
+        throw new IOException("Gradle did not return project context " + sourceSet
+                + (classpath == null ? "" : "/" + classpath));
+    }
+
+    List<BuildCapture> metadataCaptures() {
+        return List.copyOf(metadata);
     }
 
     List<String> compilerOptions() throws IOException {

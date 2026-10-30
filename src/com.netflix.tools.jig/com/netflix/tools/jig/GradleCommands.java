@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
 
 import com.netflix.module.compile.internal.ContentHash;
@@ -50,9 +51,11 @@ final class GradleCommands {
         try {
             var launcher = BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat");
             var cache = new ProjectQueryCache("Gradle", request.root(), "projects", launcher, "gradle-init.gradle");
+            boolean allContexts = allContexts(request);
             String query = request.listProjects() ? "projects" : request.listSourceSets() ? "source-sets\n" + request.projectPath()
-                    : "arguments\n" + request.projectPath() + '\n' + request.sourceSet() + '\n' + request.classpath() + '\n'
-                            + request.compiler() + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
+                    : request.compiler() ? "compiler\n" + request.projectPath() + '\n' + request.sourceSet()
+                    : "arguments\n" + request.projectPath() + (allContexts ? "" : "\n" + request.sourceSet() + "\n" + request.classpath())
+                            + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
             var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Gradle", request.root(), query, launcher, "gradle-init.gradle");
             if (!request.listProjects()) {
                 if (request.refresh()) {
@@ -66,7 +69,8 @@ final class GradleCommands {
                     if (request.listSourceSets()) {
                         result.getFirst().list("source-sets").stream().distinct().sorted().forEach(out::println);
                     } else {
-                        write(out, request.argumentFile(), JavaArgumentFile.render(result.getFirst().list("arguments")));
+                        var selected = cachedArguments(result, request);
+                        write(out, request.argumentFile(), JavaArgumentFile.render(selected.list("arguments")));
                     }
                     return 0;
                 }
@@ -135,17 +139,41 @@ final class GradleCommands {
                 if (request.listSourceSets()) {
                     resultCache.store(List.of(metadata));
                     sourceSets.stream().distinct().sorted().forEach(out::println);
-                } else {
+                } else if (request.compiler()) {
                     if (!sourceSets.contains(request.sourceSet())) {
                         throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
                     }
                     metadata.expect("source-set", request.sourceSet());
-                    var resolved = request.compiler() ? captures.compilerOptions()
-                            : GradleArguments.resolve(request, GradleArguments.View.read(metadata));
+                    var resolved = captures.compilerOptions();
                     var inputs = new ArrayList<>(captures.discoveries());
                     inputs.add(metadata);
                     resultCache.store(List.of(BuildCapture.arguments("Gradle", resolved, inputs)));
                     write(out, request.argumentFile(), JavaArgumentFile.render(resolved));
+                } else {
+                    if (!sourceSets.contains(request.sourceSet())) {
+                        throw new IllegalArgumentException("Unknown source set in project " + request.projectPath() + ": " + request.sourceSet());
+                    }
+                    var cachedArguments = new ArrayList<BuildCapture>();
+                    List<String> selected = null;
+                    for (var context : captures.metadataCaptures()) {
+                        context.expect("project-path", request.projectPath());
+                        String sourceSet = context.require("source-set");
+                        String classpath = context.require("context-classpath");
+                        var contextRequest = contextRequest(request, sourceSet, classpath);
+                        var resolved = GradleArguments.resolve(contextRequest, GradleArguments.View.read(context));
+                        var inputs = new ArrayList<>(captures.discoveries());
+                        inputs.add(context);
+                        cachedArguments.add(BuildCapture.arguments("Gradle", resolved, inputs, Map.of(
+                                "project-path", request.projectPath(), "source-set", sourceSet, "context-classpath", classpath)));
+                        if (sourceSet.equals(request.sourceSet()) && classpath.equals(request.classpath())) {
+                            selected = resolved;
+                        }
+                    }
+                    if (selected == null) {
+                        throw new IOException("Gradle did not return the requested project context");
+                    }
+                    resultCache.store(cachedArguments);
+                    write(out, request.argumentFile(), JavaArgumentFile.render(selected));
                 }
             }
             return 0;
@@ -160,6 +188,31 @@ final class GradleCommands {
             err.println("jig gradle: interrupted");
             return 1;
         }
+    }
+
+    private static BuildCapture cachedArguments(List<BuildCapture> captures, Request request) throws IOException {
+        if (request.compiler()) {
+            return captures.getFirst();
+        }
+        for (var capture : captures) {
+            if (request.projectPath().equals(capture.optional("project-path"))
+                    && request.sourceSet().equals(capture.optional("source-set"))
+                    && request.classpath().equals(capture.optional("context-classpath"))) {
+                return capture;
+            }
+        }
+        throw new IOException("Cached Gradle project model does not contain " + request.projectPath() + "/"
+                + request.sourceSet() + "/" + request.classpath());
+    }
+
+    private static Request contextRequest(Request request, String sourceSet, String classpath) {
+        return new Request(request.root(), request.projectPath(), sourceSet, classpath, false, false, false, false,
+                request.options(), request.moduleForm(), request.argumentFile(), request.verbose(), request.refresh());
+    }
+
+    private static boolean allContexts(Request request) {
+        return !request.listProjects() && !request.listSourceSets() && !request.compiler()
+                && (request.options().contains("source-path") || request.options().contains("module-source-path"));
     }
 
     private static void write(PrintWriter out, Path file, String arguments) throws IOException {
@@ -211,7 +264,8 @@ final class GradleCommands {
                         "-Pjig.gradle.root=" + request.root(),
                         "-Pjig.gradle.list=" + request.listProjects(),
                         "-Pjig.gradle.list-contexts=" + request.listProjects(),
-                        "-Pjig.gradle.list-source-sets=" + request.listSourceSets()));
+                        "-Pjig.gradle.list-source-sets=" + request.listSourceSets(),
+                        "-Pjig.gradle.all-contexts=" + allContexts(request)));
         if (!request.listProjects()) {
             arguments.add("-Pjig.gradle.project-path=" + request.projectPath());
         }

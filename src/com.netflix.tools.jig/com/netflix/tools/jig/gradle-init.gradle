@@ -313,7 +313,7 @@ gradle.settingsEvaluated { settings ->
         // including in its earliest configuration-cache releases.
         def providers = settings.services.get(org.gradle.api.provider.ProviderFactory)
         parameters = [:]
-        for (def name : ['root', 'project-path', 'list', 'list-contexts', 'list-source-sets', 'compiler', 'source-set', 'classpath', 'options']) {
+        for (def name : ['root', 'project-path', 'list', 'list-contexts', 'list-source-sets', 'all-contexts', 'compiler', 'source-set', 'classpath', 'options']) {
             def key = 'jig.gradle.' + name
             def value = providers.gradleProperty(key)
             if (gradleVersion < GradleVersion.version('7.4')) {
@@ -330,6 +330,7 @@ gradle.settingsEvaluated { settings ->
     def listProjects = Boolean.parseBoolean(parameters['jig.gradle.list'])
     def listContexts = listProjects && Boolean.parseBoolean(parameters['jig.gradle.list-contexts'])
     def listSourceSets = Boolean.parseBoolean(parameters['jig.gradle.list-source-sets'])
+    def allContexts = Boolean.parseBoolean(parameters['jig.gradle.all-contexts'])
     def compilerRequest = Boolean.parseBoolean(parameters['jig.gradle.compiler'])
     def sourceSetName = parameters['jig.gradle.source-set']
     def classpath = parameters['jig.gradle.classpath']
@@ -372,7 +373,11 @@ gradle.settingsEvaluated { settings ->
             // Register after evaluation so even eager task-container callbacks cannot
             // snapshot a half-configured source set. The capture task itself is lazy.
             project.afterEvaluate {
-                def configure = { task ->
+                def sourceSets = project.extensions.findByName('sourceSets')
+                if (sourceSets == null && project.hasProperty('sourceSets')) {
+                    sourceSets = project.property('sourceSets')
+                }
+                def configure = { task, selectedSourceSetName, selectedClasspath ->
                     task.description = 'Capture the Java argument view requested by jig'
                     task.buildFiles = new ArrayList<String>(discoveryFiles)
                     task.buildPath = buildPath
@@ -408,7 +413,10 @@ gradle.settingsEvaluated { settings ->
                     task.captureKind = listProjects ? 'projects' : listSourceSets ? 'source-sets' : compilerRequest ? 'compiler-metadata' : 'arguments'
                     task.buildPath = buildPath
                     task.projectPath = listContexts ? qualifiedPath(project.path) : selectedPath ?: ''
-                    task.sourceSet = sourceSetName ?: ''
+                    task.sourceSet = selectedSourceSetName ?: ''
+                    if (!listProjects && !listSourceSets && !compilerRequest) {
+                        task.metadata['context-classpath'] = selectedClasspath
+                    }
                     task.projectPaths = listContexts ? [qualifiedPath(project.path)] : projectPaths
                     task.projectDirectories = listContexts ? [project.projectDir.canonicalPath] : listProjects ? projectDirectories : []
                     if (listProjects && project.path == ':') {
@@ -424,15 +432,11 @@ gradle.settingsEvaluated { settings ->
                             return
                         }
                     }
-                    def sourceSets = project.extensions.findByName('sourceSets')
-                    if (sourceSets == null && project.hasProperty('sourceSets')) {
-                        sourceSets = project.property('sourceSets')
-                    }
                     task.sourceSetNames = sourceSets == null ? [] : sourceSets.names.toList().sort()
                     if (listSourceSets || listContexts) {
                         return
                     }
-                    def sourceSet = sourceSets == null ? null : sourceSets.findByName(sourceSetName)
+                    def sourceSet = sourceSets == null ? null : sourceSets.findByName(selectedSourceSetName)
                     if (sourceSet == null) {
                         return
                     }
@@ -445,33 +449,33 @@ gradle.settingsEvaluated { settings ->
                         // would execute. Replace predicates/disabled state and discard
                         // finalizers so querying cannot run compiler-adjacent actions.
                         compile.enabled = true
-                        compile.setOnlyIf(new JigCompilerCapture(projectPath: selectedPath, sourceSet: sourceSetName))
+                        compile.setOnlyIf(new JigCompilerCapture(projectPath: selectedPath, sourceSet: selectedSourceSetName))
                         compile.setFinalizedBy([])
                         task.dependsOn(compile)
                         return
                     }
                     task.sourceRoots = sourceSet.allJava.sourceDirectories
                     if (requested.contains('source-path')) {
-                        def configurationName = classpath == 'runtime' ? sourceSet.runtimeClasspathConfigurationName : sourceSet.compileClasspathConfigurationName
+                        def configurationName = selectedClasspath == 'runtime' ? sourceSet.runtimeClasspathConfigurationName : sourceSet.compileClasspathConfigurationName
                         def configuration = project.configurations.getByName(configurationName)
                         task.dependencySources = gradleVersion >= GradleVersion.version('7.5')
                                 ? JigGradleSourceVariants.files(project, configuration)
                                 : JigGradleSourceQuery.files(project, configuration)
                         task.dependsOn(task.dependencySources)
                     }
-                    def needsRun = sourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (classpath == 'runtime' && (needsModularity || needsArguments)))
+                    def needsRun = selectedSourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (selectedClasspath == 'runtime' && (needsModularity || needsArguments)))
                     def run = needsRun ? project.tasks.findByName('run') : null
-                    def needsCompilerArguments = classpath == 'compile' && needsArguments
-                    def needsCompilerModularity = needsModularity && (classpath == 'compile' || run == null)
+                    def needsCompilerArguments = selectedClasspath == 'compile' && needsArguments
+                    def needsCompilerModularity = needsModularity && (selectedClasspath == 'compile' || run == null)
                     def needsSourcePreparation = needsClasspath && needsSources
                     def needsCompile = needsLanguage || needsProcessors || needsCompilerArguments || needsCompilerModularity || needsSourcePreparation
                     def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
                     if (needsClasspath) {
-                        task.binaryPath = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
+                        task.binaryPath = selectedClasspath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
                         task.sourceOutput = sourceSet.output
                         task.sourcePathRequested = requested.contains('source-path')
                         task.moduleSourcePathRequested = requested.contains('module-source-path')
-                        if (classpath == 'compile') {
+                        if (selectedClasspath == 'compile') {
                             // SourceSetOutput carries the native classes/resources
                             // producer graph; do not synthesize a compiler invocation.
                             task.binaryPath = sourceSet.output + task.binaryPath
@@ -491,7 +495,7 @@ gradle.settingsEvaluated { settings ->
                         task.processorPath = compile.options.annotationProcessorPath
                     }
                     if (needsModularity) {
-                        if (classpath == 'runtime' && run != null) {
+                        if (selectedClasspath == 'runtime' && run != null) {
                             task.detectSourceModule = false
                             task.inferModules = (run.hasProperty('modularity') && run.modularity.inferModulePath.get()
                                     && run.hasProperty('mainModule') && run.mainModule.present)
@@ -534,22 +538,39 @@ gradle.settingsEvaluated { settings ->
                     if (requested.contains('module-version') && project.version.toString() != 'unspecified') {
                         task.metadata['module-version'] = project.version.toString()
                     }
-                    if (classpath == 'compile' && needsArguments) {
+                    if (selectedClasspath == 'compile' && needsArguments) {
                         task.additionalArguments = compile.options.compilerArgs.collect { it.toString() }
                         if (compile.options.hasProperty('compilerArgumentProviders')) {
                             task.argumentProviders = new ArrayList(compile.options.compilerArgumentProviders)
                         }
-                    } else if (classpath == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
+                    } else if (selectedClasspath == 'runtime' && needsArguments && run != null && run.hasProperty('jvmArgs')) {
                         task.additionalArguments = (run.jvmArgs == null ? [] : run.jvmArgs).collect { it.toString() }
                         if (run.hasProperty('jvmArgumentProviders')) {
                             task.argumentProviders = new ArrayList(run.jvmArgumentProviders)
                         }
                     }
                 }
-                if (lazyTasks) {
-                    project.tasks.register(captureTaskName, JigCaptureTask, configure)
-                } else {
-                    project.tasks.create(captureTaskName, JigCaptureTask, configure)
+                def registerCapture = { name, selectedSourceSetName, selectedClasspath ->
+                    def action = { task -> configure(task, selectedSourceSetName, selectedClasspath) }
+                    return lazyTasks ? project.tasks.register(name, JigCaptureTask, action)
+                            : project.tasks.create(name, JigCaptureTask, action)
+                }
+                def capture = registerCapture(captureTaskName, sourceSetName, classpath)
+                if (allContexts && !dispatch && !listProjects && !listSourceSets && !compilerRequest && sourceSets != null
+                        && sourceSets.findByName(sourceSetName) != null) {
+                    int index = 0
+                    sourceSets.names.toList().sort().each { contextSourceSet ->
+                        ['compile', 'runtime'].each { contextClasspath ->
+                            if (contextSourceSet != sourceSetName || contextClasspath != classpath) {
+                                def context = registerCapture(captureTaskName + (++index), contextSourceSet, contextClasspath)
+                                if (lazyTasks) {
+                                    capture.configure { dependsOn(context) }
+                                } else {
+                                    capture.dependsOn(context)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

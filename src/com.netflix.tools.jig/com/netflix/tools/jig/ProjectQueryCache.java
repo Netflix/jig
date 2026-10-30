@@ -246,10 +246,10 @@ final class ProjectQueryCache {
             throw new IOException("Empty " + tool + " cache response");
         }
         if (captures.getFirst().require("kind").equals("argfile")) {
-            if (captures.size() != 1) {
-                throw new IOException("Duplicate cached argfile");
+            for (var capture : captures) {
+                capture.expect("kind", "argfile");
+                capture.list("arguments");
             }
-            captures.getFirst().list("arguments");
         } else if (captures.getFirst().require("kind").equals("source-sets")) {
             captures.getFirst().list("source-sets");
         } else if (tool.equals("Gradle")) {

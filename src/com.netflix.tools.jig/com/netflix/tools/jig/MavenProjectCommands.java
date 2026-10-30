@@ -20,7 +20,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import com.netflix.tools.jig.CommandLine.ParsedArguments;
@@ -93,9 +95,10 @@ final class MavenProjectCommands {
             var launcher = BuildProcess.launcher(request.base(), "mvn", "mvnw", "mvn.cmd", "mvnw.cmd");
             var cache = new ProjectQueryCache("Maven", request.base(), "projects\n" + (request.listProjects() && request.project() != null ? request.project() : ""),
                     launcher, "maven-capture.java.template");
+            boolean allScopes = allScopes(request);
             var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Maven", request.base(),
-                    "arguments\n" + request.project() + '\n' + request.scope() + '\n' + request.options().stream().sorted().toList()
-                            + '\n' + request.moduleForm(), launcher, "maven-capture.java.template");
+                    "arguments\n" + request.project() + (allScopes ? "" : "\n" + request.scope()) + '\n'
+                            + request.options().stream().sorted().toList() + '\n' + request.moduleForm(), launcher, "maven-capture.java.template");
             if (!request.listProjects()) {
                 if (request.refresh()) {
                     resultCache.clear();
@@ -105,7 +108,7 @@ final class MavenProjectCommands {
                     if (request.verbose()) {
                         err.println("jig maven: cache hit");
                     }
-                    write(out, request.argumentFile(), JavaArgumentFile.render(result.getFirst().list("arguments")));
+                    write(out, request.argumentFile(), JavaArgumentFile.render(cachedArguments(result, request).list("arguments")));
                     return 0;
                 }
             }
@@ -162,21 +165,18 @@ final class MavenProjectCommands {
             }
             if (!request.listProjects()) {
                 captureArguments.addAll(List.of("-Djig.maven.project=" + request.project(), "-Djig.maven.scope=" + request.scope(),
+                        "-Djig.maven.all-scopes=" + allScopes,
                         "-Djig.maven.options=" + String.join(",", request.options().stream().sorted().toList())));
             }
             String phase = "validate";
             if (prepare) {
                 captureArguments.add("--also-make");
-                boolean testScope = request.scope().equals("test");
-                phase = testScope ? "test-compile" : "compile";
+                phase = request.scope().equals("test") ? "test-compile" : "compile";
             }
             captureArguments.add(phase);
             var captures = new ArrayList<BuildCapture>();
             int status = invoke(request, captureArguments, line -> {
                 if (line.startsWith(CAPTURE_PREFIX)) {
-                    if (!captures.isEmpty()) {
-                        throw new IOException("Duplicate Maven capture");
-                    }
                     captures.add(BuildCapture.decode("Maven", line.substring(CAPTURE_PREFIX.length())));
                 } else {
                     err.println(line);
@@ -193,6 +193,9 @@ final class MavenProjectCommands {
             capture.expect("kind", request.listProjects() ? "projects" : "arguments");
             List<String> projects = capture.list("projects");
             if (request.listProjects()) {
+                if (captures.size() != 1) {
+                    throw new IOException("Duplicate Maven project capture");
+                }
                 cache.store(List.of(capture));
                 if (request.tabSeparated()) {
                     out.print(ProjectListing.mavenContexts(List.of(capture), SCOPES));
@@ -200,15 +203,35 @@ final class MavenProjectCommands {
                     projects.stream().distinct().sorted().forEach(out::println);
                 }
             } else {
-                String selected = capture.require("project");
-                if (!selected.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+") || !projects.contains(selected)
-                        || !(selected.equals(request.project()) || (request.project().startsWith(":") && selected.endsWith(request.project())))) {
-                    throw new IOException("Unexpected Maven capture project: " + selected);
+                var cachedArguments = new ArrayList<BuildCapture>();
+                var capturedScopes = new HashSet<String>();
+                List<String> selectedArguments = null;
+                for (var context : captures) {
+                    context.expect("kind", "arguments");
+                    String selected = context.require("project");
+                    if (!selected.matches("[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+") || !projects.contains(selected)
+                            || !(selected.equals(request.project()) || (request.project().startsWith(":") && selected.endsWith(request.project())))) {
+                        throw new IOException("Unexpected Maven capture project: " + selected);
+                    }
+                    String scope = context.require("scope");
+                    if (!SCOPES.contains(scope)) {
+                        throw new IOException("Unexpected Maven capture scope: " + scope);
+                    }
+                    if (!capturedScopes.add(scope)) {
+                        throw new IOException("Duplicate Maven capture scope: " + scope);
+                    }
+                    var resolved = MavenArguments.resolve(request.options(), request.moduleForm(), MavenArguments.View.read(context));
+                    cachedArguments.add(BuildCapture.arguments("Maven", resolved, List.of(context),
+                            Map.of("project", selected, "scope", scope)));
+                    if (scope.equals(request.scope())) {
+                        selectedArguments = resolved;
+                    }
                 }
-                capture.expect("scope", request.scope());
-                var resolved = MavenArguments.resolve(request.options(), request.moduleForm(), MavenArguments.View.read(capture));
-                resultCache.store(List.of(BuildCapture.arguments("Maven", resolved, List.of(capture))));
-                write(out, request.argumentFile(), JavaArgumentFile.render(resolved));
+                if (selectedArguments == null) {
+                    throw new IOException("Maven did not return the requested project scope");
+                }
+                resultCache.store(cachedArguments);
+                write(out, request.argumentFile(), JavaArgumentFile.render(selectedArguments));
             }
             return 0;
         } catch (IOException failure) {
@@ -222,6 +245,20 @@ final class MavenProjectCommands {
             err.println("jig maven: " + failure.getMessage());
             return 2;
         }
+    }
+
+    private static boolean allScopes(Request request) {
+        return !request.listProjects()
+                && (request.options().contains("source-path") || request.options().contains("module-source-path"));
+    }
+
+    private static BuildCapture cachedArguments(List<BuildCapture> captures, Request request) throws IOException {
+        for (var capture : captures) {
+            if (request.scope().equals(capture.optional("scope"))) {
+                return capture;
+            }
+        }
+        throw new IOException("Cached Maven project model does not contain " + request.project() + "/" + request.scope());
     }
 
     private static void write(PrintWriter out, Path file, String arguments) throws IOException {
