@@ -563,6 +563,14 @@ class GradleCommandsTest {
         inputs.add(included.resolve("build.gradle"));
         putList(values, "build-files", inputs.stream().map(Path::toString).toList());
         storeCapture(fixture, values);
+        var runtime = new Properties();
+        try (var input = Files.newInputStream(fixture.root().resolve("runtime.properties"))) {
+            runtime.load(input);
+        }
+        putList(runtime, "build-files", inputs.stream().map(Path::toString).toList());
+        try (var output = Files.newOutputStream(fixture.root().resolve("runtime.properties"))) {
+            runtime.store(output, "fixture");
+        }
         Path wrapper = fixture.root().resolve("gradlew");
         Files.writeString(wrapper, Files.readString(wrapper).replace("echo 'Gradle build output'", "echo capture >> launches.txt\necho 'Gradle build output'"));
         return fixture;
@@ -805,6 +813,19 @@ class GradleCommandsTest {
                                .resolve("runtime only.jar")
                                .toString()),
                 arguments(runtime));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void resolutionCachesEveryClasspathForTheRequestedProject() throws Exception {
+        var fixture = cacheFixture();
+        var compile = resolve(fixture, "compile", "class-path");
+        var runtime = resolve(fixture, "runtime", "class-path");
+        assertEquals(0, compile.exitCode(), compile.error());
+        assertEquals(0, runtime.exitCode(), runtime.error());
+        assertEquals(List.of("--class-path", fixture.root().resolve("compile only.jar").toString()), arguments(compile));
+        assertEquals(List.of("--class-path", fixture.root().resolve("runtime only.jar").toString()), arguments(runtime));
+        assertEquals(1, launches(fixture));
     }
 
     @Test
@@ -1262,7 +1283,7 @@ class GradleCommandsTest {
     void concurrentQueriesHaveIndependentProcessResponsesWithoutSerialization() throws Exception {
         var fixture = fixture();
         Path wrapper = fixture.root().resolve("gradlew");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("classpath=compile", """
+        Files.writeString(wrapper, Files.readString(wrapper).replace("                classpath=compile\n                kind=arguments", """
                 touch "ready-$$"
                 attempts=0
                 while [ "$(find . -name 'ready-*' | wc -l)" -lt 2 ]; do
@@ -1274,7 +1295,7 @@ class GradleCommandsTest {
                     sleep 0.02
                 done
                 classpath=compile
-                """));
+                kind=arguments"""));
         var start = new CountDownLatch(1);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var queries = new ArrayList<java.util.concurrent.Future<Result>>();
@@ -1550,6 +1571,7 @@ class GradleCommandsTest {
                 kind=arguments
                 project=:app
                 source_set=main
+                all_contexts=false
                 for argument do
                     case "$argument" in
                         -Pjig.gradle.classpath=*) classpath=${argument#*=} ;;
@@ -1558,13 +1580,14 @@ class GradleCommandsTest {
                         -Pjig.gradle.compiler=true) kind=compiler-metadata ;;
                         -Pjig.gradle.project-path=*) project=${argument#*=} ;;
                         -Pjig.gradle.source-set=*) source_set=${argument#*=} ;;
+                        -Pjig.gradle.all-contexts=true) all_contexts=true ;;
                     esac
                 done
                 emit() {
                     printf 'jig-gradle:'
                     {
                         while IFS= read -r line; do printf '%s\\n' "$line"; done < "$classpath.properties"
-                        printf 'kind=%s\\nproject-path=%s\\nsource-set=%s\\n' "$1" "$project" "$source_set"
+                        printf 'kind=%s\\nproject-path=%s\\nsource-set=%s\\ncontext-classpath=%s\\n' "$1" "$project" "$source_set" "$classpath"
                     } | base64 | tr -d '\\n'
                     printf '\\n'
                 }
@@ -1574,6 +1597,10 @@ class GradleCommandsTest {
                     done < "$classpath.properties"
                 fi
                 emit "$kind"
+                if [ "$kind" = arguments ] && [ "$all_contexts" = true ]; then
+                    if [ "$classpath" = compile ]; then classpath=runtime; else classpath=compile; fi
+                    emit "$kind"
+                fi
                 """);
         return new Fixture(root, project);
     }
@@ -1587,6 +1614,7 @@ class GradleCommandsTest {
         values.setProperty("build-path", ":");
         values.setProperty("project-path", ":app");
         values.setProperty("source-set", "main");
+        values.setProperty("context-classpath", runtime ? "runtime" : "compile");
         putList(values, "project-paths", List.of(":", ":app"));
         putList(values, "project-directories", List.of(root.toString(), project.toString()));
         putList(values, "source-sets", List.of("main", "test", "integrationTest"));

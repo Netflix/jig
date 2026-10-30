@@ -639,7 +639,7 @@ class GradleIntegrationTest {
             }
         }
         Path evaluations = fixture.root().resolve("evaluations.txt");
-        int expectedEvaluations = 1 + sourceSets.size() * classpaths.size();
+        int expectedEvaluations = 2;
         assertEquals(expectedEvaluations, Files.readAllLines(evaluations).size(), Files.readString(evaluations));
         Path compiled = fixture.app().resolve("build/classes/java/main/app/Main.class");
         Files.delete(compiled);

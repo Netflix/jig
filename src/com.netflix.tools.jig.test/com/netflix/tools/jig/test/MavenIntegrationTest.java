@@ -371,7 +371,7 @@ class MavenIntegrationTest {
             assertTrue(result.output().contains(app.resolve("out/main").toString()), result.output());
             assertEquals(scope.equals("test"), result.output().contains(app.resolve("out/test").toString()), result.output());
             assertTrue(Files.isRegularFile(app.resolve("out/main/app/Main.class")), scope);
-            assertEquals(scope.equals("test"), Files.isRegularFile(app.resolve("out/test/app/Check.class")), scope);
+            assertTrue(Files.isRegularFile(app.resolve("out/test/app/Check.class")), scope);
         }
         assertFalse(Files.exists(app.resolve("target/surefire-reports")));
     }

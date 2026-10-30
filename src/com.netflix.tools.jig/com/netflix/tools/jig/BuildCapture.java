@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 /** A single versioned transport record, validated before adapter-specific projection. */
@@ -48,9 +49,15 @@ final class BuildCapture {
     }
 
     static BuildCapture arguments(String tool, List<String> arguments, List<BuildCapture> captures) throws IOException {
+        return arguments(tool, arguments, captures, Map.of());
+    }
+
+    static BuildCapture arguments(String tool, List<String> arguments, List<BuildCapture> captures,
+            Map<String, String> metadata) throws IOException {
         var values = new Properties();
         values.setProperty("version", "2");
         values.setProperty("kind", "argfile");
+        metadata.forEach(values::setProperty);
         putList(values, "arguments", arguments);
         var inputs = new java.util.TreeSet<String>();
         boolean reported = !captures.isEmpty();

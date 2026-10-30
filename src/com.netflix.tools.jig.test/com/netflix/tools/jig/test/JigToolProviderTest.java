@@ -76,6 +76,7 @@ class JigToolProviderTest {
         values.setProperty("kind", "arguments");
         values.setProperty("project-path", ":");
         values.setProperty("source-set", "main");
+        values.setProperty("context-classpath", "compile");
         values.setProperty("project-paths.count", "1");
         values.setProperty("project-paths.0", ":");
         values.setProperty("source-sets.count", "1");
