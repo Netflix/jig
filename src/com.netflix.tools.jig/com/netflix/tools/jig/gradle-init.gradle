@@ -115,6 +115,17 @@ class JigGradleModulePaths {
     }
 }
 
+class JigGradleBinaryArtifacts {
+    static FileCollection files(def project, def configuration) {
+        if (GradleVersion.current().baseVersion < GradleVersion.version('4.0')) {
+            return project.files(configuration.resolvedConfiguration.lenientConfiguration.files)
+        }
+        return configuration.incoming.artifactView {
+            lenient = true
+        }.files
+    }
+}
+
 class JigGradleSourceVariants {
     static FileCollection files(def project, def configuration) {
         // These attribute types are newer than the oldest supported Gradle.
@@ -192,7 +203,9 @@ class JigCaptureTask extends DefaultTask {
     @Nested List argumentProviders = []
     @Input boolean inferModules = false
     @Input boolean detectSourceModule = true
+    @Input boolean lenient = false
     @Classpath FileCollection binaryPath
+    @Internal FileCollection lenientBinaryPath
     @Internal FileCollection sourceOutput
     @Input boolean sourcePathRequested = false
     @Input boolean moduleSourcePathRequested = false
@@ -215,7 +228,8 @@ class JigCaptureTask extends DefaultTask {
         putList(values, 'dependency-sources', dependencySources.files.collect { it.canonicalPath }.sort())
         def modular = false
         def sourceView = JigCompilationRequired.sourceView(sourceRoots, sourcePathRequested, moduleSourcePathRequested)
-        def selectedPath = sourceView && sourceOutput != null ? binaryPath - sourceOutput : binaryPath
+        def configuredPath = lenient ? lenientBinaryPath : binaryPath
+        def selectedPath = sourceView && sourceOutput != null ? configuredPath - sourceOutput : configuredPath
         def classpath = selectedPath.files
         def modulepath = []
         if (inferModules) {
@@ -313,7 +327,7 @@ gradle.settingsEvaluated { settings ->
         // including in its earliest configuration-cache releases.
         def providers = settings.services.get(org.gradle.api.provider.ProviderFactory)
         parameters = [:]
-        for (def name : ['root', 'project-path', 'list', 'list-contexts', 'list-source-sets', 'all-contexts', 'compiler', 'source-set', 'classpath', 'options']) {
+        for (def name : ['root', 'project-path', 'list', 'list-contexts', 'list-source-sets', 'all-contexts', 'compiler', 'source-set', 'classpath', 'options', 'lenient']) {
             def key = 'jig.gradle.' + name
             def value = providers.gradleProperty(key)
             if (gradleVersion < GradleVersion.version('7.4')) {
@@ -334,6 +348,7 @@ gradle.settingsEvaluated { settings ->
     def compilerRequest = Boolean.parseBoolean(parameters['jig.gradle.compiler'])
     def sourceSetName = parameters['jig.gradle.source-set']
     def classpath = parameters['jig.gradle.classpath']
+    def lenient = Boolean.parseBoolean(parameters['jig.gradle.lenient'])
     def requested = ((parameters['jig.gradle.options'] ?: '').split(',') as List).toSet()
     def captureTaskName = '_jigCapture'
     def needsClasspath = requested.contains('class-path') || requested.contains('module-path')
@@ -385,7 +400,9 @@ gradle.settingsEvaluated { settings ->
                     task.sourceRoots = project.files()
                     task.dependencySources = project.files()
                     task.binaryPath = project.files()
+                    task.lenientBinaryPath = project.files()
                     task.processorPath = project.files()
+                    task.lenient = lenient
                     if (dispatch) {
                         task.captureKind = 'projects'
                         if (projectPath != null) {
@@ -471,14 +488,23 @@ gradle.settingsEvaluated { settings ->
                     def needsCompile = needsLanguage || needsProcessors || needsCompilerArguments || needsCompilerModularity || needsSourcePreparation
                     def compile = needsCompile ? project.tasks.getByName(sourceSet.compileJavaTaskName) : null
                     if (needsClasspath) {
-                        task.binaryPath = selectedClasspath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
                         task.sourceOutput = sourceSet.output
                         task.sourcePathRequested = requested.contains('source-path')
                         task.moduleSourcePathRequested = requested.contains('module-source-path')
-                        if (selectedClasspath == 'compile') {
-                            // SourceSetOutput carries the native classes/resources
-                            // producer graph; do not synthesize a compiler invocation.
-                            task.binaryPath = sourceSet.output + task.binaryPath
+                        if (task.lenient) {
+                            def configurationName = selectedClasspath == 'runtime'
+                                    ? sourceSet.runtimeClasspathConfigurationName
+                                    : sourceSet.compileClasspathConfigurationName
+                            def configuration = project.configurations.getByName(configurationName)
+                            // Insight queries consume paths without requiring their producer tasks.
+                            task.lenientBinaryPath = sourceSet.output + JigGradleBinaryArtifacts.files(project, configuration)
+                        } else {
+                            task.binaryPath = selectedClasspath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
+                            if (selectedClasspath == 'compile') {
+                                // SourceSetOutput carries the native classes/resources
+                                // producer graph; do not synthesize a compiler invocation.
+                                task.binaryPath = sourceSet.output + task.binaryPath
+                            }
                         }
                         // Included build logic may already have compiled to load
                         // the main build's plugins. Preserve that native bootstrap;

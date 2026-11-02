@@ -47,7 +47,7 @@ class GradleCommandsTest {
         var result = run("gradle", "--help");
         assertEquals(0, result.exitCode(), result.error());
         for (String option : List.of("--root-project-dir", "--list-project-paths", "--project-path", "--list-source-sets",
-                "--source-set", "--classpath", "--resolve-options", "--resolve-compiler-options", "--write-argfile", "--refresh")) {
+                "--source-set", "--classpath", "--resolve-options", "--resolve-compiler-options", "--write-argfile", "--lenient", "--refresh")) {
             assertTrue(result.output().contains(option), option);
         }
         assertFalse(result.output().contains("--scope"));
@@ -108,6 +108,10 @@ class GradleCommandsTest {
         assertInvalid("requires compile|runtime", "gradle", "--root-project-dir", root.toString(), "--project-path", ":", "-r", "source-path", "--classpath");
         assertInvalid("--write-argfile requires --resolve-options", "gradle", "--root-project-dir",
                 root.toString(), "--list-project-paths", "--write-argfile", "out.args");
+        assertInvalid("--lenient requires --resolve-options", "gradle", "--root-project-dir",
+                root.toString(), "--list-project-paths", "--lenient");
+        assertInvalid("--lenient requires --resolve-options", "gradle", "--root-project-dir", root.toString(),
+                "--project-path", ":", "--resolve-compiler-options", "--lenient");
     }
 
     @Test
@@ -163,6 +167,26 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void lenientResolutionHasADistinctCacheEntryAndGradleRequest() throws Exception {
+        var fixture = cacheFixture();
+        var strict = resolve(fixture, "compile", "class-path");
+        assertEquals(0, strict.exitCode(), strict.error());
+        assertEquals(1, launches(fixture));
+        var lenient = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path", "--lenient");
+        assertEquals(0, lenient.exitCode(), lenient.error());
+        assertEquals(strict.output(), lenient.output());
+        assertEquals(2, launches(fixture));
+        String invocation = Files.readString(fixture.root().resolve("invocation.txt"));
+        assertTrue(invocation.contains("-Pjig.gradle.lenient=true\n"), invocation);
+        var repeated = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path", "--lenient");
+        assertEquals(lenient.output(), repeated.output());
+        assertEquals(2, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void compilerResolutionDefaultsToMain() throws Exception {
         var fixture = fixture();
         var values = capture(fixture);
@@ -205,6 +229,7 @@ class GradleCommandsTest {
         assertTrue(run("__complete", "gradle", "--source-s").output().contains("--source-set\t"));
         assertTrue(run("__complete", "gradle", "--classpath").output().contains("--classpath\t"));
         assertTrue(run("__complete", "gradle", "--resolve-c").output().contains("--resolve-compiler-options\t"));
+        assertTrue(run("__complete", "gradle", "--len").output().contains("--lenient\t"));
     }
 
     @Test
