@@ -832,6 +832,38 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void successfulContextsAreCachedWhenAnotherContextFails() throws Exception {
+        var fixture = cacheFixture();
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("""
+                emit "$kind"
+                if [ "$kind" = arguments ] && [ "$all_contexts" = true ]; then
+                    if [ "$classpath" = compile ]; then classpath=runtime; else classpath=compile; fi
+                    emit "$kind"
+                fi
+                """, """
+                emit "$kind"
+                if [ "$kind" = arguments ] && [ "$all_contexts" = true ]; then
+                    echo 'Unable to resolve another context'
+                    exit 7
+                fi
+                """));
+
+        var compile = resolve(fixture, "compile", "class-path,source-path");
+        assertEquals(0, compile.exitCode(), compile.error());
+        assertEquals(List.of("--class-path", fixture.root().resolve("compile only.jar").toString(), "--source-path",
+                fixture.project().resolve("custom sources").toString()), arguments(compile));
+        assertEquals("", compile.error());
+
+        var runtime = resolve(fixture, "runtime", "class-path,source-path");
+        assertEquals(1, runtime.exitCode(), runtime.error());
+        assertTrue(runtime.error().contains("Gradle could not capture project context :app/main/runtime"), runtime.error());
+        assertTrue(runtime.error().contains("Unable to resolve another context"), runtime.error());
+        assertEquals(1, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void simpleArgumentsRemainUnquotedOnCacheMissAndHit() throws Exception {
         var fixture = cacheFixture();
         Path dependency = temporaryDirectory.resolve("dependency.jar");
@@ -934,15 +966,12 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void aFailedBuildDoesNotReturnCapturedArguments() throws Exception {
+    void aBuildFailureBeforeCaptureDoesNotReturnArguments() throws Exception {
         var fixture = fixture();
         Files.writeString(fixture.root()
                 .resolve("gradlew"),
                 """
                 #!/bin/sh
-                printf 'jig-gradle:'
-                base64 < compile.properties | tr -d '\\n'
-                printf '\\n'
                 echo 'configuration failed' >&2
                 exit 7
                 """);
@@ -1282,22 +1311,12 @@ class GradleCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
-    void concurrentQueriesHaveIndependentProcessResponsesWithoutSerialization() throws Exception {
-        var fixture = fixture();
+    void concurrentSourceQueriesShareTheProjectCapture() throws Exception {
+        var fixture = cacheFixture();
         Path wrapper = fixture.root().resolve("gradlew");
-        Files.writeString(wrapper, Files.readString(wrapper).replace("                classpath=compile\n                kind=arguments", """
-                touch "ready-$$"
-                attempts=0
-                while [ "$(find . -name 'ready-*' | wc -l)" -lt 2 ]; do
-                    attempts=$((attempts + 1))
-                    if [ "$attempts" -ge 100 ]; then
-                        echo 'queries were serialized' >&2
-                        exit 11
-                    fi
-                    sleep 0.02
-                done
-                classpath=compile
-                kind=arguments"""));
+        Files.writeString(wrapper, Files.readString(wrapper).replace("echo capture >> launches.txt", """
+                echo capture >> launches.txt
+                sleep 0.2"""));
         var start = new CountDownLatch(1);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var queries = new ArrayList<java.util.concurrent.Future<Result>>();
@@ -1314,6 +1333,7 @@ class GradleCommandsTest {
             assertEquals(0, second.exitCode(), second.error());
             assertEquals(first.output(), second.output());
         }
+        assertEquals(1, launches(fixture));
     }
 
     @Test

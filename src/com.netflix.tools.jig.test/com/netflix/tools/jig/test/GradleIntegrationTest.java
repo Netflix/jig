@@ -104,6 +104,30 @@ class GradleIntegrationTest {
     }
 
     @Test
+    @EnabledIf("detailedCoverage")
+    void sourceResolutionCachesAvailableContextsWhenAnotherContextCannotResolve() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                sourceSets { broken }
+                configurations.brokenRuntimeClasspath.incoming.beforeResolve {
+                    throw new GradleException('broken runtime context')
+                }
+                """, StandardOpenOption.APPEND);
+        String compile = resolve(fixture, "main", "compile", "class-path,source-path");
+        assertTrue(compile.contains(fixture.app().resolve("sources/java").toString()), compile);
+        String runtime = resolve(fixture, "main", "runtime", "class-path,source-path");
+        assertTrue(runtime.contains(fixture.app().resolve("sources/java").toString()), runtime);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        int status = new Jig().run(new PrintWriter(output, true), new PrintWriter(error, true),
+                "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "broken", "--classpath", "runtime", "-r", "class-path,source-path");
+        assertEquals(1, status, error.toString());
+        assertEquals("", output.toString());
+        assertTrue(error.toString().contains("broken runtime context"), error.toString());
+    }
+
+    @Test
     void discoveryCacheTracksAppliedScriptsAndRefreshesOnRequest() throws Exception {
         var fixture = fixture(false);
         Path applied = fixture.root().resolve("shared.gradle");

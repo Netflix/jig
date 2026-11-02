@@ -555,22 +555,22 @@ gradle.settingsEvaluated { settings ->
                     return lazyTasks ? project.tasks.register(name, JigCaptureTask, action)
                             : project.tasks.create(name, JigCaptureTask, action)
                 }
-                def capture = registerCapture(captureTaskName, sourceSetName, classpath)
                 if (allContexts && !dispatch && !listProjects && !listSourceSets && !compilerRequest && sourceSets != null
                         && sourceSets.findByName(sourceSetName) != null) {
+                    def aggregate = lazyTasks ? project.tasks.register(captureTaskName) : project.tasks.create(captureTaskName)
                     int index = 0
                     sourceSets.names.toList().sort().each { contextSourceSet ->
                         ['compile', 'runtime'].each { contextClasspath ->
-                            if (contextSourceSet != sourceSetName || contextClasspath != classpath) {
-                                def context = registerCapture(captureTaskName + (++index), contextSourceSet, contextClasspath)
-                                if (lazyTasks) {
-                                    capture.configure { dependsOn(context) }
-                                } else {
-                                    capture.dependsOn(context)
-                                }
+                            def context = registerCapture(captureTaskName + (++index), contextSourceSet, contextClasspath)
+                            if (lazyTasks) {
+                                aggregate.configure { dependsOn(context) }
+                            } else {
+                                aggregate.dependsOn(context)
                             }
                         }
                     }
+                } else {
+                    registerCapture(captureTaskName, sourceSetName, classpath)
                 }
             }
         }

@@ -112,6 +112,16 @@ final class GradleCapture {
         return List.copyOf(metadata);
     }
 
+    boolean containsMetadata(String sourceSet, String classpath) throws IOException {
+        for (var capture : metadata) {
+            if (capture.require("source-set").equals(sourceSet)
+                    && capture.require("context-classpath").equals(classpath)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     List<String> compilerOptions() throws IOException {
         if (compiler == null) {
             throw new IOException("Missing Gradle compiler options capture");
