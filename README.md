@@ -113,7 +113,7 @@ jig gradle --root-project-dir . \
 java @runtime.args com.example.Main
 ```
 
-Use `--resolve-compiler-options` for the source set's effective compiler arguments. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects) for compilation examples and supported options.
+Use `--resolve-compiler-options` for the source set's effective compiler arguments. Add `--lenient` to retain available artifacts when a Gradle dependency cannot be resolved. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects) for compilation examples and supported options.
 
 ### Maven
 

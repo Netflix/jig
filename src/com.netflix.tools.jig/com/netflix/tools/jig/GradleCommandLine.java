@@ -39,13 +39,14 @@ final class GradleCommandLine {
     private static final ToolOption COMPILER = ToolOption.flag("--resolve-compiler-options", "Resolve compiler options; requires --project-path.\n"
             + "Uses compile; excludes source filenames and launcher options.");
     private static final ToolOption WRITE = ToolOption.option("--write-argfile", "PATH", "Write resolved options to a Java argument file instead of stdout", "-w");
+    private static final ToolOption LENIENT = ToolOption.flag("--lenient", "Retain available artifacts when dependencies cannot be resolved");
     private static final ToolOption REFRESH = ToolOption.flag("--refresh", "Query Gradle again; cached answers skip Gradle and build tasks");
     private static final ToolOption VERBOSE = ToolOption.flag("--verbose", "Show cache hits, Gradle invocations and build diagnostics");
     private static final ToolOption HELP = ToolOption.flag("--help", "Print this help message", "-h");
     private static final CommandLine COMMAND_LINE = CommandLine.builder()
             .description("Resolve standard Java arguments from a Gradle source set")
             .options(ROOT, PROJECT, LIST_PROJECTS, ProjectListing.FORMAT, LIST_SOURCE_SETS, SOURCE_SET, CLASSPATH, RESOLVE, COMPILER, WRITE,
-                    REFRESH, VERBOSE, HELP)
+                    LENIENT, REFRESH, VERBOSE, HELP)
             .build();
 
     record Request(
@@ -60,6 +61,7 @@ final class GradleCommandLine {
             Set<String> options,
             ModuleForm moduleForm,
             Path argumentFile,
+            boolean lenient,
             boolean verbose,
             boolean refresh) {}
 
@@ -79,7 +81,7 @@ final class GradleCommandLine {
 
                 """ + CommandLine.optionsReference(ROOT, PROJECT, SOURCE_SET, CLASSPATH,
                         LIST_PROJECTS, LIST_SOURCE_SETS, ProjectListing.FORMAT, RESOLVE, COMPILER,
-                        WRITE, REFRESH, VERBOSE, HELP);
+                        WRITE, LENIENT, REFRESH, VERBOSE, HELP);
     }
 
     static Request parse(String[] arguments) {
@@ -106,6 +108,10 @@ final class GradleCommandLine {
         boolean resolution = resolve != null || compiler;
         if (write != null && !resolution) {
             throw new IllegalArgumentException("--write-argfile requires --resolve-options or --resolve-compiler-options");
+        }
+        boolean lenient = parsed.contains(LENIENT);
+        if (lenient && resolve == null) {
+            throw new IllegalArgumentException("--lenient requires --resolve-options");
         }
         int operations = (listProjects ? 1 : 0) + (listSourceSets ? 1 : 0) + (resolve != null ? 1 : 0) + (compiler ? 1 : 0);
         if (operations > 1) {
@@ -154,6 +160,7 @@ final class GradleCommandLine {
                 selection.forProvider(ResolveOptions.Provider.GRADLE),
                 selection.moduleForm(),
                 write == null ? null : Path.of(write),
+                lenient,
                 parsed.contains(VERBOSE), parsed.contains(REFRESH));
     }
 

@@ -128,6 +128,29 @@ class GradleIntegrationTest {
     }
 
     @Test
+    void lenientResolutionRetainsAvailableArtifactsWhenOneDependencyIsMissing() throws Exception {
+        var fixture = fixture(false);
+        Files.createDirectories(fixture.root().resolve("repository"));
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                repositories { maven { url = rootProject.file('repository') } }
+                dependencies { implementation 'missing:artifact:1.0' }
+                """, StandardOpenOption.APPEND);
+        var strictOutput = new StringWriter();
+        var strictError = new StringWriter();
+        int strictStatus = new Jig().run(new PrintWriter(strictOutput, true), new PrintWriter(strictError, true),
+                "gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path");
+        assertTrue(strictStatus != 0, strictError.toString());
+        assertEquals("", strictOutput.toString());
+        assertTrue(strictError.toString().contains("missing:artifact:1.0"), strictError.toString());
+
+        String lenient = run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "--source-set", "main", "--classpath", "compile", "-r", "class-path,source-path", "--lenient");
+        assertTrue(lenient.contains(fixture.root().resolve("shared.jar").toString()), lenient);
+        assertTrue(lenient.contains(fixture.root().resolve("plain.jar").toString()), lenient);
+    }
+
+    @Test
     void discoveryCacheTracksAppliedScriptsAndRefreshesOnRequest() throws Exception {
         var fixture = fixture(false);
         Path applied = fixture.root().resolve("shared.gradle");

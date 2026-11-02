@@ -64,7 +64,7 @@ final class GradleCommands {
             String query = request.listProjects() ? "projects" : request.listSourceSets() ? "source-sets\n" + request.projectPath()
                     : request.compiler() ? "compiler\n" + request.projectPath() + '\n' + request.sourceSet()
                     : "arguments\n" + request.projectPath() + (allContexts ? "" : "\n" + request.sourceSet() + "\n" + request.classpath())
-                            + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm();
+                            + '\n' + request.options().stream().sorted().toList() + '\n' + request.moduleForm() + '\n' + request.lenient();
             var resultCache = request.listProjects() ? cache : new ProjectQueryCache("Gradle", request.root(), query, launcher, "gradle-init.gradle");
             if (!request.listProjects()) {
                 if (request.refresh()) {
@@ -246,7 +246,7 @@ final class GradleCommands {
 
     private static Request contextRequest(Request request, String sourceSet, String classpath) {
         return new Request(request.root(), request.projectPath(), sourceSet, classpath, false, false, false, false,
-                request.options(), request.moduleForm(), request.argumentFile(), request.verbose(), request.refresh());
+                request.options(), request.moduleForm(), request.argumentFile(), request.lenient(), request.verbose(), request.refresh());
     }
 
     private static boolean allContexts(Request request) {
@@ -256,7 +256,7 @@ final class GradleCommands {
 
     private static String projectCaptureKey(Request request) {
         return request.root().toAbsolutePath().normalize() + "\n" + request.projectPath() + "\n"
-                + request.options().stream().sorted().toList() + "\n" + request.moduleForm();
+                + request.options().stream().sorted().toList() + "\n" + request.moduleForm() + "\n" + request.lenient();
     }
 
     private static void write(PrintWriter out, Path file, String arguments) throws IOException {
@@ -318,6 +318,7 @@ final class GradleCommands {
             arguments.add("-Pjig.gradle.source-set=" + request.sourceSet());
             arguments.add("-Pjig.gradle.classpath=" + request.classpath());
             arguments.add("-Pjig.gradle.options=" + String.join(",", request.options().stream().sorted().toList()));
+            arguments.add("-Pjig.gradle.lenient=" + request.lenient());
         }
         if (allContexts(request)) {
             arguments.add("--continue");
