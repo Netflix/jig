@@ -24,6 +24,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.netflix.module.compile.internal.ContentHash;
 import com.netflix.tools.jig.GradleCommandLine.Request;
@@ -33,6 +35,7 @@ import com.netflix.tools.jig.module.ModuleRepositorySession;
 final class GradleCommands {
     private static final String CAPTURE_PREFIX = "jig-gradle:";
     private static final String CAPTURE_TASK = "_jigCapture";
+    private static final Map<String, ReentrantLock> PROJECT_CAPTURES = new ConcurrentHashMap<>();
 
     private GradleCommands() {}
 
@@ -47,6 +50,12 @@ final class GradleCommands {
         } catch (IllegalArgumentException e) {
             err.println("jig gradle: " + e.getMessage());
             return 2;
+        }
+        ReentrantLock projectCapture = allContexts(request)
+                ? PROJECT_CAPTURES.computeIfAbsent(projectCaptureKey(request), ignored -> new ReentrantLock())
+                : null;
+        if (projectCapture != null) {
+            projectCapture.lock();
         }
         try {
             var launcher = BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat");
@@ -117,9 +126,15 @@ final class GradleCommands {
                 err.println("jig gradle: cache miss");
             }
             var captures = new GradleCapture(request);
-            int status = capture(request, initScript(), captures, err);
-            if (status != 0) {
-                return status;
+            CaptureResult capture = capture(request, initScript(), captures, err);
+            boolean partial = capture.status() != 0 && allContexts
+                    && captures.containsMetadata(request.sourceSet(), request.classpath());
+            if (capture.status() != 0 && !partial) {
+                capture.diagnostics().forEach(err::println);
+                return capture.status();
+            }
+            if (!partial || request.verbose()) {
+                capture.diagnostics().forEach(err::println);
             }
             List<String> projects = captures.projects();
             if (request.listProjects()) {
@@ -172,6 +187,22 @@ final class GradleCommands {
                     if (selected == null) {
                         throw new IOException("Gradle did not return the requested project context");
                     }
+                    if (partial) {
+                        var inputs = new ArrayList<>(captures.discoveries());
+                        inputs.add(metadata);
+                        String diagnostics = String.join(System.lineSeparator(), capture.diagnostics());
+                        for (String sourceSet : sourceSets) {
+                            for (String classpath : GradleCommandLine.CLASSPATHS) {
+                                if (!captures.containsMetadata(sourceSet, classpath)) {
+                                    String failure = "Gradle could not capture project context " + request.projectPath() + "/"
+                                            + sourceSet + "/" + classpath + System.lineSeparator() + diagnostics;
+                                    cachedArguments.add(BuildCapture.arguments("Gradle", List.of(), inputs, Map.of(
+                                            "project-path", request.projectPath(), "source-set", sourceSet,
+                                            "context-classpath", classpath, "failure", failure)));
+                                }
+                            }
+                        }
+                    }
                     resultCache.store(cachedArguments);
                     write(out, request.argumentFile(), JavaArgumentFile.render(selected));
                 }
@@ -187,6 +218,10 @@ final class GradleCommands {
             Thread.currentThread().interrupt();
             err.println("jig gradle: interrupted");
             return 1;
+        } finally {
+            if (projectCapture != null) {
+                projectCapture.unlock();
+            }
         }
     }
 
@@ -198,6 +233,10 @@ final class GradleCommands {
             if (request.projectPath().equals(capture.optional("project-path"))
                     && request.sourceSet().equals(capture.optional("source-set"))
                     && request.classpath().equals(capture.optional("context-classpath"))) {
+                String failure = capture.optional("failure");
+                if (failure != null) {
+                    throw new IOException(failure);
+                }
                 return capture;
             }
         }
@@ -213,6 +252,11 @@ final class GradleCommands {
     private static boolean allContexts(Request request) {
         return !request.listProjects() && !request.listSourceSets() && !request.compiler()
                 && (request.options().contains("source-path") || request.options().contains("module-source-path"));
+    }
+
+    private static String projectCaptureKey(Request request) {
+        return request.root().toAbsolutePath().normalize() + "\n" + request.projectPath() + "\n"
+                + request.options().stream().sorted().toList() + "\n" + request.moduleForm();
     }
 
     private static void write(PrintWriter out, Path file, String arguments) throws IOException {
@@ -248,7 +292,7 @@ final class GradleCommands {
         return init;
     }
 
-    private static int capture(Request request, Path init, GradleCapture captures, PrintWriter err)
+    private static CaptureResult capture(Request request, Path init, GradleCapture captures, PrintWriter err)
             throws IOException, InterruptedException {
         var arguments = new ArrayList<>(BuildProcess.launcher(request.root(), "gradle", "gradlew", "gradle.bat", "gradlew.bat"));
         arguments.addAll(
@@ -275,22 +319,27 @@ final class GradleCommands {
             arguments.add("-Pjig.gradle.classpath=" + request.classpath());
             arguments.add("-Pjig.gradle.options=" + String.join(",", request.options().stream().sorted().toList()));
         }
+        if (allContexts(request)) {
+            arguments.add("--continue");
+        }
         arguments.add(":" + CAPTURE_TASK);
         if (request.verbose()) {
             err.println("jig gradle: " + arguments);
         }
-        return BuildProcess.run(request.root(), arguments, line -> {
+        var diagnostics = new ArrayList<String>();
+        int status = BuildProcess.run(request.root(), arguments, line -> {
             int captureStart = line.indexOf(CAPTURE_PREFIX);
             if (captureStart >= 0) {
                 if (captureStart > 0) {
-                    err.println(line.substring(0, captureStart));
-                    err.flush();
+                    diagnostics.add(line.substring(0, captureStart));
                 }
                 captures.accept(BuildCapture.decode("Gradle", line.substring(captureStart + CAPTURE_PREFIX.length())));
             } else {
-                err.println(line);
-                err.flush();
+                diagnostics.add(line);
             }
         });
+        return new CaptureResult(status, List.copyOf(diagnostics));
     }
+
+    private record CaptureResult(int status, List<String> diagnostics) {}
 }
