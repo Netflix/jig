@@ -28,7 +28,7 @@ public record SourceModule(ModuleDescriptor descriptor, Integer release, boolean
         if (descriptor == null) {
             throw new NullPointerException("descriptor");
         }
-        if (release != null && release < 9) {
+        if (release != null && release < 8) {
             throw new IllegalArgumentException("Invalid module release: " + release);
         }
         processors = List.copyOf(processors);

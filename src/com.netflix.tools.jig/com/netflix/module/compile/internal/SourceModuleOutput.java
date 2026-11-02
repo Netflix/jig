@@ -226,6 +226,12 @@ public final class SourceModuleOutput {
         var multiRelease = inputs == null
                 ? isMultiRelease(sourceRoot.resolve("META-INF/MANIFEST.MF"))
                 : inputs.multiRelease();
+        if (Objects.equals(configuration.release(), 8)
+                && (!multiRelease || sourceContents.containsKey(new SourcePath("module-info.java"))
+                || !files.versions().getOrDefault(9, List.of())
+                        .contains(sourceRoot.resolve("META-INF/versions/9/module-info.java")))) {
+            throw new IllegalArgumentException("@release 8 requires Multi-Release: true and META-INF/versions/9/module-info.java");
+        }
         var selectedVersions = multiRelease
                 ? files.versions().keySet().stream()
                         .filter(version -> version <= targetRelease)
@@ -430,6 +436,7 @@ public final class SourceModuleOutput {
                 release,
                 false,
                 configuration.moduleVersion(),
+                configuration.mainClass(),
                 configuration.runtimeAccess(),
                 configuration.paths(),
                 configuration.modulePathEntries(),

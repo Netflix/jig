@@ -97,7 +97,7 @@ public class Jig implements ToolProvider, OptionChecker {
     private static final Set<String> GRAPH_INDEPENDENT_RESOLVE_OPTIONS = Set.of("module-version", "release", "multi-release");
     private static final Set<String> ACCESS_RESOLUTION_OPTIONS = Set.of("release", "multi-release", "enable-preview", "enable-native-access", "enable-final-field-mutation", "add-opens",
             "add-exports");
-    private static final Set<String> COMPILER_OPTIONS = Set.of("module-path", "processor-module-path", "upgrade-module-path",
+    private static final Set<String> COMPILER_OPTIONS = Set.of("class-path", "source-path", "module-path", "processor-module-path", "upgrade-module-path",
             "module-source-path", "module", "module-version", "patch-module", "release", "enable-preview", "add-exports");
 
     @Override
@@ -287,7 +287,8 @@ public class Jig implements ToolProvider, OptionChecker {
     }
 
     public static boolean shouldIncludeSources(Options options) {
-        return options.hasResolveOption("source-path") || options.modulePomRoot != null;
+        return options.hasResolveOption("source-path") && !options.hasResolveOption("module-source-path")
+                || options.modulePomRoot != null;
     }
 
     public static String renderArguments(Set<String> resolveOptions, Options options, ModuleResolution resolution,
@@ -307,8 +308,14 @@ public class Jig implements ToolProvider, OptionChecker {
             Map<String, Path> sourcePaths)
             throws IOException {
         validateSelectedArtifacts(resolution, repositoryPaths);
+        boolean sourceCompilation = resolveOptions.contains("module-source-path") || resolveOptions.contains("source-path");
+        boolean releaseEightCompilation = (sourceCompilation || resolveOptions.contains("release")) && resolution.moduleSources().keySet().stream()
+                .map(resolution.observableModules()::find).flatMap(Optional::stream)
+                .map(SourceModuleReference.class::cast)
+                .anyMatch(source -> Objects.equals(source.sourceModule().release(), 8));
         boolean describe = resolveOptions.contains("describe-module");
-        Set<String> excludedModules = options.compileTime || resolveOptions.contains("module-source-path") ? Set.of() : staticOnly;
+        Set<String> excludedModules = options.compileTime || resolveOptions.contains("module-source-path") || releaseEightCompilation
+                ? Set.of() : staticOnly;
         var config = resolution.configuration();
         var configurationRoots = resolution.configurationRoots().stream()
                 .filter(name -> !resolution.staticRoots().contains(name))
@@ -334,7 +341,7 @@ public class Jig implements ToolProvider, OptionChecker {
         var suppliedSystemOverrides = new LinkedHashSet<>(sourceSystemOverrides);
         suppliedSystemOverrides.addAll(fixedSystemOverrides);
         boolean consumesCompiledModules = resolveOptions.contains("module-path") && !resolveOptions.contains("module-source-path");
-        if (resolveOptions.contains("module-path") && !resolveOptions.contains("upgrade-module-path")) {
+        if (!releaseEightCompilation && resolveOptions.contains("module-path") && !resolveOptions.contains("upgrade-module-path")) {
             requireNoSystemOverrides(
                     consumesCompiledModules ? sourceSystemOverrides : Set.of(),
                     fixedSystemOverrides,
@@ -345,7 +352,7 @@ public class Jig implements ToolProvider, OptionChecker {
         String processorModulePath = "";
         String upgradeModulePath = "";
         Map<String, Path> sourcePatches = Map.of();
-        if (resolveOptions.contains("module-path")) {
+        if (!releaseEightCompilation && resolveOptions.contains("module-path")) {
             var modulePaths = new LinkedHashSet<Path>();
             var upgradeModulePaths = new LinkedHashSet<Path>();
             for (Path path : options.modulePath) {
@@ -446,13 +453,40 @@ public class Jig implements ToolProvider, OptionChecker {
             processorModulePath = processorModulePath(resolution, authoritativeRoots, repositoryPaths, sourceModules, pathSeparator);
         }
 
-        List<String> moduleSourcePath = resolveOptions.contains("module-source-path") ? resolution.moduleSources().entrySet().stream()
+        var classPaths = new LinkedHashSet<Path>();
+        if (releaseEightCompilation && resolveOptions.contains("class-path")) {
+            for (var module : config.modules().stream().sorted(Comparator.comparing(ResolvedModule::name)).toList()) {
+                if (excludedModules.contains(module.name()) || resolution.moduleSources().containsKey(module.name())
+                        || ModuleFinder.ofSystem().find(module.name()).isPresent()) {
+                    continue;
+                }
+                var path = modulePath(module.name(), module.reference(), repositoryPaths);
+                if (path != null) {
+                    classPaths.add(path);
+                }
+            }
+            var selectedSources = configurationRoots.stream().filter(resolution.moduleSources()::containsKey).collect(Collectors.toSet());
+            for (var module : config.modules().stream().sorted(Comparator.comparing(ResolvedModule::name)).toList()) {
+                if (!(module.reference() instanceof SourceModuleReference source) || selectedSources.contains(module.name())
+                        || excludedModules.contains(module.name())) {
+                    continue;
+                }
+                if (sourceModules == null) {
+                    throw new IllegalStateException("Source module has no class path: " + module.name());
+                }
+                classPaths.add(sourceModules.modulePath(module.name(), source, false));
+            }
+        }
+        List<String> moduleSourcePath = !releaseEightCompilation && resolveOptions.contains("module-source-path") ? resolution.moduleSources().entrySet().stream()
                 .filter(entry -> !excludedModules.contains(entry.getKey()))
                 .sorted(Entry.comparingByKey())
                 .map(entry -> moduleSourcePathArgument(entry.getKey(), entry.getValue()))
                 .toList()
                 : List.of();
-        String sourcePath = resolveOptions.contains("source-path") && moduleSourcePath.isEmpty() ? sourcePaths.entrySet().stream()
+        var selectedSourcePaths = releaseEightCompilation ? resolution.moduleSources().entrySet().stream()
+                .filter(entry -> configurationRoots.contains(entry.getKey()))
+                .collect(Collectors.toMap(Entry::getKey, Entry::getValue)) : sourcePaths;
+        String sourcePath = resolveOptions.contains("source-path") && moduleSourcePath.isEmpty() ? selectedSourcePaths.entrySet().stream()
                 .filter(entry -> !excludedModules.contains(entry.getKey()))
                 .sorted(Entry.comparingByKey())
                 .map(Entry::getValue)
@@ -460,7 +494,7 @@ public class Jig implements ToolProvider, OptionChecker {
                 .collect(Collectors.joining(pathSeparator))
                 : "";
 
-        boolean needsAccessOptions = options.validateRuntimeAccess || resolveOptions.stream().anyMatch(ACCESS_RESOLUTION_OPTIONS::contains);
+        boolean needsAccessOptions = releaseEightCompilation || options.validateRuntimeAccess || resolveOptions.stream().anyMatch(ACCESS_RESOLUTION_OPTIONS::contains);
         var accessOptions = needsAccessOptions ? collectAccessOptions(
                 config,
                 excludedModules,
@@ -468,13 +502,17 @@ public class Jig implements ToolProvider, OptionChecker {
                 configurationRoots,
                 resolution.moduleSources().keySet(),
                 resolution.observableModules(),
-                resolveOptions.contains("release") || resolveOptions.contains("multi-release"))
+                releaseEightCompilation || resolveOptions.contains("release") || resolveOptions.contains("multi-release"))
                 : ResolvedAccessOptions.EMPTY;
         if (options.validateRuntimeAccess) {
             validateRuntimeAccessRequirements(config, excludedModules, accessOptions, options.suppliedArguments);
         }
 
         var arguments = new StringBuilder();
+        if (!classPaths.isEmpty()) {
+            appendArgument(arguments, "--class-path");
+            appendArgument(arguments, classPaths.stream().map(Path::toString).collect(Collectors.joining(pathSeparator)));
+        }
         if (!modulePath.isEmpty()) {
             appendArgument(arguments, "--module-path");
             appendArgument(arguments, modulePath);
@@ -501,9 +539,13 @@ public class Jig implements ToolProvider, OptionChecker {
             appendArgument(arguments, "--source-path");
             appendArgument(arguments, sourcePath);
         }
-        appendAccessArguments(arguments, resolveOptions, accessOptions);
+        var accessResolveOptions = new HashSet<>(resolveOptions);
+        if (releaseEightCompilation) {
+            accessResolveOptions.remove("add-exports");
+        }
+        appendAccessArguments(arguments, accessResolveOptions, accessOptions);
 
-        if (resolveOptions.contains("module-version") && options.moduleVersion != null) {
+        if (!releaseEightCompilation && resolveOptions.contains("module-version") && options.moduleVersion != null) {
             appendArgument(arguments, "--module-version");
             appendArgument(arguments, options.moduleVersion);
         }
@@ -515,13 +557,13 @@ public class Jig implements ToolProvider, OptionChecker {
             });
         }
         boolean writesRootsWithModule = resolveOptions.contains("module") && options.moduleForm == ModuleForm.ROOTS;
-        if (resolveOptions.contains("add-modules")
+        if (!releaseEightCompilation && resolveOptions.contains("add-modules")
                 && !configurationRoots.isEmpty()
                 && (!writesRootsWithModule || configurationRoots.size() != 1)) {
             appendArgument(arguments, "--add-modules");
             appendArgument(arguments, String.join(",", configurationRoots));
         }
-        if (resolveOptions.contains("module")) {
+        if (!releaseEightCompilation && resolveOptions.contains("module")) {
             var moduleRoots = resolveOptions.contains("module-source-path") ? configurationRoots.stream()
                     .filter(resolution.moduleSources()::containsKey)
                     .toList()

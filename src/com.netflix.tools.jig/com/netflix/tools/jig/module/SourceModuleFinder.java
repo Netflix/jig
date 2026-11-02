@@ -14,6 +14,7 @@
 
 package com.netflix.tools.jig.module;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
@@ -23,6 +24,8 @@ import java.lang.module.ModuleReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.jar.Attributes;
+import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 import javax.lang.model.element.ModuleElement;
 import javax.tools.JavaCompiler;
@@ -83,27 +86,31 @@ public final class SourceModuleFinder implements ModuleFinder {
 
     /**
      * Scans the given source module path for modules containing
-     * {@code module-info.java}. If {@code module-info.java} exists directly
-     * in the given path, it is treated as a single-module source root.
-     * Otherwise, each subdirectory containing {@code module-info.java} is
-     * a module (the convention layout).
+     * {@code module-info.java}, either at the root or in a multi-release
+     * version section. If a descriptor is found in the given path, it is
+     * treated as a single-module source root. Otherwise, its module
+     * subdirectories are scanned (the convention layout).
      *
      * @param sourceModulePath root directory — either a module itself or a
      *                         parent of module directories
      */
     public static SourceModuleFinder of(Path sourceModulePath) {
         Objects.requireNonNull(sourceModulePath, "sourceModulePath");
-        if (Files.isRegularFile(sourceModulePath.resolve("module-info.java"))) {
-            return ofSourceDirectory(sourceModulePath);
+        try {
+            if (moduleInfo(sourceModulePath) != null) {
+                return ofSourceDirectory(sourceModulePath);
+            }
+            return ofModuleSourcePath(sourceModulePath.toString());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
-        return ofModuleSourcePath(sourceModulePath.toString());
     }
 
     private static SourceModuleFinder ofSourceDirectory(Path sourceDirectory) {
         var finder = new SourceModuleFinder(new LinkedHashMap<>());
         try (var fileManager = COMPILER.getStandardFileManager(null, null, null)) {
             fileManager.setLocationFromPaths(StandardLocation.SOURCE_PATH, List.of(sourceDirectory));
-            var moduleInfo = sourceDirectory.resolve("module-info.java");
+            var moduleInfo = moduleInfo(sourceDirectory);
             var reference = parseModuleInfo(sourceDirectory, moduleInfo, sourcePackages(fileManager, StandardLocation.SOURCE_PATH));
             finder.modules.put(reference.descriptor().name(), reference);
             return finder;
@@ -120,19 +127,41 @@ public final class SourceModuleFinder implements ModuleFinder {
             if (!fileManager.handleOption("--module-source-path", List.of(moduleSourcePath).iterator())) {
                 throw new IllegalArgumentException("Invalid module source path: " + moduleSourcePath);
             }
+            if (!moduleSourcePath.contains("=")) {
+                // javac only discovers conventional modules with a root descriptor.
+                // Register explicit MR roots before asking it for module locations.
+                for (var element : moduleSourcePath.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
+                    int wildcard = element.indexOf('*');
+                    var parent = Path.of(wildcard < 0 ? element : element.substring(0, wildcard));
+                    if (!Files.isDirectory(parent)) {
+                        continue;
+                    }
+                    try (var children = Files.list(parent)) {
+                        for (var child : children.filter(Files::isDirectory).toList()) {
+                            var name = child.getFileName().toString();
+                            var root = wildcard < 0 ? child : Path.of(element.replace("*", name));
+                            if (moduleInfo(root) != null && !Files.isRegularFile(root.resolve("module-info.java"))) {
+                                fileManager.setLocationForModule(StandardLocation.MODULE_SOURCE_PATH, name, List.of(root));
+                            }
+                        }
+                    }
+                }
+            }
             for (var locations : fileManager.listLocationsForModules(StandardLocation.MODULE_SOURCE_PATH)) {
                 for (var location : locations) {
                     var moduleInfo = fileManager.getJavaFileForInput(location, "module-info", JavaFileObject.Kind.SOURCE);
-                    if (moduleInfo == null)
-                        continue;
-                    var moduleInfoPath = fileManager.asPath(moduleInfo);
+                    Path moduleInfoPath = moduleInfo == null ? null : fileManager.asPath(moduleInfo);
                     Path sourceDirectory = null;
                     for (Path path : fileManager.getLocationAsPaths(location)) {
-                        if (Files.isRegularFile(path.resolve("module-info.java"))) {
+                        var candidate = moduleInfo(path);
+                        if (candidate != null) {
                             sourceDirectory = path;
-                            moduleInfoPath = path.resolve("module-info.java");
+                            moduleInfoPath = candidate;
                             break;
                         }
+                    }
+                    if (moduleInfoPath == null) {
+                        continue;
                     }
                     if (sourceDirectory == null) {
                         sourceDirectory = moduleInfoPath.getParent();
@@ -150,6 +179,26 @@ public final class SourceModuleFinder implements ModuleFinder {
             throw new UncheckedIOException(e);
         }
         return finder;
+    }
+
+    private static Path moduleInfo(Path root) throws IOException {
+        var descriptor = root.resolve("module-info.java");
+        if (Files.isRegularFile(descriptor)) {
+            return descriptor;
+        }
+        var versions = root.resolve("META-INF/versions");
+        if (Files.isDirectory(versions)) {
+            try (var entries = Files.list(versions)) {
+                var descriptors = entries.map(path -> path.resolve("module-info.java"))
+                        .filter(Files::isRegularFile)
+                        .sorted(Comparator.comparingInt(path -> Integer.parseInt(path.getParent().getFileName().toString())))
+                        .toList();
+                if (!descriptors.isEmpty()) {
+                    return descriptors.getFirst();
+                }
+            }
+        }
+        return null;
     }
 
     private static Set<String> sourcePackages(JavaFileManager fileManager, JavaFileManager.Location location) throws IOException {
@@ -203,6 +252,20 @@ public final class SourceModuleFinder implements ModuleFinder {
             var docComment = readDocComment(task, docTrees, moduleTree);
             var settings = buildModuleSettings(docComment);
             var mainClass = extractMainClass(docComment);
+            if (Objects.equals(settings.release(), 8)) {
+                if (!moduleInfoPath.equals(moduleDir.resolve("META-INF/versions/9/module-info.java"))) {
+                    throw new IllegalArgumentException("@release 8 requires META-INF/versions/9/module-info.java: " + moduleInfoPath);
+                }
+                var manifestPath = moduleDir.resolve("META-INF/MANIFEST.MF");
+                if (!Files.isRegularFile(manifestPath)) {
+                    throw new IllegalArgumentException("@release 8 requires Multi-Release: true: " + manifestPath);
+                }
+                try (var input = Files.newInputStream(manifestPath)) {
+                    if (!"true".equalsIgnoreCase(new Manifest(input).getMainAttributes().getValue(Attributes.Name.MULTI_RELEASE))) {
+                        throw new IllegalArgumentException("@release 8 requires Multi-Release: true: " + manifestPath);
+                    }
+                }
+            }
 
             var descriptor = buildModuleDescriptor(moduleTree, versionOpinions, mainClass, packages);
             var sourceModule =
