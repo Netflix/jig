@@ -39,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SourceModuleFinderTest {
@@ -129,6 +130,80 @@ public class SourceModuleFinderTest {
         SourceModuleReference ref = (SourceModuleReference) finder.find("with.constraints").orElseThrow();
         assertEquals(17, ref.sourceModule()
                             .release());
+    }
+
+    @Test
+    void discoversReleaseEightDescriptorInVersionNine(@TempDir Path directory) throws Exception {
+        var root = Files.createDirectories(directory.resolve("example.module"));
+        writeReleaseEightModule(root, 9);
+        var direct = (SourceModuleReference) SourceModuleFinder.of(root).find("example.module").orElseThrow();
+        assertEquals(8, direct.sourceModule().release());
+        assertEquals(root, direct.sourceModule().sourceDirectory());
+        assertTrue(direct.descriptor().packages().contains("p"));
+        for (var path : List.of(directory.toString(), directory.resolve("*").toString(), "example.module=" + root)) {
+            var reference = (SourceModuleReference) SourceModuleFinder.ofModuleSourcePath(path)
+                    .find("example.module").orElseThrow();
+            assertEquals(8, reference.sourceModule().release());
+            assertEquals(root, reference.sourceModule().sourceDirectory());
+        }
+    }
+
+    @Test
+    void rejectsReleaseEightDescriptorOutsideVersionNine(@TempDir Path directory) throws Exception {
+        for (int version : List.of(0, 10)) {
+            var root = Files.createDirectories(directory.resolve("module-" + version));
+            writeReleaseEightModule(root, version);
+            var failure = assertThrows(IllegalArgumentException.class, () -> SourceModuleFinder.of(root));
+            assertTrue(failure.getMessage().contains("META-INF/versions/9/module-info.java"), failure.getMessage());
+        }
+    }
+
+    @Test
+    void releaseEightRequiresMultiReleaseManifest(@TempDir Path directory) throws Exception {
+        writeReleaseEightModule(directory, 9);
+        var manifest = directory.resolve("META-INF/MANIFEST.MF");
+        Files.writeString(manifest, "Manifest-Version: 1.0\nMulti-Release: false\n\n");
+        var disabled = assertThrows(IllegalArgumentException.class, () -> SourceModuleFinder.of(directory));
+        assertTrue(disabled.getMessage().contains("Multi-Release: true"), disabled.getMessage());
+        Files.delete(manifest);
+        var missing = assertThrows(IllegalArgumentException.class, () -> SourceModuleFinder.of(directory));
+        assertTrue(missing.getMessage().contains("Multi-Release: true"), missing.getMessage());
+    }
+
+    @Test
+    void discoversReleaseEightDescriptorWithSourcePathSuffix(@TempDir Path directory) throws Exception {
+        var root = Files.createDirectories(directory.resolve("example.module/main/java"));
+        writeReleaseEightModule(root, 9);
+        var finder = SourceModuleFinder.ofModuleSourcePath(directory.resolve("*/main/java").toString());
+        assertEquals(root, ((SourceModuleReference) finder.find("example.module").orElseThrow()).sourceModule().sourceDirectory());
+    }
+
+    @Test
+    void versionNineRemainsTheAnchorWithLaterDescriptors(@TempDir Path directory) throws Exception {
+        writeReleaseEightModule(directory, 9);
+        var later = Files.createDirectories(directory.resolve("META-INF/versions/10"));
+        Files.writeString(later.resolve("module-info.java"), "module example.module { exports p; }\n");
+        assertEquals(8, ((SourceModuleReference) SourceModuleFinder.of(directory)
+                .find("example.module").orElseThrow()).sourceModule().release());
+    }
+
+    @Test
+    void rejectsReleasesEarlierThanEight(@TempDir Path directory) throws Exception {
+        writeReleaseEightModule(directory, 9);
+        Files.writeString(directory.resolve("META-INF/versions/9/module-info.java"),
+                "/** @release 7 */ module example.module { exports p; }\n");
+        assertThrows(IllegalArgumentException.class, () -> SourceModuleFinder.of(directory));
+    }
+
+    private static void writeReleaseEightModule(Path root, int version) throws Exception {
+        var descriptor = version == 0 ? root.resolve("module-info.java")
+                : root.resolve("META-INF/versions/" + version + "/module-info.java");
+        Files.createDirectories(descriptor.getParent());
+        Files.writeString(descriptor, "/** @release 8 */ module example.module { exports p; }\n");
+        Files.createDirectories(root.resolve("p"));
+        Files.writeString(root.resolve("p/Example.java"), "package p; public class Example {}\n");
+        Files.createDirectories(root.resolve("META-INF"));
+        Files.writeString(root.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
     }
 
     @Test

@@ -28,6 +28,7 @@ import javax.tools.JavaFileObject;
 
 import com.netflix.module.ModuleRuntimeAccessOptions;
 import com.netflix.module.compile.internal.SourceModuleCompilation.Configuration;
+import com.netflix.module.compile.internal.SourceModuleCompilation.Paths;
 import com.netflix.module.compile.internal.SourceModuleCompilation.State;
 import com.netflix.module.compile.internal.SourceModuleOutput;
 import org.junit.jupiter.api.Test;
@@ -222,6 +223,39 @@ class SourceModuleOutputTest {
         assertTrue(failure.getMessage().contains("contains a class with different api from earlier version"),
                 failure.getMessage());
         assertFalse(Files.exists(directory.resolve("output")));
+    }
+
+    @Test
+    void compilesNonModularBaseAndVersionNineDescriptor(@TempDir Path directory) throws Exception {
+        var root = Files.createDirectories(directory.resolve("sources"));
+        Files.createDirectories(root.resolve("p"));
+        Files.writeString(root.resolve("p/Example.java"), "package p; public class Example {}\n");
+        var version = Files.createDirectories(root.resolve("META-INF/versions/9"));
+        Files.writeString(version.resolve("module-info.java"),
+                "/** @release 8 */ module example.module { exports p; }\n");
+        Files.writeString(root.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
+        var configuration = new Configuration("example.module", 8, false, "1.2.3", "p.Example",
+                ModuleRuntimeAccessOptions.EMPTY, new Paths(
+                        List.of(), List.of(), Map.of()), List.of(), null);
+        var output = SourceModuleOutput.compile(root, null, null, directory.resolve("output"), 25, configuration);
+        assertEquals(52, ClassFile.of().parse(Files.readAllBytes(output.output().resolve("p/Example.class"))).majorVersion());
+        assertEquals(53, ClassFile.of().parse(Files.readAllBytes(output.output().resolve("module-info.class"))).majorVersion());
+        var descriptor = java.lang.module.ModuleFinder.of(output.output()).find("example.module").orElseThrow().descriptor();
+        assertEquals("1.2.3", descriptor.rawVersion().orElseThrow());
+        assertEquals("p.Example", descriptor.mainClass().orElseThrow());
+        assertFalse(Files.exists(output.output().resolve("META-INF/versions")));
+        Files.writeString(root.resolve("p/Example.java"),
+                "package p; public class Example { public String value() { return \"x\".strip(); } }\n");
+        var failure = assertThrows(IOException.class, () -> SourceModuleOutput.compile(root, null, null,
+                directory.resolve("invalid"), 25, configuration));
+        assertTrue(failure.getMessage().contains("strip"), failure.getMessage());
+    }
+
+    @Test
+    void rejectsReleaseEightWithoutVersionNineAnchor(@TempDir Path directory) throws Exception {
+        Files.writeString(directory.resolve("module-info.java"), "module example.module {}\n");
+        assertThrows(IllegalArgumentException.class, () -> SourceModuleOutput.compile(
+                directory, null, null, directory.resolve("output"), 25, configuration(8)));
     }
 
     private static Configuration configuration(int release) {

@@ -53,7 +53,7 @@ record ResolveOptions(Set<String> options, ModuleForm moduleForm) {
             option("enable-final-field-mutation", MODULE, GRADLE),
             option("add-opens", MODULE, GRADLE),
             option("add-exports", MODULE, GRADLE),
-            option("class-path", MAVEN, GRADLE),
+            option("class-path", MODULE, MAVEN, GRADLE),
             option("processor-path", GRADLE),
             option("source", GRADLE),
             option("target", GRADLE),

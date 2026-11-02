@@ -14,6 +14,7 @@
 
 package com.netflix.tools.jig.test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.classfile.ClassFile;
@@ -1609,6 +1610,68 @@ public class JigTest {
     }
 
     @Test
+    void releaseEightCompilerUsesClasspathButRuntimeUsesModules(@TempDir Path directory) throws Exception {
+        var sources = Files.createDirectories(directory.resolve("src"));
+        for (var name : List.of("example.app", "example.dep")) {
+            var root = Files.createDirectories(sources.resolve(name));
+            var version = Files.createDirectories(root.resolve("META-INF/versions/9"));
+            Files.writeString(root.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
+            Files.writeString(version.resolve("module-info.java"), "/** @release 8 */ module " + name
+                    + (name.equals("example.app") ? " { requires example.dep; exports app; }\n" : " { exports dep; }\n"));
+            var packageName = name.equals("example.app") ? "app" : "dep";
+            var pack = Files.createDirectories(root.resolve(packageName));
+            Files.writeString(pack.resolve("Example.java"), name.equals("example.app")
+                    ? "package app; public class Example extends dep.Example {}\n"
+                    : "package dep; public class Example {}\n");
+        }
+        var arguments = runJig("--module-source-path", sources.toString(), "-m", "example.app",
+                "--resolve-options", "class-path,module-path,source-path,module-source-path,module=list,release,module-version",
+                "--module-version", "1.0");
+        assertTrue(arguments.contains("--class-path\n"), arguments);
+        assertTrue(arguments.contains("--source-path\n"), arguments);
+        assertTrue(arguments.contains("--release\n8\n"), arguments);
+        assertFalse(arguments.contains("--module-path\n"), arguments);
+        assertFalse(arguments.contains("--module-source-path\n"), arguments);
+        assertFalse(arguments.contains("--module\n"), arguments);
+        assertFalse(arguments.contains("--module-version\n"), arguments);
+        var pathsOnly = runJig("--module-source-path", sources.toString(), "-m", "example.app",
+                "--resolve-options", "class-path,module-path,release");
+        assertTrue(pathsOnly.contains("--class-path\n"), pathsOnly);
+        assertFalse(pathsOnly.contains("--module-path\n"), pathsOnly);
+        var dependency = optionPath(arguments, "--class-path");
+        assertTrue(Files.isRegularFile(dependency.resolve("dep/Example.class")));
+        var compilerArguments = runJig("--module-source-path", sources.toString(), "-m", "example.app", "--resolve-compiler-options");
+        var argfile = directory.resolve("compile.args");
+        Files.writeString(argfile, compilerArguments);
+        var messages = new ByteArrayOutputStream();
+        assertEquals(0, javax.tools.ToolProvider.getSystemJavaCompiler().run(null, messages, messages,
+                "@" + argfile, "-d", directory.resolve("classes").toString(),
+                sources.resolve("example.app/app/Example.java").toString()), messages.toString());
+        assertEquals(52, ClassFile.of().parse(Files.readAllBytes(directory.resolve("classes/app/Example.class"))).majorVersion());
+        var runtime = runJig("--module-source-path", sources.toString(), "-m", "example.app",
+                "--resolve-options", "class-path,module-path,add-modules");
+        assertTrue(runtime.contains("--module-path\n"), runtime);
+        assertFalse(runtime.contains("--class-path\n"), runtime);
+        assertEquals(Set.of("example.app", "example.dep"),
+                ModuleFinder.of(runtimePath(runtime)).findAll().stream()
+                        .map(reference -> reference.descriptor().name()).collect(Collectors.toSet()));
+        assertEquals(runtime, runJig("--module-source-path", sources.toString(), "-m", "example.app",
+                "--resolve-options", "class-path,module-path,add-modules"));
+        Files.writeString(sources.resolve("example.app/META-INF/versions/9/module-info.java"),
+                "/** @release 8 */ open module example.app { requires example.dep; exports app; }\n");
+        var updated = runJig("--module-source-path", sources.toString(), "-m", "example.app",
+                "--resolve-options", "module-path,add-modules");
+        assertNotEquals(runtime, updated);
+        assertTrue(ModuleFinder.of(runtimePath(updated)).find("example.app").orElseThrow().descriptor().isOpen());
+    }
+
+    private static Path[] runtimePath(String arguments) {
+        var lines = arguments.lines().toList();
+        return java.util.Arrays.stream(lines.get(lines.indexOf("--module-path") + 1)
+                .split(java.util.regex.Pattern.quote(System.getProperty("path.separator")))).map(Path::of).toArray(Path[]::new);
+    }
+
+    @Test
     void sourceAndRuntimeOptionsProjectDifferentRequirements(@TempDir Path directory) throws Exception {
         Path source = directory.resolve("src/com.example.application");
         Files.createDirectories(source);
@@ -2380,7 +2443,7 @@ public class JigTest {
     void portableRequestsOmitOptionsNotSupportedByModuleProjects() {
         var options = Options.parse(new String[] {"--resolve-options",
                 "module-path,module=list,class-path,processor-path,source,target,encoding,system,add-reads,d", "-m", "app"});
-        assertEquals(Set.of("module-path", "module"), options.resolveOptions);
+        assertEquals(Set.of("module-path", "class-path", "module"), options.resolveOptions);
         assertEquals(Options.ModuleForm.LIST, options.moduleForm);
     }
 
@@ -2390,7 +2453,7 @@ public class JigTest {
         var output = new StringWriter();
         var errors = new StringWriter();
         int status = new Jig().run(new PrintWriter(output), new PrintWriter(errors), "--resolve-options",
-                "class-path,processor-path,source,target,encoding,system,add-reads,d", "--write-argfile", file.toString());
+                "processor-path,source,target,encoding,system,add-reads,d", "--write-argfile", file.toString());
         assertEquals(0, status, errors.toString());
         assertEquals("", output.toString());
         assertEquals("", Files.readString(file));

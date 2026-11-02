@@ -699,7 +699,8 @@ public final class SourceModuleCompilation {
                 }
                 options.add("--enable-preview");
             }
-            if (configuration.moduleVersion() != null) {
+            boolean classpathCompilation = Objects.equals(configuration.release(), 8);
+            if (!classpathCompilation && configuration.moduleVersion() != null) {
                 options.add("--module-version");
                 options.add(configuration.moduleVersion());
             }
@@ -708,36 +709,53 @@ public final class SourceModuleCompilation {
             if (compilationModule != null) {
                 modulePath.add(compilationModule);
             }
-            for (var moduleName : configuredPaths.moduleSourcePath().keySet()) {
-                modulePath.add(observableModule(work, moduleName));
+            if (!classpathCompilation) {
+                for (var moduleName : configuredPaths.moduleSourcePath().keySet()) {
+                    modulePath.add(observableModule(work, moduleName));
+                }
             }
             modulePath.addAll(configuredPaths.modulePath());
-            addPathOption(options, "--module-path", modulePath);
-            addPathOption(options, "--upgrade-module-path", configuredPaths.upgradeModulePath());
-            var patchModules = new TreeMap<String, List<Path>>();
-            configuredPaths.patchModules().forEach((name, paths) -> patchModules.put(name, new ArrayList<>(paths)));
-            if (compilationModule != null) {
-                var currentPatch = patchModules.computeIfAbsent(sourceModuleName, _ -> new ArrayList<>());
-                currentPatch.add(sourceRoot);
-                currentPatch.add(patchDirectory);
-                if (previousPatch != null) {
-                    currentPatch.add(previousPatch);
+            if (classpathCompilation) {
+                if (!configuredPaths.upgradeModulePath().isEmpty()) {
+                    throw new IllegalArgumentException("@release 8 does not support upgrade-module-path");
                 }
-                currentPatch.add(compilationModule);
+                var classpath = new ArrayList<Path>();
+                configuredPaths.patchModules().values().forEach(classpath::addAll);
+                if (previousPatch != null) {
+                    classpath.add(previousPatch);
+                }
+                classpath.add(patchDirectory);
+                classpath.addAll(modulePath);
+                addPathOption(options, "--class-path", classpath);
+                addPathOption(options, "--source-path", List.of(sourceRoot));
+            } else {
+                addPathOption(options, "--module-path", modulePath);
+                addPathOption(options, "--upgrade-module-path", configuredPaths.upgradeModulePath());
             }
-            patchModules.forEach((name, paths) -> {
-                options.add("--patch-module");
-                options.add(name + "=" + String.join(File.pathSeparator,
-                        paths.stream()
-                                .map(Path::toString)
-                                .toList()));
-            });
-            configuration.runtimeAccess().addExports().stream()
-                    .filter(access -> access.targetModule().equals(configuration.moduleName()))
-                    .forEach(access -> {
-                        options.add("--add-exports");
-                        options.add(access.toFlagValue());
-                    });
+            if (!classpathCompilation) {
+                var patchModules = new TreeMap<String, List<Path>>();
+                configuredPaths.patchModules().forEach((name, paths) -> patchModules.put(name, new ArrayList<>(paths)));
+                if (compilationModule != null) {
+                    var currentPatch = patchModules.computeIfAbsent(sourceModuleName, _ -> new ArrayList<>());
+                    currentPatch.add(sourceRoot);
+                    currentPatch.add(patchDirectory);
+                    if (previousPatch != null) {
+                        currentPatch.add(previousPatch);
+                    }
+                    currentPatch.add(compilationModule);
+                }
+                patchModules.forEach((name, paths) -> {
+                    options.add("--patch-module");
+                    options.add(name + "=" + String.join(File.pathSeparator,
+                            paths.stream().map(Path::toString).toList()));
+                });
+                configuration.runtimeAccess().addExports().stream()
+                        .filter(access -> access.targetModule().equals(configuration.moduleName()))
+                        .forEach(access -> {
+                            options.add("--add-exports");
+                            options.add(access.toFlagValue());
+                        });
+            }
             var task = (JavacTask) compiler.getTask(verboseOutput, manager, diagnosticReporter, options, null, sourceFiles);
             task.addTaskListener(new DeclarationListener(sourcePaths, declarationHashes));
             final boolean successful;
