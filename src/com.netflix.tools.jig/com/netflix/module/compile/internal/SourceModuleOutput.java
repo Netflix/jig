@@ -112,6 +112,21 @@ public final class SourceModuleOutput {
     private SourceModuleOutput() {
     }
 
+    /** Returns the retained MR JAR, or null for an exploded managed output. */
+    public static Path archive(Path output) throws IOException {
+        if (Files.isRegularFile(output.resolve("module-info.class"))) {
+            return null;
+        }
+        try (var files = Files.list(output)) {
+            var entries = files.limit(2).toList();
+            if (entries.size() == 1 && Files.isRegularFile(entries.getFirst())
+                    && entries.getFirst().getFileName().toString().endsWith(".jar")) {
+                return entries.getFirst();
+            }
+            return null;
+        }
+    }
+
     public static Result compile(
             Path sourceRoot,
             Path previousOutput,
@@ -366,18 +381,13 @@ public final class SourceModuleOutput {
                             Set.of(),
                             work.resolve("version-" + version));
                 }
-                validateMultiRelease(
-                        rootTarget, versionSections, work.resolve("validation.jar"));
-                if (Files.exists(target)) {
-                    throw new IOException("Module output already exists: " + target);
-                }
-                try {
-                    Files.move(current, target, StandardCopyOption.ATOMIC_MOVE);
-                } catch (AtomicMoveNotSupportedException e) {
-                    Files.move(current, target);
-                }
+                Path archive = work.resolve("validation.jar");
+                validateMultiRelease(rootTarget, versionSections, archive);
+                Files.createDirectory(target);
+                Files.move(archive, target.resolve(configuration.moduleName() + ".jar"));
+                makeReadOnly(target);
             }
-            if (!Files.isRegularFile(target.resolve("module-info.class"))) {
+            if (!Files.isRegularFile(current.resolve("module-info.class"))) {
                 throw new IOException("Compiler did not produce module-info.class: "
                         + configuration.moduleName());
             }
@@ -770,7 +780,7 @@ public final class SourceModuleOutput {
         Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
     }
 
-    private static void makeReadOnly(Path root) throws IOException {
+    public static void makeReadOnly(Path root) throws IOException {
         try (var paths = Files.walk(root)) {
             for (var path : paths.filter(Files::isRegularFile).toList()) {
                 try {

@@ -45,6 +45,7 @@ import java.util.UUID;
 import java.util.jar.Attributes.Name;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import java.util.zip.ZipFile;
 import java.util.jar.Manifest;
 import java.util.regex.Pattern;
 import java.util.spi.ToolProvider;
@@ -68,6 +69,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1639,7 +1641,11 @@ public class JigTest {
         assertTrue(pathsOnly.contains("--class-path\n"), pathsOnly);
         assertFalse(pathsOnly.contains("--module-path\n"), pathsOnly);
         var dependency = optionPath(arguments, "--class-path");
-        assertTrue(Files.isRegularFile(dependency.resolve("dep/Example.class")));
+        try (var archive = new ZipFile(dependency.toFile())) {
+            assertNotNull(archive.getEntry("dep/Example.class"));
+            assertNotNull(archive.getEntry("META-INF/versions/9/module-info.class"));
+            assertNull(archive.getEntry("module-info.class"));
+        }
         var compilerArguments = runJig("--module-source-path", sources.toString(), "-m", "example.app", "--resolve-compiler-options");
         var argfile = directory.resolve("compile.args");
         Files.writeString(argfile, compilerArguments);
@@ -1663,6 +1669,28 @@ public class JigTest {
                 "--resolve-options", "module-path,add-modules");
         assertNotEquals(runtime, updated);
         assertTrue(ModuleFinder.of(runtimePath(updated)).find("example.app").orElseThrow().descriptor().isOpen());
+    }
+
+    @Test
+    void releaseEightDoesNotChangeModuleMetadataProjection(@TempDir Path directory) throws Exception {
+        Path sources = directory.resolve("src");
+        Path library = Files.createDirectories(sources.resolve("example.library"));
+        Path version = Files.createDirectories(library.resolve("META-INF/versions/9"));
+        Files.writeString(library.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
+        Files.writeString(version.resolve("module-info.java"), "/** @release 8 */ module example.library {}\n");
+        Files.writeString(library.resolve("Broken.java"), "not Java\n");
+        Path tests = Files.createDirectories(sources.resolve("example.tests"));
+        Files.writeString(tests.resolve("module-info.java"),
+                "/** @release 25 */ module example.tests { requires example.library; }\n");
+
+        String arguments = runJig("--module-source-path", sources.toString(), "-m", "example.tests",
+                "--resolve-options", "module-path,module-source-path,add-modules");
+
+        assertEquals("--module-source-path\nexample.library=" + library + "\n"
+                + "--module-source-path\nexample.tests=" + tests + "\n"
+                + "--add-modules\nexample.tests\n", arguments);
+        assertFalse(arguments.contains("--release\n"));
+        assertFalse(arguments.contains("--class-path\n"));
     }
 
     private static Path[] runtimePath(String arguments) {

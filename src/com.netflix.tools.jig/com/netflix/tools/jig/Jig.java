@@ -308,8 +308,7 @@ public class Jig implements ToolProvider, OptionChecker {
             Map<String, Path> sourcePaths)
             throws IOException {
         validateSelectedArtifacts(resolution, repositoryPaths);
-        boolean sourceCompilation = resolveOptions.contains("module-source-path") || resolveOptions.contains("source-path");
-        boolean releaseEightCompilation = (sourceCompilation || resolveOptions.contains("release")) && resolution.moduleSources().keySet().stream()
+        boolean releaseEightCompilation = resolveOptions.contains("release") && resolution.moduleSources().keySet().stream()
                 .map(resolution.observableModules()::find).flatMap(Optional::stream)
                 .map(SourceModuleReference.class::cast)
                 .anyMatch(source -> Objects.equals(source.sourceModule().release(), 8));

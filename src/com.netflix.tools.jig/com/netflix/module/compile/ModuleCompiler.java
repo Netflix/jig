@@ -40,6 +40,7 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.zip.ZipFile;
 import javax.lang.model.SourceVersion;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticListener;
@@ -537,7 +538,8 @@ public final class ModuleCompiler implements AutoCloseable {
     }
 
     /**
-     * Materializes a compiled module as one complete directory.
+     * Materializes a compiled module as one complete directory, preserving
+     * multi-release sections.
      *
      * @param compilation the managed compilation output
      * @param target the destination directory
@@ -556,23 +558,45 @@ public final class ModuleCompiler implements AutoCloseable {
             return target;
         }
         var replacement = target.resolveSibling("." + target.getFileName() + "-" + java.util.UUID.randomUUID());
-        SourceModuleCompilation.write(compilation.output(),
-                                      compilation.patch(),
-                                      NO_CHANGES,
-                                      Map.of(),
-                                      Set.of(),
-                                      replacement);
-        if (Files.exists(target))
-            deleteTree(target);
-        move(replacement, target);
-        touch(compilation.output());
-        if (compilation.patch() != null)
-            touch(compilation.patch());
-        return target;
+        try {
+            Path archive = SourceModuleOutput.archive(compilation.output());
+            if (archive == null) {
+                SourceModuleCompilation.write(compilation.output(),
+                                              compilation.patch(),
+                                              NO_CHANGES,
+                                              Map.of(),
+                                              Set.of(),
+                                              replacement);
+            } else {
+                try (var zip = new ZipFile(archive.toFile())) {
+                    for (var entry : zip.stream().filter(entry -> !entry.isDirectory()).toList()) {
+                        Path destination = replacement.resolve(entry.getName()).normalize();
+                        if (!destination.startsWith(replacement)) {
+                            throw new IOException("Archive entry escapes module output: " + entry.getName());
+                        }
+                        Files.createDirectories(destination.getParent());
+                        try (var input = zip.getInputStream(entry)) {
+                            Files.copy(input, destination);
+                        }
+                    }
+                }
+                SourceModuleOutput.makeReadOnly(replacement);
+            }
+            if (Files.exists(target))
+                deleteTree(target);
+            move(replacement, target);
+            touch(compilation.output());
+            if (compilation.patch() != null)
+                touch(compilation.patch());
+            return target;
+        } finally {
+            deleteTree(replacement);
+        }
     }
 
     /**
      * Returns a reusable module path, retaining a patch when one is available.
+     * Multi-release modules are presented as JARs.
      *
      * @param moduleName the compiled module name
      * @param compilation the managed compilation output
@@ -596,6 +620,11 @@ public final class ModuleCompiler implements AutoCloseable {
     public ModulePath modulePath(String moduleName, CompiledModule compilation, boolean allowPatch) throws IOException {
         Objects.requireNonNull(moduleName, "moduleName");
         Objects.requireNonNull(compilation, "compilation");
+        Path archive = SourceModuleOutput.archive(compilation.output());
+        if (archive != null) {
+            touch(compilation.output());
+            return new ModulePath(archive, null);
+        }
         if (compilation.patch() == null || allowPatch) {
             touch(compilation.output());
             if (compilation.patch() != null)

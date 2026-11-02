@@ -18,8 +18,10 @@ import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.module.ModuleDescriptor.Version;
 import java.lang.module.ModuleFinder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -2285,8 +2287,60 @@ class ModuleCompilerTest {
         assertEquals(2, compilations(next));
         var module17 = next.write(release17, directory.resolve("release-17"));
         assertNotEquals(release16, release17);
+        assertArrayEquals(baseClass, Files.readAllBytes(module17.resolve("p/Example.class")));
         assertNotEquals(HexFormat.of().formatHex(baseClass),
-                HexFormat.of().formatHex(Files.readAllBytes(module17.resolve("p/Example.class"))));
-        assertEquals("17\n", Files.readString(module17.resolve("version.txt")));
+                HexFormat.of().formatHex(Files.readAllBytes(module17.resolve("META-INF/versions/17/p/Example.class"))));
+        assertEquals("base\n", Files.readString(module17.resolve("version.txt")));
+        assertEquals("17\n", Files.readString(module17.resolve("META-INF/versions/17/version.txt")));
+        Path modulePath = next.modulePath("example.mod", release17, false).modulePath();
+        try (var reader = ModuleFinder.of(modulePath).find("example.mod").orElseThrow().open();
+             var resource = reader.open("version.txt").orElseThrow()) {
+            assertEquals("17\n", new String(resource.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        var cached = new ModuleCompiler(root);
+        var reused = cached.compile(source, configuration("example.mod", 11), 17);
+        assertEquals(0, compilations(cached));
+        assertEquals(release17.hash(), reused.hash());
+        assertEquals(release17.compilationHash(), reused.compilationHash());
+        assertEquals(modulePath, cached.modulePath("example.mod", reused, false).modulePath());
+
+        Path versionSource = source.resolve("META-INF/versions/17/p/Example.java");
+        Files.writeString(versionSource, "package p; public class Example { public int version() { return 18; } }\n");
+        var bodyChange = cached.compile(source, configuration("example.mod", 11), 17);
+        assertNotEquals(release17.hash(), bodyChange.hash());
+        assertEquals(release17.compilationHash(), bodyChange.compilationHash());
+        Files.writeString(source.resolve("p/Example.java"),
+                "package p; public class Example { public int version() { return 11; } public int added; }\n");
+        Files.writeString(versionSource,
+                "package p; public class Example { public int version() { return 18; } public int added; }\n");
+        var apiChange = cached.compile(source, configuration("example.mod", 11), 17);
+        assertNotEquals(bodyChange.compilationHash(), apiChange.compilationHash());
+    }
+
+    @Test
+    void retainsTheReleaseEightDescriptorInItsVersionSection(@TempDir Path directory) throws Exception {
+        Path source = directory.resolve("source");
+        Files.createDirectories(source.resolve("META-INF/versions/9"));
+        Files.writeString(source.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
+        Files.writeString(source.resolve("META-INF/versions/9/module-info.java"),
+                "/** @release 8 */ module example.mod { exports p; }\n");
+        Files.createDirectories(source.resolve("p"));
+        Files.writeString(source.resolve("p/Example.java"), "package p; public class Example {}\n");
+        var compiler = new ModuleCompiler(directory.resolve("cache"));
+
+        var compilation = compiler.compile(source, configuration("example.mod", 8), 25);
+        Path output = compiler.write(compilation, directory.resolve("output"));
+
+        assertFalse(Files.exists(output.resolve("module-info.class")));
+        assertEquals(52, ClassFile.of().parse(output.resolve("p/Example.class")).majorVersion());
+        assertEquals(53, ClassFile.of().parse(output.resolve("META-INF/versions/9/module-info.class")).majorVersion());
+        if (Files.getFileStore(output).supportsFileAttributeView("posix")) {
+            assertFalse(Files.getPosixFilePermissions(output.resolve("p/Example.class"))
+                    .contains(PosixFilePermission.OWNER_WRITE));
+        }
+        Path modulePath = compiler.modulePath("example.mod", compilation, false).modulePath();
+        assertEquals("example.mod", ModuleFinder.of(modulePath).find("example.mod").orElseThrow().descriptor().name());
+        assertEquals(compilation.hash(), new ModuleCompiler(directory.resolve("cache"))
+                .compile(source, configuration("example.mod", 8), 25).hash());
     }
 }

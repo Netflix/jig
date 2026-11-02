@@ -37,11 +37,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import com.netflix.module.ModuleHash;
 import com.netflix.module.ModuleHash.Type;
@@ -78,21 +81,7 @@ public final class CompiledModuleHash {
             update(digest, entry.hash()
                                 .toString());
         }
-        var files = new TreeMap<String, Path>();
-        collect(output, files);
-        if (patch != null) {
-            collect(patch, files);
-        }
-        var classes = files.entrySet().stream()
-                .filter(entry -> entry.getKey().endsWith(".class"))
-                .toList();
-        update(digest, classes.size());
-        for (var entry : classes) {
-            update(digest, entry.getKey());
-            var signature = classSignature(Files.readAllBytes(entry.getValue()));
-            update(digest, signature.length);
-            digest.update(signature);
-        }
+        updateClasses(digest, output, patch);
         var systemImage = state.systemImage();
         if (systemImage == null) {
             update(digest, 0);
@@ -155,6 +144,44 @@ public final class CompiledModuleHash {
                 files.put(name, path);
             }
         }
+    }
+
+    private static void updateClasses(MessageDigest digest, Path output, Path patch) throws IOException {
+        Path archive = SourceModuleOutput.archive(output);
+        if (archive != null) {
+            if (patch != null) {
+                throw new IllegalStateException("Multi-release output cannot have a patch: " + output);
+            }
+            try (var zip = new ZipFile(archive.toFile())) {
+                var classes = zip.stream().filter(entry -> entry.getName().endsWith(".class"))
+                        .sorted(Comparator.comparing(ZipEntry::getName))
+                        .toList();
+                update(digest, classes.size());
+                for (var entry : classes) {
+                    try (var input = zip.getInputStream(entry)) {
+                        updateClass(digest, entry.getName(), input.readAllBytes());
+                    }
+                }
+            }
+        } else {
+            var files = new TreeMap<String, Path>();
+            collect(output, files);
+            if (patch != null) {
+                collect(patch, files);
+            }
+            var classes = files.entrySet().stream().filter(entry -> entry.getKey().endsWith(".class")).toList();
+            update(digest, classes.size());
+            for (var entry : classes) {
+                updateClass(digest, entry.getKey(), Files.readAllBytes(entry.getValue()));
+            }
+        }
+    }
+
+    private static void updateClass(MessageDigest digest, String name, byte[] bytes) {
+        update(digest, name);
+        byte[] signature = classSignature(bytes);
+        update(digest, signature.length);
+        digest.update(signature);
     }
 
     private static byte[] classSignature(byte[] bytes) {
