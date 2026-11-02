@@ -17,12 +17,14 @@ package com.netflix.module.test;
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipFile;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 
@@ -38,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -121,16 +124,12 @@ class SourceModuleOutputTest {
                 ClassFile.of()
                         .parse(Files.readAllBytes(release16.output().resolve("p/Example.class")))
                         .majorVersion());
-        assertEquals(61,
-                ClassFile.of()
-                        .parse(Files.readAllBytes(release17.output().resolve("p/Example.class")))
-                        .majorVersion());
+        assertEquals(55, ClassFile.of().parse(content(release17, "p/Example.class")).majorVersion());
+        assertEquals(61, ClassFile.of().parse(content(release17, "META-INF/versions/17/p/Example.class")).majorVersion());
         assertEquals("base\n", Files.readString(release16.output()
                 .resolve("version.txt")));
-        assertEquals("17\n", Files.readString(release17.output()
-                .resolve("version.txt")));
-        assertFalse(Files.exists(release17.output()
-                .resolve("META-INF/versions")));
+        assertEquals("base\n", new String(content(release17, "version.txt"), StandardCharsets.UTF_8));
+        assertEquals("17\n", new String(content(release17, "META-INF/versions/17/version.txt"), StandardCharsets.UTF_8));
     }
 
     @Test
@@ -175,14 +174,9 @@ class SourceModuleOutputTest {
         var current = SourceModuleOutput.compile(root, null, null, directory.resolve("current"), 17,
                 configuration(11));
 
-        var observedClass = Files.readAllBytes(observed.output()
-                .resolve("p/Example.class"));
-        assertFalse(Arrays.equals(Files.readAllBytes(expected.output()
-                .resolve("p/Example.class")),
-                observedClass));
-        assertArrayEquals(Files.readAllBytes(current.output()
-                .resolve("p/Example.class")),
-                observedClass);
+        var observedClass = content(observed, "META-INF/versions/17/p/Example.class");
+        assertFalse(Arrays.equals(content(expected, "META-INF/versions/17/p/Example.class"), observedClass));
+        assertArrayEquals(content(current, "META-INF/versions/17/p/Example.class"), observedClass);
         assertNotEquals(inputs.hash(), observed.inputHash());
         assertEquals(current.inputHash(), observed.inputHash());
         var diagnosticSource = diagnostics.stream()
@@ -238,12 +232,14 @@ class SourceModuleOutputTest {
                 ModuleRuntimeAccessOptions.EMPTY, new Paths(
                         List.of(), List.of(), Map.of()), List.of(), null);
         var output = SourceModuleOutput.compile(root, null, null, directory.resolve("output"), 25, configuration);
-        assertEquals(52, ClassFile.of().parse(Files.readAllBytes(output.output().resolve("p/Example.class"))).majorVersion());
-        assertEquals(53, ClassFile.of().parse(Files.readAllBytes(output.output().resolve("module-info.class"))).majorVersion());
+        assertEquals(52, ClassFile.of().parse(content(output, "p/Example.class")).majorVersion());
+        assertEquals(53, ClassFile.of().parse(content(output, "META-INF/versions/9/module-info.class")).majorVersion());
         var descriptor = java.lang.module.ModuleFinder.of(output.output()).find("example.module").orElseThrow().descriptor();
         assertEquals("1.2.3", descriptor.rawVersion().orElseThrow());
         assertEquals("p.Example", descriptor.mainClass().orElseThrow());
-        assertFalse(Files.exists(output.output().resolve("META-INF/versions")));
+        try (var archive = new ZipFile(SourceModuleOutput.archive(output.output()).toFile())) {
+            assertNull(archive.getEntry("module-info.class"));
+        }
         Files.writeString(root.resolve("p/Example.java"),
                 "package p; public class Example { public String value() { return \"x\".strip(); } }\n");
         var failure = assertThrows(IOException.class, () -> SourceModuleOutput.compile(root, null, null,
@@ -256,6 +252,17 @@ class SourceModuleOutputTest {
         Files.writeString(directory.resolve("module-info.java"), "module example.module {}\n");
         assertThrows(IllegalArgumentException.class, () -> SourceModuleOutput.compile(
                 directory, null, null, directory.resolve("output"), 25, configuration(8)));
+    }
+
+    private static byte[] content(SourceModuleOutput.Result output, String name) throws IOException {
+        Path archive = SourceModuleOutput.archive(output.output());
+        if (archive == null) {
+            return Files.readAllBytes(output.output().resolve(name));
+        }
+        try (var zip = new ZipFile(archive.toFile());
+             var input = zip.getInputStream(zip.getEntry(name))) {
+            return input.readAllBytes();
+        }
     }
 
     private static Configuration configuration(int release) {
