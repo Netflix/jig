@@ -412,6 +412,8 @@ public final class SourceModuleOutput {
         arguments.add("-0");
         arguments.add("--file");
         arguments.add(archive.toString());
+        arguments.add("--manifest");
+        arguments.add(root.resolve("META-INF/MANIFEST.MF").toString());
         arguments.add("-C");
         arguments.add(root.toString());
         arguments.add(".");
