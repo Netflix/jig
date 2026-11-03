@@ -33,6 +33,7 @@ import java.util.OptionalInt;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.Attributes.Name;
 import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import javax.tools.Diagnostic;
@@ -2315,6 +2316,82 @@ class ModuleCompilerTest {
                 "package p; public class Example { public int version() { return 18; } public int added; }\n");
         var apiChange = cached.compile(source, configuration("example.mod", 11), 17);
         assertNotEquals(bodyChange.compilationHash(), apiChange.compilationHash());
+    }
+
+    @Test
+    void preservesMultiReleaseManifestThroughMaterializationAndCacheUpdates(@TempDir Path directory) throws Exception {
+        Path source = directory.resolve("source");
+        Files.createDirectories(source.resolve("META-INF/versions/9"));
+        Files.writeString(source.resolve("META-INF/versions/9/module-info.java"),
+                "/** @release 8 */ module example.mod { exports p; }\n");
+        Files.createDirectories(source.resolve("p"));
+        Files.writeString(source.resolve("p/Example.java"),
+                "package p; public class Example { public static void premain(String arguments) {} }\n");
+        String manifest = """
+                Manifest-Version: 1.0
+                Multi-Release: true
+                Premain-Class: p.Example
+                Implementation-Title: %s
+
+                """;
+        Files.writeString(source.resolve("META-INF/MANIFEST.MF"), manifest.formatted("Original"));
+        var cache = directory.resolve("cache");
+        var compiler = new ModuleCompiler(cache);
+        var first = compiler.compile(source, configuration("example.mod", 8), 25);
+        Path firstArchive = compiler.modulePath("example.mod", first, false).modulePath();
+        Path materialized = compiler.write(first, directory.resolve("materialized"));
+
+        try (var archive = new JarFile(firstArchive.toFile());
+             var input = Files.newInputStream(materialized.resolve("META-INF/MANIFEST.MF"))) {
+            assertEquals("p.Example", archive.getManifest().getMainAttributes().getValue("Premain-Class"));
+            assertEquals("Original", archive.getManifest().getMainAttributes().getValue(Name.IMPLEMENTATION_TITLE));
+            assertEquals(archive.getManifest(), new Manifest(input));
+        }
+
+        Files.writeString(source.resolve("META-INF/MANIFEST.MF"), manifest.formatted("Updated manifest"));
+        var next = new ModuleCompiler(cache);
+        var second = next.compile(source, configuration("example.mod", 8), 25);
+        Path secondArchive = next.modulePath("example.mod", second, false).modulePath();
+
+        assertNotEquals(first.hash(), second.hash());
+        try (var original = new JarFile(firstArchive.toFile());
+             var updated = new JarFile(secondArchive.toFile())) {
+            assertEquals("Original", original.getManifest().getMainAttributes().getValue(Name.IMPLEMENTATION_TITLE));
+            assertEquals("Updated manifest", updated.getManifest().getMainAttributes().getValue(Name.IMPLEMENTATION_TITLE));
+            assertEquals("p.Example", updated.getManifest().getMainAttributes().getValue("Premain-Class"));
+        }
+        var cached = new ModuleCompiler(cache);
+        assertEquals(second.hash(), cached.compile(source, configuration("example.mod", 8), 25).hash());
+        assertEquals(0, compilations(cached));
+    }
+
+    @Test
+    void recompilesTheLegacyMultiReleaseCacheNamespace(@TempDir Path directory) throws Exception {
+        Path source = directory.resolve("source");
+        Files.createDirectories(source.resolve("META-INF/versions/9"));
+        Files.writeString(source.resolve("META-INF/versions/9/module-info.java"),
+                "/** @release 8 */ module example.mod { exports p; }\n");
+        Files.writeString(source.resolve("META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMulti-Release: true\n\n");
+        Files.createDirectories(source.resolve("p"));
+        Files.writeString(source.resolve("p/Example.java"), "package p; public class Example {}\n");
+        var cache = directory.resolve("cache");
+        var seeding = new ModuleCompiler(cache);
+        var seed = seeding.compile(source, configuration("example.mod", 8), 25);
+        Path configurationRoot = seeding.modulePath("example.mod", seed, false).modulePath().getParent().getParent().getParent();
+        // Release 8, no preview, observable sources, or additional exports in namespace v1.
+        Path legacyRoot = configurationRoot.resolveSibling("8e18598c435e228ac7bae232d98586bedb73f542052e75a8b742225f6c0f1398");
+        if (!configurationRoot.equals(legacyRoot)) {
+            Files.move(configurationRoot, legacyRoot);
+        }
+
+        var compiler = new ModuleCompiler(cache);
+        var rebuilt = compiler.compile(source, configuration("example.mod", 8), 25);
+
+        assertTrue(compilations(compiler) > 0, "Legacy MR output must not be reused");
+        Path archive = compiler.modulePath("example.mod", rebuilt, false).modulePath();
+        assertTrue(Files.isRegularFile(archive));
+        assertNotEquals(legacyRoot, archive.getParent().getParent().getParent());
+        assertTrue(Files.isDirectory(legacyRoot));
     }
 
     @Test

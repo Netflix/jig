@@ -24,6 +24,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.Attributes;
+import java.util.jar.Attributes.Name;
+import java.util.jar.JarFile;
+import java.util.jar.Manifest;
 import java.util.zip.ZipFile;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -35,6 +39,8 @@ import com.netflix.module.compile.internal.SourceModuleCompilation.State;
 import com.netflix.module.compile.internal.SourceModuleOutput;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -130,6 +136,60 @@ class SourceModuleOutputTest {
                 .resolve("version.txt")));
         assertEquals("base\n", new String(content(release17, "version.txt"), StandardCharsets.UTF_8));
         assertEquals("17\n", new String(content(release17, "META-INF/versions/17/version.txt"), StandardCharsets.UTF_8));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {8, 11})
+    void preservesMultiReleaseManifestAttributes(int release, @TempDir Path directory) throws Exception {
+        var root = Files.createDirectories(directory.resolve("sources"));
+        var base = Files.createDirectories(root.resolve("p"));
+        String source = """
+                package p;
+                public class Example {
+                    public static void premain(String arguments) {}
+                    public static void main(String[] arguments) {}
+                }
+                """;
+        Files.writeString(base.resolve("Example.java"), source);
+        Path descriptor;
+        if (release == 8) {
+            descriptor = Files.createDirectories(root.resolve("META-INF/versions/9")).resolve("module-info.java");
+        } else {
+            descriptor = root.resolve("module-info.java");
+            var version = Files.createDirectories(root.resolve("META-INF/versions/17/p"));
+            Files.writeString(version.resolve("Example.java"), source);
+        }
+        Files.writeString(descriptor, "module example.module { exports p; }\n");
+
+        var expected = new Manifest();
+        var attributes = expected.getMainAttributes();
+        attributes.put(Name.MANIFEST_VERSION, "1.0");
+        attributes.put(Name.MULTI_RELEASE, "true");
+        attributes.put(Name.MAIN_CLASS, "p.Example");
+        attributes.putValue("Premain-Class", "p.Example");
+        attributes.putValue("Agent-Class", "p.Example");
+        attributes.putValue("Can-Redefine-Classes", "true");
+        attributes.put(Name.IMPLEMENTATION_TITLE, "Example module");
+        attributes.putValue("X-Folded-Value", "manifest-value-".repeat(12));
+        var section = new Attributes();
+        section.put(Name.SEALED, "true");
+        section.put(Name.IMPLEMENTATION_VERSION, "1.2.3");
+        expected.getEntries().put("p/", section);
+        try (var output = Files.newOutputStream(root.resolve("META-INF/MANIFEST.MF"))) {
+            expected.write(output);
+        }
+
+        var output = SourceModuleOutput.compile(root, null, null, directory.resolve("output"),
+                25, configuration(release));
+
+        try (var archive = new JarFile(SourceModuleOutput.archive(output.output()).toFile())) {
+            var actual = archive.getManifest();
+            for (var attribute : expected.getMainAttributes().entrySet()) {
+                assertEquals(attribute.getValue(), actual.getMainAttributes().get(attribute.getKey()),
+                        attribute.getKey().toString());
+            }
+            assertEquals(expected.getEntries(), actual.getEntries());
+        }
     }
 
     @Test

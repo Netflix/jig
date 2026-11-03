@@ -840,7 +840,7 @@ public final class ModuleCompiler implements AutoCloseable {
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 must be available", e);
         }
-        update(digest, "source-module-configuration-1");
+        update(digest, "source-module-configuration-2");
         update(digest,
                configuration.release().isPresent()
                        ? Integer.toString(configuration.release().getAsInt())
