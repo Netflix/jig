@@ -423,6 +423,23 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void dependencySourceAttachmentsPreserveSelectedModuleIdentity() throws Exception {
+        var fixture = fixture(false);
+        Path sources = Files.createDirectories(fixture.project().resolve("sources"));
+        Path mainSources = Files.createDirectories(fixture.project().resolve("main sources"));
+        Files.writeString(mainSources.resolve("module-info.java"), "module main.module {}\n");
+        var values = cacheCapture(fixture);
+        values.setProperty("dependency-sources.count", "1");
+        values.setProperty("dependency-sources.0", mainSources.toString());
+        storeCacheCapture(fixture, values);
+        var result = run("maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "test",
+                "-r", "source-path,module-source-path,module");
+        assertEquals(0, result.status(), result.error());
+        assertEquals("--source-path\n\"" + sources + System.getProperty("path.separator") + mainSources + "\"\n", result.output());
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void formatterRequestsPreserveSupportedModuleOptionsAndTheModuleForm() throws Exception {
         var fixture = fixture(false);
         Path source = Files.createDirectories(fixture.project().resolve("sources"));
@@ -986,6 +1003,7 @@ class MavenProjectCommandsTest {
         values.setProperty("classpath.0", project.resolve("dependency.jar").toString());
         values.setProperty("sources.count", "1");
         values.setProperty("sources.0", project.resolve("sources").toString());
+        values.setProperty("dependency-sources.count", "0");
         values.setProperty("output-directory", project.resolve("output").toString());
         values.setProperty("system", System.getProperty("java.home"));
         try (var output = Files.newOutputStream(project.resolve("capture.properties"))) {

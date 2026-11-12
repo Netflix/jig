@@ -401,8 +401,14 @@ class MavenIntegrationTest {
         assertFalse(Files.exists(app.resolve("out/main/app/Main.class")));
         assertFalse(sources.output().contains(app.resolve("out/main").toString()), sources.output());
         assertTrue(sources.output().contains(app.resolve("target/generated-fixture").toString()), sources.output());
-        var testSources = discover(root, "--project", ":app", "--scope", "test", "-r", "class-path,source-path");
+        Path testArguments = root.resolve("test.args");
+        var testSources = discover(root, "--project", ":app", "--scope", "test", "-r", "class-path,source-path", "-w", testArguments.toString());
         assertEquals(0, testSources.status(), testSources.error());
+        Path testClasses = temporaryDirectory.resolve("source projection classes");
+        javac("@" + testArguments, "-proc:none", "-d", testClasses.toString(), check.toString());
+        for (String name : List.of("Main", "Generated", "Check")) {
+            assertTrue(Files.isRegularFile(testClasses.resolve("app/" + name + ".class")), name);
+        }
         assertFalse(Files.exists(app.resolve("out/main/app/Main.class")));
         assertFalse(Files.exists(app.resolve("out/test/app/Check.class")));
         Path arguments = root.resolve("runtime.args");
@@ -428,6 +434,26 @@ class MavenIntegrationTest {
     }
 
     @Test
+    void testSourceProjectionResolvesMainSourcesWithoutCompilation() throws Exception {
+        Path root = fixture();
+        Path app = root.resolve("app");
+        Files.writeString(app.resolve("pom.xml"), pom("app", "", customLayout()));
+        Path main = Files.createDirectories(app.resolve("sources/java/app")).resolve("Main.java");
+        Files.writeString(main, "package app; public class Main { public static int value() { return 42; } }\n");
+        Path check = Files.createDirectories(app.resolve("checks/java/app")).resolve("Check.java");
+        Files.writeString(check, "package app; public class Check { int value = Main.value(); }\n");
+        Path arguments = root.resolve("test.args");
+        var result = discover(root, "--project", ":app", "--scope", "test", "-r", "source-path", "-w", arguments.toString());
+        assertEquals(0, result.status(), result.error());
+        Path classes = temporaryDirectory.resolve("test classes");
+        javac("@" + arguments, "-proc:none", "-d", classes.toString(), check.toString());
+        assertTrue(Files.isRegularFile(classes.resolve("app/Main.class")));
+        assertTrue(Files.isRegularFile(classes.resolve("app/Check.class")));
+        assertFalse(Files.exists(app.resolve("out")));
+        assertNoBuildOutputs();
+    }
+
+    @Test
     @EnabledIf("detailedCoverage")
     void sourceOnlyResolutionUsesConfiguredRootsWithoutResolvingDependencies() throws Exception {
         Path root = fixture();
@@ -436,8 +462,10 @@ class MavenIntegrationTest {
         for (String scope : List.of("compile", "runtime", "test")) {
             var result = discover(root, "--project", ":app", "--scope", scope, "-r", "source-path");
             assertEquals(0, result.status(), result.error());
-            Path source = app.resolve(scope.equals("test") ? "checks/java" : "sources/java");
-            assertEquals("--source-path\n\"" + source + "\"\n", result.output());
+            String sources = scope.equals("test")
+                    ? app.resolve("checks/java") + System.getProperty("path.separator") + app.resolve("sources/java")
+                    : app.resolve("sources/java").toString();
+            assertEquals("--source-path\n\"" + sources + "\"\n", result.output());
         }
         assertFalse(Files.exists(app.resolve("out")));
         assertNoBuildOutputs();

@@ -242,6 +242,7 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
         }
         list(values, "classpath", paths);
         list(values, "sources", "test".equals(scope) ? selected.getTestCompileSourceRoots() : selected.getCompileSourceRoots());
+        list(values, "dependency-sources", "test".equals(scope) ? selected.getCompileSourceRoots() : Collections.<String>emptyList());
         values.setProperty("output-directory", "test".equals(scope) ? selected.getBuild().getTestOutputDirectory() : selected.getBuild().getOutputDirectory());
         if (options.contains("release") || options.contains("system")) {
             Compiler compiler = compiler(session, selected, scope);
