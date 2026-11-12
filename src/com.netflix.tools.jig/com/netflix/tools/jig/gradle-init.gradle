@@ -17,10 +17,13 @@ import java.lang.reflect.InvocationTargetException
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Task
+import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedArtifactResult
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.FileCollection
+import org.gradle.api.internal.file.UnionFileCollection
 import org.gradle.jvm.JvmLibrary
 import org.gradle.language.base.artifact.SourcesArtifact
 import org.gradle.api.specs.Spec
@@ -146,6 +149,51 @@ class JigGradleSourceVariants {
                 attribute(docsType.DOCS_TYPE_ATTRIBUTE, objects.named(docsType, docsType.SOURCES))
             }
         }.files
+    }
+}
+
+class JigGradleOutputSources {
+    static FileCollection files(def project, def sourceSet, String classpath, Task capture, boolean lenient) {
+        def path = classpath == 'runtime' ? sourceSet.runtimeClasspath : sourceSet.compileClasspath
+        if (lenient) {
+            path = lenientProducers(project, path)
+        }
+        def roots = new LinkedHashSet<FileCollection>()
+        // SourceSetOutput is a file dependency, so source artifact queries cannot
+        // attach it. Its producers identify the owning source set without relying
+        // on output locations or running compilation. Keep only source collections
+        // so their generators, not their compilers, become capture dependencies.
+        path.buildDependencies.getDependencies(capture).each { producer ->
+            def sourceSets = producer.project.extensions.findByName('sourceSets')
+            if (sourceSets == null && producer.project.hasProperty('sourceSets')) {
+                sourceSets = producer.project.property('sourceSets')
+            }
+            def owner = sourceSets == null ? null : sourceSets.find {
+                it.compileJavaTaskName == producer.name || it.classesTaskName == producer.name
+            }
+            if (owner != null && owner != sourceSet) {
+                roots.add(owner.allJava.sourceDirectories)
+            }
+        }
+        return project.files(roots)
+    }
+
+    private static FileCollection lenientProducers(def project, FileCollection path) {
+        // Older Gradle resolves external dependencies strictly even when only
+        // asking for producers. Substitute lenient artifact views in the union,
+        // retaining the file dependencies that carry source-set outputs.
+        if (path instanceof Configuration) {
+            return JigGradleBinaryArtifacts.files(project, path)
+        }
+        if (path instanceof UnionFileCollection) {
+            return project.files(path.sources.collect { lenientProducers(project, it) })
+        }
+        if (path instanceof ConfigurableFileCollection) {
+            return project.files(path.from.collect {
+                it instanceof FileCollection ? lenientProducers(project, it) : it
+            }).builtBy(path.builtBy)
+        }
+        return path
     }
 }
 
@@ -475,9 +523,10 @@ gradle.settingsEvaluated { settings ->
                     if (requested.contains('source-path')) {
                         def configurationName = selectedClasspath == 'runtime' ? sourceSet.runtimeClasspathConfigurationName : sourceSet.compileClasspathConfigurationName
                         def configuration = project.configurations.getByName(configurationName)
-                        task.dependencySources = gradleVersion >= GradleVersion.version('7.5')
+                        def artifacts = gradleVersion >= GradleVersion.version('7.5')
                                 ? JigGradleSourceVariants.files(project, configuration)
                                 : JigGradleSourceQuery.files(project, configuration)
+                        task.dependencySources = artifacts + JigGradleOutputSources.files(project, sourceSet, selectedClasspath, task, lenient)
                         task.dependsOn(task.dependencySources)
                     }
                     def needsRun = selectedSourceSetName == 'main' && (requested.contains('main-class') || requested.contains('module') || (selectedClasspath == 'runtime' && (needsModularity || needsArguments)))
