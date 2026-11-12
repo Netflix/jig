@@ -34,9 +34,10 @@ import com.netflix.tools.jig.module.SourceModuleFinder;
 
 /** Projects Maven-selected paths using jig's existing source and artifact module identities. */
 final class MavenArguments {
-    record View(List<String> sources, List<String> classpath, Path output, String release, String system, boolean sourceView) {
+    record View(List<String> sources, List<String> dependencySources, List<String> classpath, Path output,
+                String release, String system, boolean sourceView) {
         static View read(BuildCapture capture) throws IOException {
-            return new View(capture.list("sources"), capture.list("classpath"),
+            return new View(capture.list("sources"), capture.list("dependency-sources"), capture.list("classpath"),
                     Path.of(capture.require("output-directory")).toAbsolutePath().normalize(),
                     capture.optional("release"), capture.optional("system"), capture.flag("source-view"));
         }
@@ -77,7 +78,9 @@ final class MavenArguments {
         path(arguments, options.contains("class-path"), "--class-path", List.copyOf(classpath));
         path(arguments, options.contains("module-path"), "--module-path", List.copyOf(modulePath));
         boolean moduleSources = options.contains("module-source-path") && sourceModule != null;
-        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", sources);
+        var sourcePath = new LinkedHashSet<>(sources);
+        sourcePath.addAll(view.dependencySources());
+        path(arguments, options.contains("source-path") && !moduleSources, "--source-path", List.copyOf(sourcePath));
         value(arguments, options.contains("release"), "--release", view.release());
         value(arguments, options.contains("system") && view.release() == null, "--system", view.system());
         if (module != null) {
