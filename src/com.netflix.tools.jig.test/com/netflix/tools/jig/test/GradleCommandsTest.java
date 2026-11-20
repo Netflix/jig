@@ -33,6 +33,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import static com.netflix.tools.jig.test.JigProcess.standaloneJig;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -560,6 +561,154 @@ class GradleCommandsTest {
         Files.writeString(unused, "inputs=1\ninput.0=\\\\u00oops\n");
         assertEquals(0, resolve(fixture, "compile", "class-path").exitCode());
         assertEquals(4, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cachedBuildAnswersSurviveMovingTheHostingRuntime() throws Exception {
+        var fixture = cacheFixture();
+        var discovery = discoverTsv(fixture);
+        var resolved = resolve(fixture, "compile", "class-path");
+        String home = System.getProperty("java.home");
+        try {
+            System.setProperty("java.home", temporaryDirectory.resolve("another tool bundle").toString());
+            assertEquals(discovery.output(), discoverTsv(fixture).output());
+            assertEquals(resolved.output(), resolve(fixture, "compile", "class-path").output());
+            assertEquals(2, launches(fixture));
+        } finally {
+            System.setProperty("java.home", home);
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void wrapperConfigurationChangesRefreshBuildAnswers() throws Exception {
+        var fixture = cacheFixture();
+        var first = discoverTsv(fixture);
+        int expected = 1;
+        for (String name : List.of("gradle-wrapper.properties", "gradle-wrapper.jar")) {
+            Path file = fixture.root().resolve("gradle/wrapper/" + name);
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, "first");
+            assertEquals(first.output(), discoverTsv(fixture).output());
+            assertEquals(++expected, launches(fixture));
+            Files.writeString(file, "second");
+            assertEquals(first.output(), discoverTsv(fixture).output());
+            assertEquals(++expected, launches(fixture));
+            Files.delete(file);
+            assertEquals(first.output(), discoverTsv(fixture).output());
+            // Earlier input states remain reusable.
+            assertEquals(expected, launches(fixture));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cacheTracksMembershipAndContentsOfReportedInputDirectories() throws Exception {
+        var fixture = cacheFixture();
+        Path directory = fixture.root().resolve("gradle/dependency-locks");
+        var values = capture(fixture);
+        var inputs = new ArrayList<String>();
+        inputs.add(fixture.root().resolve("settings.gradle").toString());
+        inputs.add(directory.toString());
+        putList(values, "build-files", inputs);
+        storeCapture(fixture, values);
+        var first = discoverTsv(fixture);
+        Files.createDirectories(directory);
+        Path lock = directory.resolve("compileClasspath.lockfile");
+        Files.writeString(lock, "sample:library:1.0\n");
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(2, launches(fixture));
+        Files.writeString(lock, "sample:library:2.0\n");
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(3, launches(fixture));
+        Files.writeString(directory.resolve("runtimeClasspath.lockfile"), "sample:library:2.0\n");
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(4, launches(fixture));
+        Files.delete(lock);
+        assertEquals(first.output(), discoverTsv(fixture).output());
+        assertEquals(5, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cacheFollowsBuildEnvironmentButIgnoresUnrelatedPathEntries() throws Exception {
+        var fixture = cacheFixture();
+        Path javaHome = Files.createDirectories(temporaryDirectory.resolve("build JDK"));
+        Files.writeString(javaHome.resolve("release"), "JAVA_VERSION=\"17\"\n");
+        var environment = new java.util.HashMap<String, String>();
+        environment.put("JAVA_HOME", javaHome.toString());
+        environment.put("GRADLE_OPTS", "-Dexample=first");
+        String first = forkedDiscovery(fixture, environment);
+        assertEquals(1, launches(fixture));
+        environment.put("PATH", temporaryDirectory.resolve("new tool bundle/bin") + java.io.File.pathSeparator + System.getenv("PATH"));
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(1, launches(fixture));
+        environment.put("GRADLE_OPTS", "-Dexample=second");
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(2, launches(fixture));
+        Files.writeString(javaHome.resolve("release"), "JAVA_VERSION=\"21\"\n");
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(3, launches(fixture));
+        Path another = Files.createDirectories(temporaryDirectory.resolve("another build JDK"));
+        environment.put("JAVA_HOME", another.toString());
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(4, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cacheFollowsJavaSelectedThroughPathSymlinks() throws Exception {
+        var fixture = cacheFixture();
+        Path bin = Files.createDirectories(temporaryDirectory.resolve("bin"));
+        Path firstJava = Files.writeString(temporaryDirectory.resolve("first-java"), "#!/bin/sh\nexit 0\n");
+        Path secondJava = Files.writeString(temporaryDirectory.resolve("second-java"), "#!/bin/sh\nexit 0\n");
+        assertTrue(firstJava.toFile().setExecutable(true));
+        assertTrue(secondJava.toFile().setExecutable(true));
+        Path javaCommand = Files.createSymbolicLink(bin.resolve("java"), firstJava);
+        var environment = new java.util.HashMap<String, String>();
+        environment.put("JAVA_HOME", null);
+        environment.put("PATH", bin + java.io.File.pathSeparator + System.getenv("PATH"));
+        String first = forkedDiscovery(fixture, environment);
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(1, launches(fixture));
+        Files.delete(javaCommand);
+        Files.createSymbolicLink(javaCommand, secondJava);
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(2, launches(fixture));
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cacheTracksTheBuildLauncherResolvedThroughPath() throws Exception {
+        var fixture = cacheFixture();
+        Path launcher = Files.move(fixture.root().resolve("gradlew"), fixture.root().resolve("gradle"));
+        assertTrue(launcher.toFile().setExecutable(true));
+        var environment = Map.of("PATH", fixture.root() + java.io.File.pathSeparator + System.getenv("PATH"));
+        String first = forkedDiscovery(fixture, environment);
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(1, launches(fixture));
+        Files.writeString(launcher, "\n# another launcher version\n", java.nio.file.StandardOpenOption.APPEND);
+        assertEquals(first, forkedDiscovery(fixture, environment));
+        assertEquals(2, launches(fixture));
+    }
+
+    private static String forkedDiscovery(Fixture fixture, java.util.Map<String, String> environment) throws Exception {
+        var builder = standaloneJig("gradle", "--root-project-dir", fixture.root().toString(),
+                "--list-project-paths", "--format", "tsv");
+        environment.forEach((name, value) -> {
+            if (value == null) {
+                builder.environment().remove(name);
+            } else {
+                builder.environment().put(name, value);
+            }
+        });
+        Path diagnostics = fixture.root().resolve("forked-errors.log");
+        builder.redirectError(diagnostics.toFile());
+        var process = builder.start();
+        String output = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), Files.readString(diagnostics));
+        return output;
     }
 
     private static void copyTree(Path source, Path target) throws Exception {

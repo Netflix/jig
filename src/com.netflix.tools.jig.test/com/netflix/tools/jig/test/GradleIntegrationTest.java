@@ -200,7 +200,7 @@ class GradleIntegrationTest {
     }
 
     @Test
-    @EnabledIf("kotlinCacheCoverage")
+    @EnabledIf("detailedSettingsCacheCoverage")
     void discoveryCacheTracksAppliedKotlinScripts() throws Exception {
         var fixture = fixture(false);
         Files.delete(fixture.app().resolve("build.gradle"));
@@ -236,7 +236,130 @@ class GradleIntegrationTest {
         assertFalse(changed.contains("\t:included\tcustom\t"), changed);
     }
 
-    private boolean kotlinCacheCoverage() {
+    @Test
+    @EnabledIf("detailedCoverage")
+    void cachedArgumentsFollowProjectPropertiesAndOptionalFileCreation() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs = [findProperty('sourceRoot') ?: 'original']\n", StandardOpenOption.APPEND);
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("original").toString()));
+        Path rootProperties = fixture.root().resolve("gradle.properties");
+        Files.writeString(rootProperties, "sourceRoot=from-root\n");
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("from-root").toString()));
+        Path projectProperties = fixture.app().resolve("gradle.properties");
+        Files.writeString(projectProperties, "sourceRoot=from-project\n");
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("from-project").toString()));
+        Files.writeString(projectProperties, "sourceRoot=edited\n");
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("edited").toString()));
+        Files.delete(projectProperties);
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("from-root").toString()));
+        Files.delete(rootProperties);
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("original").toString()));
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void cachedArgumentsFollowGradleUserProperties() throws Exception {
+        var fixture = fixture(false);
+        Path userHome = Files.createDirectories(temporaryDirectory.resolve("Gradle user home"));
+        Path wrapper = fixture.root().resolve("gradlew");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("export JAVA_HOME=",
+                "export GRADLE_USER_HOME=" + shellQuote(userHome.toString()) + "\nexport JAVA_HOME="));
+        Files.writeString(fixture.app().resolve("build.gradle"), "\nsourceSets.main.java.srcDirs = [findProperty('sourceRoot') ?: 'original']\n", StandardOpenOption.APPEND);
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("original").toString()));
+        Path properties = userHome.resolve("gradle.properties");
+        Files.writeString(properties, "sourceRoot=from-user-home\n");
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("from-user-home").toString()));
+        Files.delete(properties);
+        assertTrue(resolve(fixture, "compile", "source-path").contains(fixture.app().resolve("original").toString()));
+    }
+
+    @Test
+    @EnabledIf("detailedSettingsCacheCoverage")
+    void cachedArgumentsFollowDefaultVersionCatalog() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\n");
+        Path catalog = fixture.root().resolve("gradle/libs.versions.toml");
+        Files.createDirectories(catalog.getParent());
+        Files.writeString(catalog, "[versions]\nrelease = '11'\n");
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.withType(JavaCompile).configureEach { options.release = libs.versions.release.get().toInteger() }\n", StandardOpenOption.APPEND);
+        assertTrue(resolve(fixture, "compile", "release").contains("--release\n11\n"));
+        assertTrue(run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "-r", "release", "--refresh").contains("--release\n11\n"));
+        Files.writeString(catalog, "[versions]\nrelease = '17'\n");
+        assertTrue(resolve(fixture, "compile", "release").contains("--release\n17\n"));
+    }
+
+    @Test
+    @EnabledIf("detailedSettingsCacheCoverage")
+    void cachedArgumentsFollowImportedVersionCatalogOutsideTheBuild() throws Exception {
+        var fixture = fixture(false);
+        Files.writeString(fixture.root().resolve("gradle.properties"), "org.gradle.configuration-cache=true\norg.gradle.configuration-cache.problems=fail\n");
+        Path catalog = temporaryDirectory.resolve("shared-versions.toml");
+        Files.writeString(catalog, "[versions]\nrelease = '11'\n");
+        Files.writeString(fixture.root().resolve("settings.gradle"), "\ndependencyResolutionManagement { versionCatalogs { tooling { from(files('../shared-versions.toml')) } } }\n", StandardOpenOption.APPEND);
+        Files.writeString(fixture.app().resolve("build.gradle"), "\ntasks.withType(JavaCompile).configureEach { options.release = tooling.versions.release.get().toInteger() }\n", StandardOpenOption.APPEND);
+        assertTrue(resolve(fixture, "compile", "release").contains("--release\n11\n"));
+        assertTrue(run("gradle", "--root-project-dir", fixture.root().toString(), "--project-path", ":app",
+                "-r", "release", "--refresh").contains("--release\n11\n"));
+        Files.writeString(catalog, "[versions]\nrelease = '17'\n");
+        assertTrue(resolve(fixture, "compile", "release").contains("--release\n17\n"));
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void cachedArgumentsFollowCoreDependencyLocks() throws Exception {
+        var fixture = fixture(false);
+        Path repository = fixture.root().resolve("repository");
+        publish(repository, "locked", "1.0", false, "");
+        publish(repository, "locked", "2.0", false, "");
+        Files.writeString(Files.createDirectories(repository.resolve("fixture/locked")).resolve("maven-metadata.xml"),
+                "<metadata><groupId>fixture</groupId><artifactId>locked</artifactId><versioning><versions><version>1.0</version><version>2.0</version></versions></versioning></metadata>");
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                plugins { id 'java' }
+                repositories { maven { url = rootProject.file('repository') } }
+                dependencies { implementation 'fixture:locked:[1.0,2.0]' }
+                dependencyLocking { lockAllConfigurations() }
+                """);
+        Path lock = fixture.app().resolve("gradle.lockfile");
+        String state = "fixture:locked:%s=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath\nempty=annotationProcessor,testAnnotationProcessor\n";
+        Files.writeString(lock, state.formatted("1.0"));
+        assertTrue(resolve(fixture, "compile", "class-path,source-path").contains("locked-1.0.jar"));
+        Files.writeString(lock, state.formatted("2.0"));
+        assertTrue(resolve(fixture, "compile", "class-path,source-path").contains("locked-2.0.jar"));
+    }
+
+    @Test
+    @EnabledIf("detailedCoverage")
+    void cachedArgumentsFollowConfiguredLockFileLocations() throws Exception {
+        var fixture = fixture(false);
+        // Model the plugin's extension API without downloading a plugin and its dependencies.
+        Files.writeString(fixture.app().resolve("build.gradle"), """
+                plugins { id 'java' }
+                class LockingInputs {
+                    String lockFile = 'custom-dependencies.lock'
+                    String globalLockFile = 'custom-global.lock'
+                }
+                extensions.create('dependencyLock', LockingInputs)
+                dependencyLocking { lockFile = file('custom-core.lock') }
+                ext['dependencyLock.overrideFile'] = 'overrides.json'
+                def locations = [file('dependencies.lock'), rootProject.file('global.lock'),
+                    file(dependencyLock.lockFile), rootProject.file(dependencyLock.globalLockFile),
+                    dependencyLocking.lockFile.get().asFile, rootProject.file(property('dependencyLock.overrideFile'))]
+                sourceSets.main.java.srcDirs = locations.findAll { it.exists() }.collect { file(it.text.trim()) }
+                """);
+        String first = resolve(fixture, "compile", "source-path");
+        for (Path path : List.of(fixture.app().resolve("dependencies.lock"), fixture.root().resolve("global.lock"),
+                fixture.app().resolve("custom-dependencies.lock"), fixture.root().resolve("custom-global.lock"),
+                fixture.app().resolve("custom-core.lock"), fixture.root().resolve("overrides.json"))) {
+            Files.writeString(path, "selected-" + path.getFileName());
+            String changed = resolve(fixture, "compile", "source-path");
+            assertTrue(changed.contains("selected-" + path.getFileName()), path + ": " + changed);
+            Files.delete(path);
+            assertEquals(first, resolve(fixture, "compile", "source-path"));
+        }
+    }
+
+    private boolean detailedSettingsCacheCoverage() {
         return gradle.version().equals("7.6.6") || detailedCoverage();
     }
 
