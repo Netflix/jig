@@ -151,6 +151,42 @@ class MavenProjectCommandsTest {
 
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
+    void cachedMavenAnswersSurviveMovingTheHostingRuntime() throws Exception {
+        var fixture = cacheFixture();
+        var first = discover(fixture);
+        String home = System.getProperty("java.home");
+        try {
+            System.setProperty("java.home", temporaryDirectory.resolve("another tool bundle").toString());
+            assertEquals(first.output(), discover(fixture).output());
+            assertEquals(1, launches(fixture));
+        } finally {
+            System.setProperty("java.home", home);
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void mavenWrapperMetadataChangesRefreshBuildAnswers() throws Exception {
+        var fixture = cacheFixture();
+        var first = discover(fixture);
+        int expected = 1;
+        for (String name : List.of("maven-wrapper.properties", "maven-wrapper.jar")) {
+            Path file = fixture.project().resolve(".mvn/wrapper/" + name);
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, "first");
+            assertEquals(first.output(), discover(fixture).output());
+            assertEquals(++expected, launches(fixture));
+            Files.writeString(file, "second");
+            assertEquals(first.output(), discover(fixture).output());
+            assertEquals(++expected, launches(fixture));
+            Files.delete(file);
+            assertEquals(first.output(), discover(fixture).output());
+            assertEquals(expected, launches(fixture));
+        }
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
     void resolutionAndDiscoveryCachesReuseAnswersAcrossWorktreesAndBuildStates() throws Exception {
         var fixture = cacheFixture();
         String[] request = {"maven", "--project-base-dir", fixture.project().toString(), "--project", ":app", "--scope", "compile",

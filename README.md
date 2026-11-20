@@ -130,7 +130,7 @@ java @runtime.args com.example.Main
 
 ### Cached build queries
 
-Discovery and resolved arguments are cached across branches and worktrees. Cache hits skip the build tool and output preparation; use `--refresh` to query the build again. Unused entries are pruned automatically. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects#caching) for details.
+Discovery and resolved arguments are cached across branches and worktrees. Cache hits skip the build tool and output preparation. Gradle queries track build and applied scripts, properties, dependency locks, imported version catalogs, and wrapper configuration; creating or removing tracked inputs also invalidates the cached answer. Build-launcher environment changes are tracked independently of the runtime hosting `jig`. Use `--refresh` for changes to other files read by build logic or to refresh dependency resolution. Unused entries are pruned automatically. See [Build Tool Projects](https://github.com/Netflix/jig/wiki/Build-Tool-Projects#caching) for details.
 
 ### Publishing module artifacts
 

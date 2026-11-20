@@ -320,24 +320,55 @@ class JigCaptureTask extends DefaultTask {
     }
 }
 
+class JigGradleBuildInputs {
+    static List<String> project(def project) {
+        def files = [project.file('gradle.properties'), project.file('gradle.lockfile'),
+                project.file('buildscript-gradle.lockfile'), project.file('gradle/dependency-locks'),
+                project.file('dependencies.lock'), project.rootProject.file('global.lock')]
+        def core = project.hasProperty('dependencyLocking') ? project.dependencyLocking : null
+        if (core != null && core.hasProperty('lockFile')) {
+            def file = configuredFile(project, core.lockFile)
+            if (file != null) files.add(file)
+        }
+        def nebula = project.extensions.findByName('dependencyLock')
+        if (nebula != null) {
+            def lock = configuredFile(project, nebula.lockFile)
+            def global = configuredFile(project.rootProject, nebula.globalLockFile)
+            if (lock != null) files.add(lock)
+            if (global != null) files.add(global)
+        }
+        def override = project.findProperty('dependencyLock.overrideFile')
+        if (override != null) files.add(project.rootProject.file(override))
+        return files.collect { it.canonicalPath }
+    }
+
+    private static File configuredFile(def project, def value) {
+        if (value != null && value.metaClass.respondsTo(value, 'getOrNull')) {
+            value = value.getOrNull()
+        }
+        if (value == null) return null
+        return value.hasProperty('asFile') ? value.asFile : project.file(value)
+    }
+}
+
 def gradleVersion = GradleVersion.current().baseVersion
 def lazyTasks = gradleVersion >= GradleVersion.version('4.9')
 def discoveryFiles = Collections.synchronizedList(new ArrayList<String>())
+def listeners = gradle.services.get(org.gradle.internal.event.ListenerManager)
 def observeScript = { source ->
     def file = source.resource.file
     if (file != null) {
         discoveryFiles.add(file.canonicalPath)
     }
 }
-// Gradle has no public enumeration of applied scripts. Observe only script
-// filenames; other configuration inputs remain the responsibility of --refresh.
+// Gradle has no public enumeration of applied scripts. Observe their filenames.
 def executionType = Class.forName(gradleVersion < GradleVersion.version('6.0')
         ? 'org.gradle.groovy.scripts.ScriptExecutionListener' : 'org.gradle.internal.scripts.ScriptExecutionListener')
 def executionMethod = gradleVersion < GradleVersion.version('6.0') ? 'scriptClassLoaded' : 'onScriptClassLoaded'
-gradle.services.get(org.gradle.internal.event.ListenerManager).addListener([(executionMethod): { source, type -> observeScript(source) }].asType(executionType))
+listeners.addListener([(executionMethod): { source, type -> observeScript(source) }].asType(executionType))
 if (gradleVersion >= GradleVersion.version('8.5')) {
     def sourceType = Class.forName('org.gradle.groovy.scripts.internal.ScriptSourceListener')
-    gradle.services.get(org.gradle.internal.event.ListenerManager).addListener([scriptSourceObserved: { source -> observeScript(source) }].asType(sourceType))
+    listeners.addListener([scriptSourceObserved: { source -> observeScript(source) }].asType(sourceType))
 }
 
 
@@ -359,6 +390,19 @@ if (gradleVersion >= GradleVersion.version('9.0')) {
         }
     ].asType(org.gradle.internal.operations.BuildOperationListener)
     manager.addListener(listener[0])
+}
+
+// Catalog imports are resolved by Gradle, including custom local files and published catalogs.
+// Observe the already-resolved catalog configurations without resolving other dependencies.
+if (gradleVersion >= GradleVersion.version('7.0')) {
+    listeners.addListener([
+        beforeResolve: { dependencies -> },
+        afterResolve: { dependencies ->
+            if (dependencies.name.startsWith('incomingCatalogFor')) {
+                dependencies.files.files.each { discoveryFiles.add(it.canonicalPath) }
+            }
+        }
+    ].asType(org.gradle.api.artifacts.DependencyResolutionListener))
 }
 
 // Settings define project identities and directories. Root dispatchers route
@@ -417,7 +461,18 @@ gradle.settingsEvaluated { settings ->
     if (settingsFile != null) {
         discoveryFiles.add(settingsFile.canonicalPath)
     }
-    descriptors.each { discoveryFiles.add(it.buildFile.canonicalPath) }
+    descriptors.each {
+        discoveryFiles.add(it.buildFile.canonicalPath)
+        discoveryFiles.add(new File(it.projectDir, 'gradle.properties').canonicalPath)
+    }
+    [new File(settings.settingsDir, 'gradle.properties'),
+        new File(settings.settingsDir, 'gradle/libs.versions.toml'),
+        new File(settings.settingsDir, 'gradle/gradle-daemon-jvm.properties'),
+        new File(gradle.gradleUserHomeDir, 'gradle.properties'),
+        new File(System.getProperty('java.home'), 'release')].each { discoveryFiles.add(it.canonicalPath) }
+    if (gradle.gradleHomeDir != null) {
+        discoveryFiles.add(new File(gradle.gradleHomeDir, 'gradle.properties').canonicalPath)
+    }
     // Older Gradle versions cannot determine buildSrc's identity until projects
     // have been attached. Use Gradle's identity, not names inferred from directories.
     gradle.projectsLoaded {
@@ -443,6 +498,7 @@ gradle.settingsEvaluated { settings ->
                 def configure = { task, selectedSourceSetName, selectedClasspath ->
                     task.description = 'Capture the Java argument view requested by jig'
                     task.buildFiles = new ArrayList<String>(discoveryFiles)
+                    task.buildFiles.addAll(JigGradleBuildInputs.project(project))
                     task.buildPath = buildPath
                     task.projectPaths = projectPaths
                     task.sourceRoots = project.files()
@@ -607,6 +663,7 @@ gradle.settingsEvaluated { settings ->
                             def compiler = compile.javaCompiler.get()
                             if (compiler.metadata.languageVersion.asInt() >= 9) {
                                 task.metadata['system'] = compiler.metadata.installationPath.asFile.canonicalPath
+                                task.buildFiles.add(new File(compiler.metadata.installationPath.asFile, 'release').canonicalPath)
                             }
                         }
                     }

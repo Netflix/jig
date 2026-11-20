@@ -59,8 +59,8 @@ final class ProjectQueryCache {
             }
             revision = hash(input.readAllBytes());
         }
-        String identity = "1\n" + tool + '\n' + request + '\n'
-                + launcher.stream().map(this::relative).toList() + '\n' + System.getProperty("java.home") + '\n' + revision
+        String identity = "2\n" + tool + '\n' + request + '\n'
+                + launcher.stream().map(this::relative).toList() + '\n' + buildEnvironment() + '\n' + revision
                 + '\n' + Jig.class.getModule().getDescriptor().rawVersion().orElse("development")
                 + '\n' + System.getProperty("os.name") + '\n' + java.io.File.pathSeparator;
         Path cache = ModuleRepositorySession.cacheDirectory(System.getProperty("os.name"), Path.of(System.getProperty("user.home")), System.getenv())
@@ -129,6 +129,23 @@ final class ProjectQueryCache {
             if (path.isAbsolute() && Files.isRegularFile(path)) {
                 inputs.add(path.toString());
             }
+        }
+        if (launcher.size() == 1) {
+            Path command = executable(launcher.getFirst());
+            if (command != null) {
+                inputs.add(command.toString());
+            }
+        }
+        if (tool.equals("Gradle")) {
+            inputs.add(root.resolve("gradle/wrapper/gradle-wrapper.properties").toString());
+            inputs.add(root.resolve("gradle/wrapper/gradle-wrapper.jar").toString());
+        } else {
+            inputs.add(root.resolve(".mvn/wrapper/maven-wrapper.properties").toString());
+            inputs.add(root.resolve(".mvn/wrapper/maven-wrapper.jar").toString());
+        }
+        String javaHome = System.getenv("JAVA_HOME");
+        if (javaHome != null && !javaHome.isBlank()) {
+            inputs.add(root.resolve(javaHome).normalize().resolve("release").toString());
         }
         var values = new Properties();
         values.setProperty("inputs", Integer.toString(inputs.size()));
@@ -213,6 +230,46 @@ final class ProjectQueryCache {
         }
         String prefix = root + root.getFileSystem().getSeparator();
         return value.startsWith(prefix) ? ROOT + value.substring(root.toString().length()) : value;
+    }
+
+    private String buildEnvironment() throws IOException {
+        var names = new TreeSet<>(Set.of("JAVA_HOME", "JDK_HOME", "JAVA_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"));
+        if (tool.equals("Gradle")) {
+            names.addAll(Set.of("GRADLE_HOME", "GRADLE_USER_HOME", "GRADLE_OPTS"));
+            System.getenv().keySet().stream().filter(name -> name.startsWith("ORG_GRADLE_PROJECT_")).forEach(names::add);
+        } else {
+            names.addAll(Set.of("MAVEN_HOME", "M2_HOME", "MAVEN_USER_HOME", "MAVEN_OPTS", "MAVEN_ARGS"));
+        }
+        // Hash only build-launcher inputs, not PATH entries introduced by a tool bundle.
+        var identity = new StringBuilder();
+        for (String name : names) {
+            String value = System.getenv(name);
+            identity.append(name).append('=').append(value == null ? "<unset>" : value).append('\n');
+        }
+        String javaHome = System.getenv("JAVA_HOME");
+        if (javaHome == null || javaHome.isBlank()) {
+            identity.append("java=").append(executable("java")).append('\n');
+        }
+        if (launcher.size() == 1) {
+            identity.append("launcher=").append(executable(launcher.getFirst())).append('\n');
+        }
+        return identity.toString();
+    }
+
+    private Path executable(String command) throws IOException {
+        var suffixes = new ArrayList<>(List.of(""));
+        if (System.getProperty("os.name").startsWith("Windows")) {
+            suffixes.addAll(List.of(System.getenv().getOrDefault("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")));
+        }
+        for (String entry : System.getenv().getOrDefault("PATH", "").split(Pattern.quote(java.io.File.pathSeparator), -1)) {
+            for (String suffix : suffixes) {
+                Path path = root.resolve(entry).resolve(command + suffix);
+                if (Files.isRegularFile(path) && Files.isExecutable(path)) {
+                    return path.toRealPath();
+                }
+            }
+        }
+        return null;
     }
 
     private static boolean pathField(String name) {
@@ -311,7 +368,20 @@ final class ProjectQueryCache {
     }
 
     private static String fingerprint(Path file) throws IOException {
-        return Files.notExists(file) ? "missing" : hash(Files.readAllBytes(file));
+        if (Files.notExists(file)) {
+            return "missing";
+        }
+        if (Files.isDirectory(file)) {
+            // Explicit input directories, such as legacy locks, must notice new files too.
+            var state = new StringBuilder("directory\n");
+            try (var paths = Files.walk(file)) {
+                for (Path child : paths.filter(Files::isRegularFile).sorted().toList()) {
+                    state.append(file.relativize(child)).append('\n').append(hash(Files.readAllBytes(child))).append('\n');
+                }
+            }
+            return hash(state.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        return hash(Files.readAllBytes(file));
     }
 
     private static String hash(byte[] bytes) {

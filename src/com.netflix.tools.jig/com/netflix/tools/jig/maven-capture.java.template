@@ -93,6 +93,15 @@ public final class Capture LIFECYCLE_ADAPTER LifecycleStarter {
             File globalSettings = session.getRequest().getGlobalSettingsFile();
             if (userSettings != null) files.add(userSettings.getCanonicalPath());
             if (globalSettings != null) files.add(globalSettings.getCanonicalPath());
+            files.add(new File(System.getProperty("java.home"), "release").getCanonicalPath());
+            for (String method : Arrays.asList("getUserToolchainsFile", "getGlobalToolchainsFile")) {
+                try {
+                    File toolchains = (File) session.getRequest().getClass().getMethod(method).invoke(session.getRequest());
+                    if (toolchains != null) files.add(toolchains.getCanonicalPath());
+                } catch (NoSuchMethodException unsupported) {
+                    // Older Maven versions do not expose this toolchains input.
+                }
+            }
             common.setProperty("build-files.count", Integer.toString(files.size()));
             int fileIndex = 0;
             for (String file : files) common.setProperty("build-files." + fileIndex++, file);

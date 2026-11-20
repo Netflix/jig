@@ -18,11 +18,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Properties;
@@ -35,6 +33,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import static com.netflix.tools.jig.test.JigProcess.standaloneJig;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -108,30 +107,6 @@ class JigToolProviderTest {
 
         assertEquals(0, process.waitFor(), output + Files.readString(diagnostics));
         assertTrue(output.startsWith("Usage: jig serve [--listen <host:port>]"), output);
-    }
-
-    private static ProcessBuilder standaloneJig(String... arguments) {
-        Module module = Jig.class.getModule();
-        var reference = module.getLayer().configuration().findModule(module.getName()).orElseThrow().reference();
-        Path implementation = Path.of(reference.location().orElseThrow());
-        Path java = Path.of(System.getProperty("java.home"), "bin/java");
-        // Upgrade any embedded jig with the resolved base module and retain its active incremental patches.
-        var command = new ArrayList<>(List.of(java.toString(), "--upgrade-module-path", implementation.toString()));
-        List<String> vmArguments = ManagementFactory.getRuntimeMXBean().getInputArguments();
-        for (int i = 0; i < vmArguments.size(); i++) {
-            String argument = vmArguments.get(i);
-            if (argument.equals("--patch-module")) {
-                String patch = vmArguments.get(++i);
-                if (patch.startsWith(module.getName() + "=")) {
-                    command.add("--patch-module=" + patch);
-                }
-            } else if (argument.startsWith("--patch-module=" + module.getName() + "=")) {
-                command.add(argument);
-            }
-        }
-        command.addAll(List.of("--module", module.getName() + "/" + Jig.class.getName()));
-        command.addAll(List.of(arguments));
-        return new ProcessBuilder(command);
     }
 
     @Test

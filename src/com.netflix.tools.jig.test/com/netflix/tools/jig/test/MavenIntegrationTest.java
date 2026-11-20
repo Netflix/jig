@@ -126,6 +126,35 @@ class MavenIntegrationTest {
 
     @Test
     @EnabledIf("detailedMavenConfigCoverage")
+    void cacheTracksConfiguredToolchainsFile() throws Exception {
+        Path root = fixture(true);
+        String model = pom("app", "", customLayout()).replace("<artifactId>maven-compiler-plugin</artifactId><version>3.1</version>", """
+                <artifactId>maven-compiler-plugin</artifactId><version>3.1</version>
+                <configuration><jdkToolchain><version>[17,)</version></jdkToolchain></configuration>
+                """);
+        Files.writeString(root.resolve("app/pom.xml"), model);
+        Path toolchains = root.resolve("toolchains.xml");
+        Path wrapper = root.resolve("mvnw");
+        Files.writeString(wrapper, Files.readString(wrapper).replace("\"$@\"", "--toolchains " + shellQuote(toolchains.toString()) + " \"$@\""));
+        for (Path javaHome : List.of(maven.javaHome().toRealPath(), Path.of(System.getProperty("java.home")).toRealPath())) {
+            var release = new java.util.Properties();
+            try (var input = Files.newInputStream(javaHome.resolve("release"))) {
+                release.load(input);
+            }
+            String version = release.getProperty("JAVA_VERSION").replace("\"", "");
+            Files.writeString(toolchains, """
+                    <toolchains><toolchain><type>jdk</type><provides><version>%s</version></provides>
+                      <configuration><jdkHome>%s</jdkHome></configuration>
+                    </toolchain></toolchains>
+                    """.formatted(version, javaHome));
+            var result = discover(root, "--project", ":app", "--scope", "compile", "-r", "system");
+            assertEquals(0, result.status(), result.error());
+            assertEquals("--system\n" + javaHome + "\n", result.output());
+        }
+    }
+
+    @Test
+    @EnabledIf("detailedMavenConfigCoverage")
     void exposesTheBuildContextToolchainSystemImage() throws Exception {
         Path root = fixture(true);
         Path app = root.resolve("app");
